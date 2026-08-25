@@ -1,0 +1,116 @@
+"""Java Backend HTTP 客户端。
+
+所有对 Spring Boot 业务后端的调用都集中在本类，避免在 Tool / Agent 层散落 httpx 请求。
+Agent Service 不直接访问业务数据库，业务数据一律经由 Java 的 /api/agent/tools 统一入口获取。
+"""
+
+from typing import Any
+
+import httpx
+
+
+class BusinessToolError(Exception):
+    """Java 后端业务错误，转换为 Agent 可理解的结构化错误。
+
+    code 对应 Java ErrorCode；retryable 表示网络类瞬时错误（可重试），
+    业务错误（如资源不存在）不应重试。
+    """
+
+    def __init__(self, code: int, message: str, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.retryable = retryable
+
+
+class BackendClient:
+    """复用长生命周期 AsyncClient，避免每次 Tool 调用重建连接池。"""
+
+    def __init__(
+        self,
+        base_url: str,
+        timeout: float = 30.0,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        # transport 仅测试注入 MockTransport 使用，生产环境为 None
+        self._client = httpx.AsyncClient(
+            base_url=base_url, timeout=timeout, transport=transport
+        )
+
+    async def call_tool(self, tool: str, arguments: dict[str, Any] | None = None) -> Any:
+        """调用 Java Agent Tool 统一入口并解包 Result 信封。
+
+        Java 侧约定：HTTP 200 + Result{code, message, data}，
+        code != 200 表示业务失败，需转为 BusinessToolError。
+        """
+        payload: dict[str, Any] = {"arguments": arguments or {}}
+        try:
+            response = await self._client.post(f"/api/agent/tools/{tool}", json=payload)
+        except httpx.HTTPError as exc:
+            # 网络/连接类错误属于瞬时错误，允许上层有限重试
+            raise BusinessToolError(500, f"后端服务不可达: {exc}", retryable=True) from exc
+
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise BusinessToolError(500, "后端返回非 JSON 响应", retryable=True) from exc
+
+        if body.get("code") != 200:
+            # 业务失败（如资源不存在、参数错误），不可重试
+            raise BusinessToolError(
+                code=body.get("code", -1),
+                message=body.get("message", "后端业务错误"),
+            )
+        return body.get("data")
+
+    async def list_resumes(self) -> list[dict[str, Any]]:
+        """简历列表（含最新分析分数与面试次数）。"""
+        data = await self.call_tool("get_resume_list")
+        return data if isinstance(data, list) else []
+
+    async def get_interview_history(self) -> list[dict[str, Any]]:
+        """模拟面试历史列表。"""
+        data = await self.call_tool("get_interview_history")
+        return data if isinstance(data, list) else []
+
+    async def list_knowledge_bases(self) -> list[dict[str, Any]]:
+        """知识库列表，用于 KNOWLEDGE_QA 时挑选检索目标。"""
+        data = await self.call_tool("list_knowledge_bases")
+        return data if isinstance(data, list) else []
+
+    async def search_knowledge(
+        self, question: str, knowledge_base_ids: list[int]
+    ) -> dict[str, Any]:
+        """RAG 问答：Java 侧负责查询改写、pgvector 检索与 LLM 作答。"""
+        data = await self.call_tool(
+            "search_knowledge",
+            {"knowledgeBaseIds": knowledge_base_ids, "question": question},
+        )
+        return data if isinstance(data, dict) else {}
+
+    async def get_agent_llm_config(self) -> dict[str, Any]:
+        """拉取 Java 侧 Agent Provider 的连接配置（baseUrl / model / apiKey）。
+
+        该接口由 Java 的 llm-provider 模块提供，返回解密后的 apiKey，
+        仅用于内网可信的服务间调用（Agent Runtime → Java Backend）。
+        """
+        try:
+            response = await self._client.get("/api/llm-provider/agent-config")
+        except httpx.HTTPError as exc:
+            raise BusinessToolError(500, f"后端服务不可达: {exc}", retryable=True) from exc
+
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise BusinessToolError(500, "后端返回非 JSON 响应", retryable=True) from exc
+
+        if body.get("code") != 200:
+            raise BusinessToolError(
+                code=body.get("code", -1),
+                message=body.get("message", "后端业务错误"),
+            )
+        data = body.get("data")
+        return data if isinstance(data, dict) else {}
+
+    async def aclose(self) -> None:
+        await self._client.aclose()

@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     )
 
     backend_base_url: str = "http://localhost:8080"
+    backend_timeout: float = 30.0
 
     llm_base_url: str = "https://api.example.com/v1"
     llm_api_key: SecretStr = SecretStr("")

@@ -6,6 +6,7 @@ import interview.guide.common.config.LlmProviderProperties;
 import interview.guide.common.config.LlmProviderProperties.ProviderConfig;
 import interview.guide.common.exception.BusinessException;
 import interview.guide.common.exception.ErrorCode;
+import interview.guide.modules.llmprovider.dto.AgentLlmConfigDTO;
 import interview.guide.modules.llmprovider.dto.AsrConfigDTO;
 import interview.guide.modules.llmprovider.dto.AsrConfigRequest;
 import interview.guide.modules.llmprovider.dto.CreateProviderRequest;
@@ -222,12 +223,22 @@ public class LlmProviderConfigService {
     rwLock.readLock().lock();
     try {
       if (!isDatabaseBacked()) {
-        return new DefaultProviderDTO(properties.getDefaultProvider(), properties.getDefaultEmbeddingProvider());
+        // 非数据库模式：Agent 模型与聊天模型共用同一个 Provider
+        return new DefaultProviderDTO(
+            properties.getDefaultProvider(),
+            properties.getDefaultEmbeddingProvider(),
+            properties.getDefaultProvider());
       }
       LlmGlobalSettingEntity setting = getGlobalSettingOrThrow();
+      // Agent Provider 可空，为空时回落默认聊天 Provider
+      String agentProvider = trimOrNull(setting.getDefaultAgentProviderId());
+      if (agentProvider == null) {
+        agentProvider = setting.getDefaultChatProviderId();
+      }
       return new DefaultProviderDTO(
           setting.getDefaultChatProviderId(),
-          setting.getDefaultEmbeddingProviderId());
+          setting.getDefaultEmbeddingProviderId(),
+          agentProvider);
     } finally {
       rwLock.readLock().unlock();
     }
@@ -489,6 +500,67 @@ public class LlmProviderConfigService {
       log.info("Updated default embedding provider: {}", providerId);
     } finally {
       rwLock.writeLock().unlock();
+    }
+  }
+
+  /**
+   * 设置 Agent Service 使用的默认 Provider。
+   *
+   * <p>非数据库模式（legacy yml）下 Agent 与聊天共用 Provider，直接走聊天 Provider 的更新逻辑。
+   */
+  @Transactional
+  public void updateDefaultAgentProvider(DefaultProviderDTO request) {
+    rwLock.writeLock().lock();
+    try {
+      if (!isDatabaseBacked()) {
+        updateDefaultProviderLegacy(new DefaultProviderDTO(request.defaultAgentProvider()));
+        return;
+      }
+      String providerId = trimOrNull(request.defaultAgentProvider());
+      if (providerId == null) {
+        throw new BusinessException(ErrorCode.BAD_REQUEST, "defaultAgentProvider 不能为空");
+      }
+      getProviderEntityOrThrow(providerId);
+      LlmGlobalSettingEntity setting = getGlobalSettingOrThrow();
+      setting.setDefaultAgentProviderId(providerId);
+      globalSettingRepository.save(setting);
+      registry.reload();
+      log.info("Updated default agent provider: {}", providerId);
+    } finally {
+      rwLock.writeLock().unlock();
+    }
+  }
+
+  /**
+   * 获取 Agent Service 的 LLM 连接配置（baseUrl / model / apiKey）。
+   *
+   * <p>供 Python Agent Runtime 初始化模型客户端。Agent Provider 未单独配置时回落默认聊天 Provider。
+   * 注意：该接口会返回解密后的 apiKey，仅限内网可信的服务间调用，禁止暴露给浏览器前端。
+   */
+  public AgentLlmConfigDTO getAgentLlmConfig() {
+    rwLock.readLock().lock();
+    try {
+      String providerId;
+      ProviderRuntimeConfig config;
+      if (!isDatabaseBacked()) {
+        providerId = trimOrNull(properties.getDefaultProvider());
+        config = toRuntimeConfig(getLegacyProviderConfigOrThrow(providerId));
+      } else {
+        LlmGlobalSettingEntity setting = getGlobalSettingOrThrow();
+        providerId = trimOrNull(setting.getDefaultAgentProviderId());
+        if (providerId == null) {
+          providerId = setting.getDefaultChatProviderId();
+        }
+        config = getProviderRuntimeConfigOrThrow(providerId);
+      }
+      String model = trimOrNull(config.model());
+      if (model == null) {
+        throw new BusinessException(ErrorCode.BAD_REQUEST,
+            "Provider '" + providerId + "' 未配置模型，无法用于 Agent");
+      }
+      return new AgentLlmConfigDTO(providerId, config.baseUrl(), model, config.apiKey());
+    } finally {
+      rwLock.readLock().unlock();
     }
   }
 

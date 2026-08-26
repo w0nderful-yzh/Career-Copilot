@@ -1,4 +1,5 @@
 export const ROUTES = {
+  copilot: '/copilot',
   interview: '/interview',
   interviewCreate: (requestId: string) => `/interview/create/${requestId}`,
   interviewSession: (sessionId: string) => `/interview/session/${sessionId}`,

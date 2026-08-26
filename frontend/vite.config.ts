@@ -7,6 +7,8 @@ import topLevelAwait from 'vite-plugin-top-level-await'
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const apiProxyTarget = env.VITE_API_PROXY_TARGET || 'http://localhost:8080'
+  // Python Agent Service（SSE 流式聊天），可在 .env 中覆盖
+  const agentProxyTarget = env.VITE_AGENT_PROXY_TARGET || 'http://localhost:8000'
 
   return {
     plugins: [
@@ -29,6 +31,11 @@ export default defineConfig(({ mode }) => {
       host: '0.0.0.0',
       port: 5173,
       proxy: {
+        // Agent 流式聊天转发到 Python Agent Service，须在 /api 之前匹配
+        '/api/chat': {
+          target: agentProxyTarget,
+          changeOrigin: true,
+        },
         '/api': {
           target: apiProxyTarget,
           changeOrigin: true,

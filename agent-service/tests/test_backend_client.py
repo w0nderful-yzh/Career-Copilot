@@ -141,3 +141,82 @@ async def test_search_knowledge_passes_arguments():
         assert result["answer"] == "JVM 是 Java 虚拟机。"
     finally:
         await client.aclose()
+
+@pytest.mark.asyncio
+async def test_create_conversation():
+    """创建会话应 POST /api/agent/conversations 并返回会话项。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "code": 200,
+                "data": {"id": 3, "title": "新对话", "messageCount": 0},
+                "message": "success",
+            },
+        )
+
+    client = BackendClient(
+        base_url="http://test",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        conversation = await client.create_conversation()
+        assert conversation["id"] == 3
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_save_conversation_messages():
+    """保存消息应透传 role/content/blocks 到会话消息端点。"""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["json"] = request.read().decode()
+        return httpx.Response(200, json={"code": 200, "data": None, "message": "success"})
+
+    client = BackendClient(
+        base_url="http://test",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        await client.save_conversation_messages(
+            7,
+            [
+                {"role": "USER", "content": "你好", "blocks": None},
+                {
+                    "role": "ASSISTANT",
+                    "content": "你好呀",
+                    "blocks": '[{"type": "action", "route": "SETTINGS"}]',
+                },
+            ],
+        )
+        assert captured["url"].endswith("/api/agent/conversations/7/messages")
+        assert '"role":"USER"' in captured["json"]
+        assert '\\"type\\": \\"action\\"' in captured["json"]
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_save_conversation_messages_failure_raises():
+    """保存消息业务失败应抛 BusinessToolError。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"code": 13001, "data": None, "message": "对话不存在"}
+        )
+
+    client = BackendClient(
+        base_url="http://test",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(BusinessToolError) as exc_info:
+            await client.save_conversation_messages(999, [
+                {"role": "USER", "content": "hi", "blocks": None}
+            ])
+        assert exc_info.value.code == 13001
+    finally:
+        await client.aclose()

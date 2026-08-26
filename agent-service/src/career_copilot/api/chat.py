@@ -272,26 +272,77 @@ async def chat_stream(
     answerer: Annotated[Answerer, Depends(get_answerer)],
     backend: Annotated[BackendClient, Depends(get_backend_client)],
 ) -> StreamingResponse:
-    """SSE 流式入口：block → message_delta... → done / error，供 Copilot Workspace 使用。"""
+    """SSE 流式入口：block → message_delta... → done / error，供 Copilot Workspace 使用。
+
+    流式结束后若携带 conversation_id，则把本轮（用户消息 + 助手回复含 blocks）保存到 Java。
+    """
 
     async def event_stream() -> AsyncIterator[str]:
+        collected_blocks: list[dict[str, Any]] = []
+        collected_content: list[str] = []
         try:
             classification = await intent_router.classify(request.message)
             plan = await _build_plan(classification, request.message, answerer, backend)
             # 结构化块先于文本一次性产出，前端无需从 token 流中猜测块边界
             for block in plan.blocks:
+                collected_blocks.append(block.model_dump())
                 yield _sse({"type": "block", "payload": block.model_dump()})
             if plan.text is not None:
                 async for chunk in plan.text:
+                    collected_content.append(chunk)
                     yield _sse({"type": "message_delta", "payload": {"content": chunk}})
         except Exception:
             logger.exception("chat stream failed")
             yield _sse({"type": "error", "payload": {"message": "处理失败，请稍后重试"}})
         finally:
             yield _sse({"type": "done", "payload": {}})
+            # 持久化本轮消息：失败不影响流式响应，仅告警
+            await _persist_conversation_turn(
+                backend, request.conversation_id, request.message,
+                "".join(collected_content), collected_blocks,
+            )
 
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+async def _persist_conversation_turn(
+    backend: BackendClient,
+    conversation_id: str | int | None,
+    user_message: str,
+    assistant_content: str,
+    assistant_blocks: list[dict[str, Any]],
+) -> None:
+    """把一轮对话（用户消息 + 助手回复）保存到 Java conversation 模块。
+
+    无 conversation_id 或内容为空时跳过；保存失败仅告警（对话可用性优先）。
+    blocks 以 JSON 字符串持久化，与 Java AgentMessageEntity.blocks 列对齐。
+    """
+    if conversation_id is None or not user_message:
+        return
+    try:
+        conversation_id_int = int(conversation_id)
+    except (TypeError, ValueError):
+        logger.warning("conversation_id 非法，跳过持久化: %s", conversation_id)
+        return
+
+    blocks_json = json.dumps(assistant_blocks, ensure_ascii=False) if assistant_blocks else None
+    try:
+        await backend.save_conversation_messages(
+            conversation_id_int,
+            [
+                {"role": "USER", "content": user_message, "blocks": None},
+                {"role": "ASSISTANT", "content": assistant_content, "blocks": blocks_json},
+            ],
+        )
+        logger.info("conversation turn persisted: id=%s", conversation_id)
+    except BusinessToolError as exc:
+        logger.warning(
+            "conversation turn persist failed: id=%s code=%s message=%s",
+            conversation_id, exc.code, exc.message,
+        )
+    except Exception:
+        logger.exception("conversation turn persist unexpected error: id=%s", conversation_id)

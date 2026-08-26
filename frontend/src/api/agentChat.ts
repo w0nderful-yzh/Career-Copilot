@@ -1,20 +1,26 @@
-import type { StreamEvent } from '../types/copilot';
+import request from './request';
+import type {
+  ConversationDetail,
+  ConversationItem,
+  StreamEvent,
+} from '../types/copilot';
 
 /**
  * 发送消息并消费 SSE 流式响应。
  *
  * 通过 AbortSignal 支持取消：取消后抛出 DOMException(AbortError)，
- * 由调用方决定如何标记消息状态。
+ * 由调用方决定如何标记消息状态。携带 conversation_id 时后端会在流式结束后持久化本轮消息。
  */
 export async function streamChat(
   message: string,
   onEvent: (event: StreamEvent) => void,
   signal: AbortSignal,
+  conversationId?: number,
 ): Promise<void> {
   const response = await fetch('/api/chat/stream', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, conversation_id: conversationId ?? null }),
     signal,
   });
 
@@ -51,3 +57,24 @@ export async function streamChat(
     }
   }
 }
+// ===== Copilot 会话管理（Java /api/agent/conversations） =====
+
+const conversationBase = '/api/agent/conversations';
+
+export const conversationApi = {
+  list: () => request.get<ConversationItem[]>(conversationBase),
+
+  create: () => request.post<ConversationItem>(conversationBase, {}),
+
+  getDetail: (conversationId: number) =>
+    request.get<ConversationDetail>(`${conversationBase}/${conversationId}`),
+
+  rename: (conversationId: number, title: string) =>
+    request.put<void>(`${conversationBase}/${conversationId}/title`, { title }),
+
+  togglePin: (conversationId: number) =>
+    request.put<void>(`${conversationBase}/${conversationId}/pin`),
+
+  remove: (conversationId: number) =>
+    request.delete<void>(`${conversationBase}/${conversationId}`),
+};

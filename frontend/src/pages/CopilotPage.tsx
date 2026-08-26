@@ -1,11 +1,18 @@
-import { useCallback, useRef, useState } from 'react';
-import { streamChat } from '../api/agentChat';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { conversationApi, streamChat } from '../api/agentChat';
 import Composer from '../components/copilot/Composer';
 import MessageList from '../components/copilot/MessageList';
-import type { AgentBlock, CopilotMessage, StreamEvent } from '../types/copilot';
+import SessionSidebar from '../components/copilot/SessionSidebar';
+import type {
+  AgentBlock,
+  ConversationDetail,
+  ConversationItem,
+  CopilotMessage,
+  StreamEvent,
+} from '../types/copilot';
 
 // Copilot Workspace：Agent 对话工作台
-// 支持流式消息（SSE）、错误状态展示与取消请求
+// 支持会话持久化（Java System of Record）、流式消息、错误状态与取消请求
 
 let messageSeq = 0;
 function nextId(): string {
@@ -13,8 +20,34 @@ function nextId(): string {
   return `msg_${Date.now()}_${messageSeq}`;
 }
 
+/** 解析 Java 侧 blocks JSON 字符串为受控 Block 数组，解析失败返回空 */
+function parseBlocks(blocksJson: string | null): AgentBlock[] {
+  if (!blocksJson) return [];
+  try {
+    const parsed = JSON.parse(blocksJson);
+    return Array.isArray(parsed) ? (parsed as AgentBlock[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** 历史消息 → 前端消息模型 */
+function toCopilotMessages(detail: ConversationDetail): CopilotMessage[] {
+  return detail.messages.map((message) => ({
+    id: `saved_${message.id}`,
+    role: message.role === 'USER' ? 'user' : 'assistant',
+    content: message.content,
+    blocks: parseBlocks(message.blocks),
+    status: 'done',
+  }));
+}
+
 export default function CopilotPage() {
   const [messages, setMessages] = useState<CopilotMessage[]>([]);
+  const [conversations, setConversations] = useState<ConversationItem[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<number | null>(null);
+  const [loadingConversations, setLoadingConversations] = useState(true);
+  const [loadingHistory, setLoadingHistory] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -27,11 +60,78 @@ export default function CopilotPage() {
     [],
   );
 
+  const loadConversations = useCallback(async () => {
+    try {
+      const list = await conversationApi.list();
+      setConversations(list);
+    } catch (err) {
+      console.error('Failed to load conversations:', err);
+    } finally {
+      setLoadingConversations(false);
+    }
+  }, []);
+
+  // 进入页面：加载会话列表，并恢复最近一个会话
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const list = await conversationApi.list();
+        if (cancelled) return;
+        setConversations(list);
+        if (list.length > 0) {
+          await loadConversation(list[0].id);
+        }
+      } catch (err) {
+        console.error('Failed to restore conversation:', err);
+      } finally {
+        if (!cancelled) setLoadingConversations(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const loadConversation = useCallback(async (conversationId: number) => {
+    setLoadingHistory(true);
+    try {
+      const detail = await conversationApi.getDetail(conversationId);
+      setActiveConversationId(detail.id);
+      setMessages(toCopilotMessages(detail));
+    } catch (err) {
+      console.error('Failed to load conversation:', err);
+    } finally {
+      setLoadingHistory(false);
+    }
+  }, []);
+
+  const handleNewConversation = useCallback(() => {
+    setActiveConversationId(null);
+    setMessages([]);
+  }, []);
+
+  const handleDeleteConversation = useCallback(
+    async (conversationId: number) => {
+      const confirmed = window.confirm('确定删除这段对话吗？删除后不可恢复。');
+      if (!confirmed) return;
+      try {
+        await conversationApi.remove(conversationId);
+        setConversations((prev) => prev.filter((c) => c.id !== conversationId));
+        if (activeConversationId === conversationId) {
+          handleNewConversation();
+        }
+      } catch (err) {
+        console.error('Failed to delete conversation:', err);
+      }
+    },
+    [activeConversationId, handleNewConversation],
+  );
+
   const handleEvent = useCallback(
     (assistantId: string, event: StreamEvent) => {
       switch (event.type) {
         case 'block':
-          // 结构化块：按白名单类型追加
           updateMessage(assistantId, (message) => ({
             ...message,
             blocks: [...message.blocks, event.payload as unknown as AgentBlock],
@@ -63,6 +163,19 @@ export default function CopilotPage() {
 
   const send = useCallback(
     async (text: string) => {
+      // 无会话时先创建（Java System of Record）
+      let conversationId = activeConversationId;
+      if (conversationId === null) {
+        try {
+          const created = await conversationApi.create();
+          conversationId = created.id;
+          setActiveConversationId(created.id);
+          setConversations((prev) => [created, ...prev]);
+        } catch (err) {
+          console.error('Failed to create conversation:', err);
+        }
+      }
+
       const assistantId = nextId();
       setMessages((prev) => [
         ...prev,
@@ -74,9 +187,13 @@ export default function CopilotPage() {
       const controller = new AbortController();
       abortRef.current = controller;
       try {
-        await streamChat(text, (event) => handleEvent(assistantId, event), controller.signal);
+        await streamChat(
+          text,
+          (event) => handleEvent(assistantId, event),
+          controller.signal,
+          conversationId ?? undefined,
+        );
       } catch (err) {
-        // 取消请求：保留已生成内容，标记为完成；其他错误标记失败
         if (controller.signal.aborted) {
           updateMessage(assistantId, (message) => ({
             ...message,
@@ -92,9 +209,11 @@ export default function CopilotPage() {
       } finally {
         abortRef.current = null;
         setStreaming(false);
+        // 流式结束：刷新会话列表（消息数/标题/时间更新）
+        loadConversations();
       }
     },
-    [handleEvent, updateMessage],
+    [activeConversationId, handleEvent, loadConversations, updateMessage],
   );
 
   const cancel = useCallback(() => {
@@ -102,19 +221,36 @@ export default function CopilotPage() {
   }, []);
 
   return (
-    <div className="flex h-[calc(100vh-1px)] flex-col">
-      <header className="border-b border-slate-200 bg-white/80 px-6 py-3 backdrop-blur dark:border-slate-700 dark:bg-slate-900/80">
-        <div className="mx-auto flex w-full max-w-3xl items-center justify-between">
-          <h1 className="text-sm font-bold text-slate-800 dark:text-white">Career Copilot</h1>
-          <span className="text-xs text-slate-400 dark:text-slate-500">Agent 工作台</span>
-        </div>
-      </header>
+    <div className="flex h-[calc(100vh-1px)]">
+      <SessionSidebar
+        conversations={conversations}
+        activeConversationId={activeConversationId}
+        loading={loadingConversations}
+        onNew={handleNewConversation}
+        onSelect={loadConversation}
+        onDelete={handleDeleteConversation}
+      />
 
-      <main className="flex-1 overflow-y-auto bg-slate-50/50 dark:bg-slate-900/50">
-        <MessageList messages={messages} />
-      </main>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="border-b border-slate-200 bg-white/80 px-6 py-3 backdrop-blur dark:border-slate-700 dark:bg-slate-900/80">
+          <div className="mx-auto flex w-full max-w-3xl items-center justify-between">
+            <h1 className="text-sm font-bold text-slate-800 dark:text-white">Career Copilot</h1>
+            <span className="text-xs text-slate-400 dark:text-slate-500">Agent 工作台</span>
+          </div>
+        </header>
 
-      <Composer streaming={streaming} onSend={send} onCancel={cancel} />
+        <main className="flex-1 overflow-y-auto bg-slate-50/50 dark:bg-slate-900/50">
+          {loadingHistory ? (
+            <div className="flex h-full items-center justify-center text-sm text-slate-400">
+              加载对话中…
+            </div>
+          ) : (
+            <MessageList messages={messages} />
+          )}
+        </main>
+
+        <Composer streaming={streaming} onSend={send} onCancel={cancel} />
+      </div>
     </div>
   );
 }

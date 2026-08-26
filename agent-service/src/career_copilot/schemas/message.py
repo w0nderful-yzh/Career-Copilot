@@ -13,7 +13,9 @@ class ChatRequest(BaseModel):
     """用户发送给 Copilot 的消息。"""
 
     message: str = Field(min_length=1, max_length=4000, description="用户消息")
-    conversation_id: str | None = Field(default=None, description="会话 ID（可选）")
+    conversation_id: str | int | None = Field(
+        default=None, description="会话 ID（Java conversation 主键，前端传数字）"
+    )
 
 
 class TextBlock(BaseModel):

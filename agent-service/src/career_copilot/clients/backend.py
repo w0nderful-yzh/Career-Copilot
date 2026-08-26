@@ -117,5 +117,65 @@ class BackendClient:
         data = body.get("data")
         return data if isinstance(data, dict) else {}
 
+    async def create_conversation(self) -> dict[str, Any]:
+        """创建 Copilot 对话会话，返回会话列表项（含 id）。"""
+        data = await self._post_plain("/api/agent/conversations", payload={})
+        return data if isinstance(data, dict) else {}
+
+    async def list_conversations(self) -> list[dict[str, Any]]:
+        """Copilot 会话列表（置顶优先、按更新时间倒序）。"""
+        try:
+            response = await self._client.get("/api/agent/conversations")
+        except httpx.HTTPError as exc:
+            raise BusinessToolError(500, f"后端服务不可达: {exc}", retryable=True) from exc
+        body = self._unwrap_result(response)
+        data = body.get("data")
+        return data if isinstance(data, list) else []
+
+    async def save_conversation_messages(
+        self,
+        conversation_id: int,
+        messages: list[dict[str, Any]],
+    ) -> None:
+        """保存一轮消息（USER + ASSISTANT，含 blocks JSON）。
+
+        由 Agent 在流式结束后调用；保存失败不影响流式响应（上层仅告警）。
+        """
+        payload = {
+            "messages": [
+                {
+                    "role": message.get("role"),
+                    "content": message.get("content") or "",
+                    "blocks": message.get("blocks"),  # JSON 字符串或 None
+                }
+                for message in messages
+            ]
+        }
+        await self._post_plain(f"/api/agent/conversations/{conversation_id}/messages", payload)
+
+    async def _post_plain(self, path: str, payload: dict[str, Any]) -> Any:
+        """通用 POST：请求 Java 非 Tool 端点并解包 Result。"""
+        try:
+            response = await self._client.post(path, json=payload)
+        except httpx.HTTPError as exc:
+            raise BusinessToolError(500, f"后端服务不可达: {exc}", retryable=True) from exc
+        body = self._unwrap_result(response)
+        return body.get("data")
+
+    def _unwrap_result(self, response: httpx.Response) -> dict[str, Any]:
+        """解包 Java Result{code, message, data} 信封。"""
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise BusinessToolError(500, "后端返回非 JSON 响应", retryable=True) from exc
+        if not isinstance(body, dict):
+            raise BusinessToolError(500, "后端返回非对象响应", retryable=True)
+        if body.get("code") != 200:
+            raise BusinessToolError(
+                code=body.get("code", -1),
+                message=body.get("message", "后端业务错误"),
+            )
+        return body
+
     async def aclose(self) -> None:
         await self._client.aclose()

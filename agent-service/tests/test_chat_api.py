@@ -67,7 +67,11 @@ def setup_overrides(
 @pytest.fixture
 def backend_transport():
     def handler(request: httpx.Request) -> httpx.Response:
-        tool = request.url.path.rsplit("/", 1)[-1]
+        path = request.url.path
+        # 会话持久化路径：返回成功，避免流式测试触发保存时抛错
+        if path.startswith("/api/agent/conversations"):
+            return httpx.Response(200, json={"code": 200, "data": None, "message": "success"})
+        tool = path.rsplit("/", 1)[-1]
         data = {
             "get_resume_list": [{"id": 1, "filename": "resume.pdf", "latestScore": 82}],
             "get_interview_history": [{"sessionId": "s1", "skillId": "java-backend"}],
@@ -298,3 +302,57 @@ def test_chat_stream_knowledge_qa_emits_citations(backend_transport):
     assert citations[0]["payload"]["citations"][0]["knowledgeBaseId"] == 1
     deltas = [e["payload"]["content"] for e in events if e["type"] == "message_delta"]
     assert "".join(deltas) == "JVM 是 Java 虚拟机。"
+
+
+def test_chat_stream_persists_turn_with_conversation_id():
+    """携带 conversation_id 时，流式结束后应保存本轮消息到 Java。"""
+    saved: list[dict] = []
+
+    def tracking_handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.startswith("/api/agent/conversations"):
+            import json as _json
+
+            saved.append(_json.loads(request.read().decode()))
+            return httpx.Response(
+                200, json={"code": 200, "data": None, "message": "success"}
+            )
+        tool = path.rsplit("/", 1)[-1]
+        return httpx.Response(
+            200,
+            json={
+                "code": 200,
+                "data": {"tool": tool, "data": []},
+                "message": "success",
+            },
+        )
+
+    client = setup_overrides(
+        IntentClassification(intent=Intent.GENERAL_CHAT), tracking_handler
+    )
+    with client.stream(
+        "POST",
+        "/api/chat/stream",
+        json={"message": "你好", "conversation_id": "5"},
+    ) as response:
+        events = _parse_sse("".join(response.iter_text()))
+
+    assert events[-1]["type"] == "done"
+    assert len(saved) == 1, "应保存一次消息"
+    payload = saved[0]["messages"]
+    assert payload[0]["role"] == "USER"
+    assert payload[0]["content"] == "你好"
+    assert payload[1]["role"] == "ASSISTANT"
+    assert payload[1]["content"] == "fake answer"
+
+
+def test_chat_stream_skips_persist_without_conversation_id(backend_transport):
+    """无 conversation_id 时不应触发保存。"""
+    client = setup_overrides(
+        IntentClassification(intent=Intent.GENERAL_CHAT), backend_transport
+    )
+    with client.stream(
+        "POST", "/api/chat/stream", json={"message": "你好"}
+    ) as response:
+        events = _parse_sse("".join(response.iter_text()))
+    assert events[-1]["type"] == "done"

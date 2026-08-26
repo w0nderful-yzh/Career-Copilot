@@ -70,6 +70,32 @@ export interface CopilotMessage {
   error?: string;
 }
 
+// Copilot 对话会话（Java System of Record）
+export interface ConversationItem {
+  id: number;
+  title: string;
+  messageCount: number;
+  isPinned: boolean;
+  updatedAt: string;
+}
+
+export interface ConversationMessage {
+  id: number;
+  role: 'USER' | 'ASSISTANT';
+  content: string;
+  blocks: string | null; // JSON 字符串（结构化 Block 数组）
+  createdAt: string;
+}
+
+export interface ConversationDetail {
+  id: number;
+  title: string;
+  isPinned: boolean;
+  messages: ConversationMessage[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 // SSE 流式事件（与 Python StreamEvent 协议一致）
 export type StreamEvent =
   | { type: 'block'; payload: Record<string, unknown> }

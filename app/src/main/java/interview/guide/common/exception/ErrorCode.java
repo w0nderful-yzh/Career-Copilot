@@ -85,7 +85,11 @@ public enum ErrorCode {
 
     // ========== Agent Tool 模块错误 12xxx ==========
     AGENT_TOOL_NOT_FOUND(12001, "Agent Tool 不存在"),
-    AGENT_TOOL_ARGUMENT_INVALID(12002, "Agent Tool 参数无效");
+    AGENT_TOOL_ARGUMENT_INVALID(12002, "Agent Tool 参数无效"),
+
+    // ========== Copilot 对话模块错误 13xxx ==========
+    CONVERSATION_NOT_FOUND(13001, "对话不存在"),
+    CONVERSATION_MESSAGE_INVALID(13002, "对话消息参数无效");
 
     private final Integer code;
     private final String message;

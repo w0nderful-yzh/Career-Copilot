@@ -35,3 +35,4 @@ agent-service/**/__pycache__/
 agent-service/.ruff_cache/
 agent-service/.mypy_cache/
 agent-service/.pytest_cache/
+.dev-logs/

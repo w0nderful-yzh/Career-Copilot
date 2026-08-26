@@ -8,7 +8,7 @@ from enum import StrEnum
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class Intent(StrEnum):
@@ -21,19 +21,28 @@ class Intent(StrEnum):
     NAVIGATION = "NAVIGATION"  # 建议跳转到业务页面
 
 
-class NavigationRoute(StrEnum):
-    """导航目标路由 key，由前端映射到真实路由，禁止 LLM 输出任意 URL。"""
+class ActionRoute(StrEnum):
+    """动作白名单路由 key，由前端映射到真实路由，禁止 LLM 输出任意 URL。"""
 
     RESUME_UPLOAD = "RESUME_UPLOAD"
     INTERVIEW_CREATE = "INTERVIEW_CREATE"
     INTERVIEW_HISTORY = "INTERVIEW_HISTORY"
+    KNOWLEDGE_BASE = "KNOWLEDGE_BASE"
+    KNOWLEDGE_CHAT = "KNOWLEDGE_CHAT"
+    SETTINGS = "SETTINGS"
 
 
 class IntentClassification(BaseModel):
     """意图分类的结构化输出。"""
 
     intent: Intent
-    navigation_route: NavigationRoute | None = None
+    action_route: ActionRoute | None = None
+
+    @field_validator("action_route", mode="before")
+    @classmethod
+    def blank_route_to_none(cls, value: Any) -> Any:
+        """DeepSeek 等模型对非导航意图可能输出空字符串路由，归一为 None 避免枚举校验失败。"""
+        return value or None
 
 
 INTENT_SYSTEM_PROMPT = """你是 Career Copilot 的意图识别器。
@@ -44,12 +53,15 @@ INTENT_SYSTEM_PROMPT = """你是 Career Copilot 的意图识别器。
 - KNOWLEDGE_QA：询问技术知识概念（如 JVM、Redis、算法），需要知识库回答
 - NAVIGATION：用户想直接开始某项操作（如开始面试、上传简历），适合跳转页面
 
-如果意图是 NAVIGATION，必须同时从以下路由中选择一个：
+如果意图是 NAVIGATION，必须同时从以下白名单路由中选择一个：
 - RESUME_UPLOAD：上传简历
 - INTERVIEW_CREATE：创建/开始模拟面试
 - INTERVIEW_HISTORY：查看面试历史
+- KNOWLEDGE_BASE：管理知识库
+- KNOWLEDGE_CHAT：知识库问答助手
+- SETTINGS：系统设置
 
-只输出结构化结果，不要输出任何额外文本。"""
+只输出 json 对象（{"intent": "...", "action_route": "..."}），不要输出任何额外文本。"""
 
 
 class IntentRouter:
@@ -59,9 +71,12 @@ class IntentRouter:
     """
 
     def __init__(self, model: Any) -> None:
-        # with_structured_output 返回包装后的 Runnable，保证输出符合 IntentClassification
+        # with_structured_output 返回包装后的 Runnable，保证输出符合 IntentClassification。
+        # 使用 json_mode：兼容 DeepSeek 等仅支持 response_format=json_object 的 OpenAI 兼容服务
         # model 为 duck typing 的 ChatModel，测试可注入 fake
-        self._structured = model.with_structured_output(IntentClassification)
+        self._structured = model.with_structured_output(
+            IntentClassification, method="json_mode"
+        )
 
     async def classify(self, message: str) -> IntentClassification:
         result = await self._structured.ainvoke(

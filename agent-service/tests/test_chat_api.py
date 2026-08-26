@@ -8,9 +8,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from career_copilot.agent.router import (
+    ActionRoute,
     Intent,
     IntentClassification,
-    NavigationRoute,
 )
 from career_copilot.api import chat as chat_module
 from career_copilot.api.chat import (
@@ -20,7 +20,7 @@ from career_copilot.api.chat import (
 )
 from career_copilot.clients.backend import BackendClient, BusinessToolError
 from career_copilot.main import app
-from career_copilot.schemas.message import NavigationBlock
+from career_copilot.schemas.message import ActionBlock
 
 
 class FakeIntentRouter:
@@ -34,10 +34,14 @@ class FakeIntentRouter:
 
 
 class FakeAnswerer:
-    """返回固定文本的回答器。"""
+    """返回固定文本的回答器，支持同步与流式两种调用。"""
 
     async def answer(self, message: str, context: str | None = None) -> str:
         return "fake answer"
+
+    async def answer_stream(self, message: str, context: str | None = None):
+        for char in "fake answer":
+            yield char
 
 
 def setup_overrides(
@@ -68,7 +72,11 @@ def backend_transport():
             "get_resume_list": [{"id": 1, "filename": "resume.pdf", "latestScore": 82}],
             "get_interview_history": [{"sessionId": "s1", "skillId": "java-backend"}],
             "list_knowledge_bases": [{"id": 1, "name": "Java 知识库"}],
-            "search_knowledge": {"answer": "JVM 是 Java 虚拟机。"},
+            "search_knowledge": {
+                "answer": "JVM 是 Java 虚拟机。",
+                "knowledgeBaseId": 1,
+                "knowledgeBaseName": "Java 知识库",
+            },
         }.get(tool, [])
         return httpx.Response(200, json={"code": 200, "data": data, "message": "success"})
 
@@ -84,7 +92,8 @@ def test_general_chat_returns_answer(backend_transport):
     assert response.status_code == 200
     body = response.json()
     assert body["content"] == "fake answer"
-    assert body["blocks"][0]["type"] == "text"
+    # GENERAL_CHAT 无结构化块，纯文本
+    assert body["blocks"] == []
 
 
 def test_resume_query_with_resumes(backend_transport):
@@ -117,7 +126,7 @@ def test_resume_query_empty_returns_navigation(backend_transport):
     body = response.json()
     blocks = body["blocks"]
     assert any(
-        isinstance(block, NavigationBlock) or block.get("type") == "navigation"
+        isinstance(block, ActionBlock) or block.get("type") == "action"
         for block in blocks
     )
 
@@ -141,7 +150,7 @@ def test_interview_review_empty_returns_navigation(backend_transport):
     response = client.post("/api/chat", json={"message": "我面试得怎么样"})
     body = response.json()
     assert any(
-        block.get("type") == "navigation"
+        block.get("type") == "action"
         and block.get("route") == "INTERVIEW_CREATE"
         for block in body["blocks"]
     )
@@ -157,20 +166,20 @@ def test_knowledge_qa_returns_rag_answer(backend_transport):
     assert response.json()["content"] == "JVM 是 Java 虚拟机。"
 
 
-def test_navigation_returns_navigation_block(backend_transport):
-    """NAVIGATION 应返回对应路由的导航块。"""
+def test_navigation_returns_action_block(backend_transport):
+    """NAVIGATION 应返回白名单路由的动作块。"""
     client = setup_overrides(
         IntentClassification(
             intent=Intent.NAVIGATION,
-            navigation_route=NavigationRoute.INTERVIEW_CREATE,
+            action_route=ActionRoute.INTERVIEW_CREATE,
         ),
         backend_transport,
     )
     response = client.post("/api/chat", json={"message": "给我来场模拟面试"})
     body = response.json()
-    assert body["blocks"][1]["type"] == "navigation"
-    assert body["blocks"][1]["route"] == "INTERVIEW_CREATE"
-    assert body["blocks"][1]["label"] == "开始模拟面试"
+    assert body["blocks"][0]["type"] == "action"
+    assert body["blocks"][0]["route"] == "INTERVIEW_CREATE"
+    assert body["blocks"][0]["label"] == "开始模拟面试"
 
 # ===== Agent LLM 配置同步 =====
 
@@ -221,3 +230,71 @@ async def test_sync_agent_llm_config_failure_falls_back(monkeypatch):
     monkeypatch.setattr(chat_module, "BackendClient", FailingClient)
     await chat_module.sync_agent_llm_config()
     assert chat_module._agent_llm_config is None
+
+
+# ===== SSE 流式端点 =====
+
+
+def _parse_sse(stream_text: str) -> list[dict]:
+    """解析 SSE data 行，返回事件列表。"""
+    events = []
+    for line in stream_text.splitlines():
+        if line.startswith("data: "):
+            import json
+
+            events.append(json.loads(line[len("data: "):]))
+    return events
+
+
+def test_chat_stream_general_chat(backend_transport):
+    """GENERAL_CHAT 流式：message_delta 逐字 + done 结尾。"""
+    client = setup_overrides(
+        IntentClassification(intent=Intent.GENERAL_CHAT), backend_transport
+    )
+    with client.stream("POST", "/api/chat/stream", json={"message": "你好"}) as response:
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        events = _parse_sse("".join(response.iter_text()))
+
+    deltas = [e["payload"]["content"] for e in events if e["type"] == "message_delta"]
+    assert "".join(deltas) == "fake answer"
+    assert events[-1]["type"] == "done"
+    assert not any(e["type"] == "error" for e in events)
+
+
+def test_chat_stream_resume_query_emits_block(backend_transport):
+    """RESUME_QUERY 流式：先 block（resume_summary）后文本增量。"""
+    client = setup_overrides(
+        IntentClassification(intent=Intent.RESUME_QUERY), backend_transport
+    )
+    with client.stream(
+        "POST", "/api/chat/stream", json={"message": "我的简历怎么样"}
+    ) as response:
+        events = _parse_sse("".join(response.iter_text()))
+
+    block_events = [e for e in events if e["type"] == "block"]
+    assert block_events, "应产出 block 事件"
+    assert block_events[0]["payload"]["type"] == "resume_summary"
+    assert block_events[0]["payload"]["resumes"][0]["id"] == 1
+    deltas = [e["payload"]["content"] for e in events if e["type"] == "message_delta"]
+    assert "".join(deltas) == "fake answer"
+
+
+def test_chat_stream_knowledge_qa_emits_citations(backend_transport):
+    """KNOWLEDGE_QA 流式：产出 knowledge_citations 引用块。"""
+    client = setup_overrides(
+        IntentClassification(intent=Intent.KNOWLEDGE_QA), backend_transport
+    )
+    with client.stream(
+        "POST", "/api/chat/stream", json={"message": "JVM GC 是什么"}
+    ) as response:
+        events = _parse_sse("".join(response.iter_text()))
+
+    citations = [
+        e for e in events
+        if e["type"] == "block" and e["payload"]["type"] == "knowledge_citations"
+    ]
+    assert citations
+    assert citations[0]["payload"]["citations"][0]["knowledgeBaseId"] == 1
+    deltas = [e["payload"]["content"] for e in events if e["type"] == "message_delta"]
+    assert "".join(deltas) == "JVM 是 Java 虚拟机。"

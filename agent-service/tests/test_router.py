@@ -3,10 +3,10 @@
 import pytest
 
 from career_copilot.agent.router import (
+    ActionRoute,
     Intent,
     IntentClassification,
     IntentRouter,
-    NavigationRoute,
 )
 from tests.conftest import make_fake_model
 
@@ -50,13 +50,13 @@ async def test_classify_knowledge_qa():
 
 @pytest.mark.asyncio
 async def test_classify_navigation_with_route():
-    """开始面试意图应分类为 NAVIGATION 且附带 INTERVIEW_CREATE 路由。"""
+    """开始面试意图应分类为 NAVIGATION 且附带 INTERVIEW_CREATE 白名单路由。"""
     fake = make_fake_model(
         IntentClassification(
             intent=Intent.NAVIGATION,
-            navigation_route=NavigationRoute.INTERVIEW_CREATE,
+            action_route=ActionRoute.INTERVIEW_CREATE,
         )
     )
     result = await classify_with(fake, "给我来场模拟面试")
     assert result.intent == Intent.NAVIGATION
-    assert result.navigation_route == NavigationRoute.INTERVIEW_CREATE
+    assert result.action_route == ActionRoute.INTERVIEW_CREATE

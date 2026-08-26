@@ -8,7 +8,7 @@ from career_copilot.clients.backend import BackendClient, BusinessToolError
 
 @pytest.mark.asyncio
 async def test_call_tool_unwraps_result(mock_backend_transport):
-    """正常调用应解包 Result 信封并返回 data。"""
+    """正常调用应解包 Result 与 ToolResponse 双层信封并返回业务数据。"""
     client = BackendClient(
         base_url="http://test",
         transport=httpx.MockTransport(mock_backend_transport),

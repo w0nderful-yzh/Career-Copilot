@@ -23,16 +23,24 @@ class FakeStructuredModel:
 
 
 class FakeChatModel:
-    """模拟普通 ChatModel：返回预设文本，不触发任何网络调用。"""
+    """模拟普通 ChatModel：返回预设文本，不触发任何网络调用。
+
+    同时支持 ainvoke（同步回答）与 astream（流式回答，按字产出 chunk），
+    使 Answerer 的同步/流式路径都能被测试覆盖。
+    """
 
     def __init__(self, text: str = "fake answer") -> None:
         self._text = text
 
-    def with_structured_output(self, schema) -> FakeStructuredModel:
+    def with_structured_output(self, schema, **kwargs) -> FakeStructuredModel:
         return FakeStructuredModel(self._classification)
 
     async def ainvoke(self, messages: list):
         return FakeChatResult(self._text)
+
+    async def astream(self, messages: list):
+        for char in self._text:
+            yield FakeChatResult(char)
 
 
 class FakeChatResult:
@@ -58,7 +66,7 @@ def fake_classification() -> IntentClassification:
 
 @pytest.fixture
 def mock_backend_transport() -> Callable[[httpx.Request], httpx.Response]:
-    """Mock Java /api/agent/tools 统一入口：按 Tool 名返回预设数据。"""
+    """Mock Java /api/agent/tools 统一入口：按 Tool 名返回 ToolResponse 信封。"""
 
     def handler(request: httpx.Request) -> httpx.Response:
         tool = request.url.path.rsplit("/", 1)[-1]
@@ -75,9 +83,20 @@ def mock_backend_transport() -> Callable[[httpx.Request], httpx.Response]:
                 },
             ],
             "list_knowledge_bases": [{"id": 1, "name": "Java 知识库"}],
-            "search_knowledge": {"answer": "JVM 是 Java 虚拟机。", "knowledgeBaseId": 1},
+            "search_knowledge": {
+                "answer": "JVM 是 Java 虚拟机。",
+                "knowledgeBaseId": 1,
+                "knowledgeBaseName": "Java 知识库",
+            },
         }.get(tool, [])
-        return httpx.Response(200, json={"code": 200, "data": data, "message": "success"})
+        return httpx.Response(
+            200,
+            json={
+                "code": 200,
+                "data": {"tool": tool, "data": data},
+                "message": "success",
+            },
+        )
 
     return handler
 

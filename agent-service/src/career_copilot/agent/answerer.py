@@ -1,5 +1,6 @@
 """基于上下文生成用户可读的自然语言回复。"""
 
+from collections.abc import AsyncIterator
 from typing import Any
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
@@ -18,10 +19,20 @@ class Answerer:
     def __init__(self, model: Any) -> None:
         self._model = model
 
-    async def answer(self, message: str, context: str | None = None) -> str:
+    def _build_messages(self, message: str, context: str | None = None) -> list[BaseMessage]:
         messages: list[BaseMessage] = [SystemMessage(content=ANSWER_SYSTEM_PROMPT)]
         if context:
             messages.append(HumanMessage(content=f"参考信息：\n{context}"))
         messages.append(HumanMessage(content=message))
-        response = await self._model.ainvoke(messages)
+        return messages
+
+    async def answer(self, message: str, context: str | None = None) -> str:
+        response = await self._model.ainvoke(self._build_messages(message, context))
         return str(response.content)
+
+    async def answer_stream(self, message: str, context: str | None = None) -> AsyncIterator[str]:
+        """流式回答：逐 chunk 产出文本增量，供 SSE message_delta 事件转发。"""
+        async for chunk in self._model.astream(self._build_messages(message, context)):
+            content = getattr(chunk, "content", None)
+            if isinstance(content, str) and content:
+                yield content

@@ -42,6 +42,7 @@ class BackendClient:
 
         Java 侧约定：HTTP 200 + Result{code, message, data}，
         code != 200 表示业务失败，需转为 BusinessToolError。
+        工具响应 data 为 ToolResponse{tool, data}，需再解包内层业务数据。
         """
         payload: dict[str, Any] = {"arguments": arguments or {}}
         try:
@@ -61,7 +62,11 @@ class BackendClient:
                 code=body.get("code", -1),
                 message=body.get("message", "后端业务错误"),
             )
-        return body.get("data")
+        data = body.get("data")
+        # 解包 ToolResponse 信封：{tool: str, data: 业务数据}
+        if isinstance(data, dict) and "tool" in data and "data" in data:
+            return data["data"]
+        return data
 
     async def list_resumes(self) -> list[dict[str, Any]]:
         """简历列表（含最新分析分数与面试次数）。"""

@@ -3,6 +3,7 @@ import {
   AlertCircle,
   BookOpenCheck,
   Bot,
+  Check,
   FileSearch,
   Loader2,
   MessagesSquare,
@@ -43,14 +44,26 @@ function AssistantContent({
           <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-300 [animation-delay:0.3s]" />
         </div>
       )}
-      {/* P1-2：工具执行轻量状态行 */}
-      {message.status === 'streaming' && message.activity && (
+      {/* P1-2：工具执行轨迹（每个已完成的工具依次保留，流式结束后整行隐藏） */}
+      {message.toolTrace && message.toolTrace.length > 0 && (
         <div
           data-testid="tool-activity"
-          className="flex items-center gap-1.5 text-xs text-slate-400 dark:text-slate-500"
+          className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-400 dark:text-slate-500"
         >
-          <Loader2 className="h-3 w-3 animate-spin" />
-          {message.activity}
+          {message.toolTrace.map((step, i) => {
+            const running = message.status === 'streaming' && i === message.toolTrace!.length - 1 && step.pending;
+            return (
+              <span key={`${step.label}-${i}`} className="inline-flex items-center gap-1">
+                {i > 0 && <span aria-hidden>·</span>}
+                {running ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Check className="h-3 w-3 text-emerald-500" />
+                )}
+                {step.label}
+              </span>
+            );
+          })}
         </div>
       )}
       {message.blocks.map((block, index) => (

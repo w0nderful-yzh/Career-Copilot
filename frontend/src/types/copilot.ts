@@ -81,6 +81,13 @@ export type AgentBlock =
 
 export type MessageStatus = 'streaming' | 'done' | 'error';
 
+/** P1-2 工具执行轨迹步骤（tool_started / tool_completed 驱动） */
+export interface ToolTraceStep {
+  label: string;
+  /** started 后未收到 completed 时为 true */
+  pending: boolean;
+}
+
 export interface CopilotMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -88,8 +95,8 @@ export interface CopilotMessage {
   blocks: AgentBlock[];
   status: MessageStatus;
   error?: string;
-  /** 正在执行的轻量状态行（tool_started / tool_completed / run_status 驱动） */
-  activity?: string | null;
+  /** 工具执行轨迹：依次累积，流式结束后整行保留（体现 Agent 实际执行步骤） */
+  toolTrace?: ToolTraceStep[];
 }
 
 // Copilot 对话会话（Java System of Record）

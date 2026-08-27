@@ -108,35 +108,52 @@ export default function CopilotPage() {
           updateMessage(assistantId, (message) => ({
             ...message,
             blocks: [...message.blocks, event.payload as unknown as AgentBlock],
-            // 有结构化产出后活动行不再有信息量
-            activity: null,
           }));
           break;
         case 'message_delta':
           updateMessage(assistantId, (message) => ({
             ...message,
             content: message.content + (event.payload.content ?? ''),
-            activity: null,
           }));
           break;
         case 'tool_started':
+          // 追加为 pending 步骤，轨迹整轮保留（体现 Agent 实际执行步骤）
           updateMessage(assistantId, (message) => ({
             ...message,
-            activity: event.payload.label ?? event.payload.tool,
+            toolTrace: [
+              ...(message.toolTrace ?? []),
+              { label: event.payload.label ?? event.payload.tool, pending: true },
+            ],
           }));
           break;
         case 'tool_completed':
-          updateMessage(assistantId, (message) => ({
-            ...message,
-            activity: null,
-          }));
+          updateMessage(assistantId, (message) => {
+            if (!message.toolTrace?.length) return message;
+            // 按顺序回填第一个未完成步骤为完成
+            const trace = [...message.toolTrace];
+            for (let i = 0; i < trace.length; i += 1) {
+              if (trace[i].pending) {
+                trace[i] = { ...trace[i], pending: false };
+                break;
+              }
+            }
+            return { ...message, toolTrace: trace };
+          });
           break;
         case 'run_status':
+          // WAITING_USER：附件选择等需用户决策的场景，置尾步骤完成提示等待
           if (event.payload.status === 'WAITING_USER') {
-            updateMessage(assistantId, (message) => ({
-              ...message,
-              activity: '等待你的选择…',
-            }));
+            updateMessage(assistantId, (message) => {
+              if (!message.toolTrace?.length) return message;
+              const trace = [...message.toolTrace];
+              for (let i = 0; i < trace.length; i += 1) {
+                if (trace[i].pending) {
+                  trace[i] = { ...trace[i], pending: false };
+                  break;
+                }
+              }
+              return { ...message, toolTrace: trace };
+            });
           }
           break;
         case 'error':
@@ -144,15 +161,20 @@ export default function CopilotPage() {
             ...message,
             status: 'error',
             error: event.payload.message ?? '处理失败，请稍后重试',
-            activity: null,
           }));
           break;
         case 'done':
-          updateMessage(assistantId, (message) => ({
-            ...message,
-            status: message.status === 'error' ? 'error' : 'done',
-            activity: null,
-          }));
+          updateMessage(assistantId, (message) => {
+            // 收尾时兜底清掉仍未完成的步骤 spinner
+            const trace = message.toolTrace?.map((s) =>
+              s.pending ? { ...s, pending: false } : s
+            );
+            return {
+              ...message,
+              status: message.status === 'error' ? 'error' : 'done',
+              toolTrace: trace,
+            };
+          });
           break;
       }
     },

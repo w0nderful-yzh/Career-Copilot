@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import FastAPI
 
 from career_copilot import __version__
+from career_copilot.agent.checkpointer import close_checkpointer, init_checkpointer
 from career_copilot.api.chat import router as chat_router
 from career_copilot.api.chat import sync_agent_llm_config
 from career_copilot.config import settings
@@ -16,10 +17,13 @@ logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 启动时从 Java 同步 Agent 模型配置（失败回落 .env，不阻断启动）
     await sync_agent_llm_config()
+    # 初始化 LangGraph Checkpoint（PostgreSQL）；失败回退无 checkpoint，不阻断启动
+    app.state.checkpointer = await init_checkpointer(settings.checkpoint_database_url)
     yield
+    await close_checkpointer(app.state.checkpointer)
 
 
 app = FastAPI(
@@ -35,8 +39,10 @@ app.include_router(chat_router)
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
+    checkpointer_ready = getattr(app.state, "checkpointer", None) is not None
     return {
         "status": "ok",
         "service": "career-copilot-agent-service",
         "backend_base_url": settings.backend_base_url,
+        "checkpointer": checkpointer_ready,
     }

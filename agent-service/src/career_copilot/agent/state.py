@@ -45,6 +45,10 @@ class CareerAgentState(TypedDict, total=False):
     active_job_id: int | None
     active_plan_id: int | None
 
+    # 短期记忆：会话历史（load_history 每轮从 Java 重载，权威来源）
+    history: list[dict[str, str]]  # 最近 N 轮 {role, content}
+    history_summary: str | None  # 窗口之外早期轮次的滚动摘要
+
     # Routing
     intent: str | None
     action_route: str | None

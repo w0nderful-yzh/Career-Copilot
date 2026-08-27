@@ -7,6 +7,7 @@ import interview.guide.modules.conversation.dto.CreateConversationRequest;
 import interview.guide.modules.conversation.dto.SaveMessagesRequest;
 import interview.guide.modules.conversation.dto.SaveMessagesRequest.MessagePayload;
 import interview.guide.modules.conversation.model.AgentConversationEntity;
+import interview.guide.modules.conversation.model.AgentMessageEntity;
 import interview.guide.modules.conversation.repository.AgentConversationRepository;
 import interview.guide.modules.conversation.repository.AgentMessageRepository;
 import java.util.List;
@@ -159,6 +160,72 @@ class AgentConversationServiceTest {
               new MessagePayload("USER", "hello", null)))))
           .isInstanceOf(BusinessException.class)
           .hasFieldOrPropertyWithValue("code", ErrorCode.CONVERSATION_NOT_FOUND.getCode());
+    }
+  }
+
+  @Nested
+  @DisplayName("会话上下文（短期记忆）")
+  class ConversationContext {
+
+    @Test
+    @DisplayName("返回最近消息正序与滚动摘要")
+    void returnsRecentMessagesAndSummary() {
+      AgentConversationEntity conversation = new AgentConversationEntity();
+      conversation.setId(20L);
+      conversation.setSummary("早期摘要");
+      when(conversationRepository.findByIdAndUserId(20L, "default"))
+          .thenReturn(Optional.of(conversation));
+
+      AgentMessageEntity userMessage = new AgentMessageEntity();
+      userMessage.setRole(AgentMessageEntity.MessageRole.USER);
+      userMessage.setContent("我目标 Java 后端");
+      AgentMessageEntity assistantMessage = new AgentMessageEntity();
+      assistantMessage.setRole(AgentMessageEntity.MessageRole.ASSISTANT);
+      assistantMessage.setContent("好的，我们开始准备");
+      // 仓储按倒序返回最近 N 条，服务层应反转为正序
+      when(messageRepository.findByConversationIdOrderByMessageOrderDesc(
+          anyLong(), any())).thenReturn(List.of(assistantMessage, userMessage));
+      when(messageRepository.countByConversationId(20L)).thenReturn(10L);
+
+      var context = conversationService.getConversationContext(20L, 8);
+
+      assertThat(context.summary()).isEqualTo("早期摘要");
+      assertThat(context.totalCount()).isEqualTo(10L);
+      assertThat(context.messages()).hasSize(2);
+      assertThat(context.messages().get(0).role()).isEqualTo("USER");
+      assertThat(context.messages().get(1).role()).isEqualTo("ASSISTANT");
+    }
+
+    @Test
+    @DisplayName("limit 被限制在 1-100 之间")
+    void clampsLimit() {
+      AgentConversationEntity conversation = new AgentConversationEntity();
+      conversation.setId(21L);
+      when(conversationRepository.findByIdAndUserId(21L, "default"))
+          .thenReturn(Optional.of(conversation));
+      when(messageRepository.findByConversationIdOrderByMessageOrderDesc(
+          anyLong(), any())).thenReturn(List.of());
+      when(messageRepository.countByConversationId(21L)).thenReturn(0L);
+
+      conversationService.getConversationContext(21L, 0);
+      conversationService.getConversationContext(21L, 999);
+
+      org.mockito.Mockito.verify(messageRepository, org.mockito.Mockito.times(2))
+          .findByConversationIdOrderByMessageOrderDesc(anyLong(), any());
+    }
+
+    @Test
+    @DisplayName("更新滚动摘要")
+    void updatesSummary() {
+      AgentConversationEntity conversation = new AgentConversationEntity();
+      conversation.setId(22L);
+      when(conversationRepository.findByIdAndUserId(22L, "default"))
+          .thenReturn(Optional.of(conversation));
+
+      conversationService.updateSummary(22L, "新摘要");
+
+      assertThat(conversation.getSummary()).isEqualTo("新摘要");
+      verify(conversationRepository).save(conversation);
     }
   }
 }

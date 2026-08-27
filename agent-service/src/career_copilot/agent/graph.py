@@ -18,6 +18,7 @@ from career_copilot.agent.nodes.business_tools import business_tools
 from career_copilot.agent.nodes.direct_answer import direct_answer
 from career_copilot.agent.nodes.execute_action import execute_action
 from career_copilot.agent.nodes.knowledge_tool import knowledge_tool
+from career_copilot.agent.nodes.load_history import load_history
 from career_copilot.agent.nodes.navigation_action import navigation_action
 from career_copilot.agent.nodes.normalize_input import normalize_input
 from career_copilot.agent.nodes.resolve_context import resolve_context
@@ -51,15 +52,18 @@ def route_by_intent(state: dict[str, Any]) -> str:
     return state.get("intent") or Intent.GENERAL_CHAT.value
 
 
-def build_graph(deps: GraphDeps) -> Any:
+def build_graph(deps: GraphDeps, checkpointer: Any = None) -> Any:
     """构造并编译 Copilot Turn Graph。
 
     依赖通过闭包注入（partial），每请求编译一次；测试可注入 fake 依赖。
+    checkpointer 为 LangGraph checkpoint（thread_id=conversation_id），
+    用于跨轮次持久化工作状态；None 表示不启用。
     """
     graph = StateGraph(CareerAgentState)
 
-    # 前置管线（确定性，不依赖外部服务）
+    # 前置管线（确定性）
     graph.add_node("normalize_input", normalize_input)
+    graph.add_node("load_history", partial(load_history, deps=deps))
     graph.add_node("resolve_context", resolve_context)
     graph.add_node("route_intent", partial(route_intent, deps=deps))
 
@@ -77,7 +81,8 @@ def build_graph(deps: GraphDeps) -> Any:
     graph.add_node("build_response", partial(build_response, deps=deps))
 
     graph.add_edge(START, "normalize_input")
-    graph.add_edge("normalize_input", "resolve_context")
+    graph.add_edge("normalize_input", "load_history")
+    graph.add_edge("load_history", "resolve_context")
     graph.add_edge("resolve_context", "route_intent")
 
     graph.add_conditional_edges("route_intent", route_by_intent, INTENT_BRANCHES)
@@ -86,7 +91,7 @@ def build_graph(deps: GraphDeps) -> Any:
         graph.add_edge(branch, "build_response")
     graph.add_edge("build_response", END)
 
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)
 
 
 def build_initial_state(

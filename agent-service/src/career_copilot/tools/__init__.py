@@ -71,6 +71,13 @@ async def summarize_resume_analysis(analysis: dict[str, Any]) -> str:
     return "该简历分析结果：\n" + "\n".join(lines)
 
 
+def format_resume_content(resume: dict[str, Any]) -> str:
+    """把 get_resume 返回的完整简历文本组装为 Prompt 片段（内容级分析/优化用）。"""
+    filename = resume.get("filename") or f"简历 #{resume.get('id')}"
+    text = resume.get("resumeText") or ""
+    return f"[简历内容：{filename}]\n{text}"
+
+
 async def summarize_interviews(history: list[dict[str, Any]], limit: int = 5) -> str:
     """把面试历史裁剪为摘要，避免完整列表塞入上下文。"""
     if not history:
@@ -92,3 +99,19 @@ async def resolve_knowledge_base_ids(client: BackendClient) -> list[int]:
         if kb_id is not None:
             ids.append(int(kb_id))
     return ids
+
+
+def format_history(
+    history: list[dict[str, str]], summary: str | None = None
+) -> str:
+    """把会话历史裁剪为适合放入 Prompt 的文本（角色 + 内容，正序）。"""
+    if not history and not summary:
+        return ""
+    lines: list[str] = []
+    if summary:
+        lines.append(f"[早期对话摘要] {summary}")
+    for item in history:
+        role = "用户" if item.get("role") == "USER" else "助手"
+        content = item.get("content") or ""
+        lines.append(f"{role}: {content}")
+    return "\n".join(lines)

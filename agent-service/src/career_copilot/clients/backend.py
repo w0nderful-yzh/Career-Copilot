@@ -82,6 +82,20 @@ class BackendClient:
         data = await self.call_tool("get_resume_analysis", {"resumeId": resume_id})
         return data if isinstance(data, dict) else {}
 
+    async def get_resume(
+        self, resume_id: int, max_chars: int | None = None
+    ) -> dict[str, Any]:
+        """获取指定简历的完整内容（解析文本）与元信息。
+
+        max_chars 由服务端截断（Token 纪律）；简历不存在抛
+        BusinessToolError（RESUME_NOT_FOUND）。
+        """
+        arguments: dict[str, Any] = {"resumeId": resume_id}
+        if max_chars is not None:
+            arguments["maxChars"] = max_chars
+        data = await self.call_tool("get_resume", arguments)
+        return data if isinstance(data, dict) else {}
+
     async def get_interview_history(self) -> list[dict[str, Any]]:
         """模拟面试历史列表。"""
         data = await self.call_tool("get_interview_history")
@@ -161,6 +175,37 @@ class BackendClient:
             ]
         }
         await self._post_plain(f"/api/agent/conversations/{conversation_id}/messages", payload)
+
+    async def get_conversation_context(
+        self, conversation_id: int, limit: int = 8
+    ) -> dict[str, Any]:
+        """拉取会话上下文：最近 N 条消息（role/content）+ 会话滚动摘要。
+
+        短期记忆权威来源是 Java（System of Record），checkpoint 重启后仍可恢复。
+        """
+        try:
+            response = await self._client.get(
+                f"/api/agent/conversations/{conversation_id}/context",
+                params={"limit": limit},
+            )
+        except httpx.HTTPError as exc:
+            raise BusinessToolError(500, f"后端服务不可达: {exc}", retryable=True) from exc
+        body = self._unwrap_result(response)
+        data = body.get("data")
+        return data if isinstance(data, dict) else {"messages": [], "summary": None}
+
+    async def update_conversation_summary(
+        self, conversation_id: int, summary: str
+    ) -> None:
+        """把会话滚动摘要写回 Java（短期记忆持久化，重启后可恢复）。"""
+        try:
+            response = await self._client.put(
+                f"/api/agent/conversations/{conversation_id}/summary",
+                json={"summary": summary},
+            )
+        except httpx.HTTPError as exc:
+            raise BusinessToolError(500, f"后端服务不可达: {exc}", retryable=True) from exc
+        self._unwrap_result(response)
 
     async def _post_plain(self, path: str, payload: dict[str, Any]) -> Any:
         """通用 POST：请求 Java 非 Tool 端点并解包 Result。"""

@@ -5,8 +5,16 @@ from typing import Any
 from career_copilot.agent.deps import GraphDeps
 from career_copilot.agent.plan import StreamPlan
 from career_copilot.agent.state import CareerAgentState
+from career_copilot.tools import format_history
 
 
 async def direct_answer(state: CareerAgentState, deps: GraphDeps) -> dict[str, Any]:
-    plan = StreamPlan(text=deps.answerer.answer_stream(state.get("message") or ""))
+    history = format_history(
+        state.get("history") or [], state.get("history_summary")
+    )
+    plan = StreamPlan(
+        text=deps.answerer.answer_stream(
+            state.get("message") or "", history=history or None
+        )
+    )
     return {"plan": plan}

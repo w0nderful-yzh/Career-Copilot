@@ -2,6 +2,7 @@ package interview.guide.modules.agenttool.service;
 
 import interview.guide.common.exception.BusinessException;
 import interview.guide.common.exception.ErrorCode;
+import interview.guide.common.model.AsyncTaskStatus;
 import interview.guide.modules.agenttool.dto.ToolInfoDTO;
 import interview.guide.modules.agenttool.dto.ToolResponse;
 import interview.guide.modules.agenttool.model.AgentToolPermission;
@@ -14,6 +15,8 @@ import interview.guide.modules.knowledgebase.model.QueryRequest;
 import interview.guide.modules.knowledgebase.model.QueryResponse;
 import interview.guide.modules.knowledgebase.service.KnowledgeBaseListService;
 import interview.guide.modules.knowledgebase.service.KnowledgeBaseQueryService;
+import interview.guide.modules.resume.model.ResumeContentDTO;
+import interview.guide.modules.resume.model.ResumeEntity;
 import interview.guide.modules.resume.service.ResumeHistoryService;
 import interview.guide.modules.resume.service.ResumePersistenceService;
 import java.util.List;
@@ -66,7 +69,7 @@ class AgentToolServiceTest {
     void listToolsReturnsAllReadOnlyTools() {
       List<ToolInfoDTO> tools = agentToolService.listTools();
 
-      assertThat(tools).hasSize(7);
+      assertThat(tools).hasSize(8);
       assertThat(tools)
           .extracting(ToolInfoDTO::permission)
           .containsOnly(AgentToolPermission.READ);
@@ -126,6 +129,53 @@ class AgentToolServiceTest {
       assertThat(response.tool()).isEqualTo("get_resume_analysis");
       assertThat(response.data()).isSameAs(analysis);
       verify(resumePersistenceService).getLatestAnalysisAsDTO(102L);
+    }
+
+    @Test
+    @DisplayName("get_resume 返回完整简历文本与元信息")
+    void getResumeReturnsContent() {
+      ResumeEntity resume = new ResumeEntity();
+      resume.setId(103L);
+      resume.setOriginalFilename("resume.pdf");
+      resume.setResumeText("姓名：张三\n项目经历：基于 LangGraph 的 Agent 平台");
+      resume.setAnalyzeStatus(AsyncTaskStatus.COMPLETED);
+      when(resumePersistenceService.findById(103L)).thenReturn(Optional.of(resume));
+
+      ToolResponse response = agentToolService.execute(
+          "get_resume", Map.of("resumeId", 103));
+
+      assertThat(response.tool()).isEqualTo("get_resume");
+      ResumeContentDTO content = (ResumeContentDTO) response.data();
+      assertThat(content.filename()).isEqualTo("resume.pdf");
+      assertThat(content.resumeText()).contains("基于 LangGraph 的 Agent 平台");
+      assertThat(content.analyzeStatus()).isEqualTo(AsyncTaskStatus.COMPLETED);
+    }
+
+    @Test
+    @DisplayName("get_resume 按 maxChars 服务端截断")
+    void getResumeTruncatesByMaxChars() {
+      ResumeEntity resume = new ResumeEntity();
+      resume.setId(104L);
+      resume.setOriginalFilename("resume.pdf");
+      resume.setResumeText("一二三四五六七八九十");
+      when(resumePersistenceService.findById(104L)).thenReturn(Optional.of(resume));
+
+      ToolResponse response = agentToolService.execute(
+          "get_resume", Map.of("resumeId", 104, "maxChars", 4));
+
+      ResumeContentDTO content = (ResumeContentDTO) response.data();
+      assertThat(content.resumeText()).isEqualTo("一二三四");
+    }
+
+    @Test
+    @DisplayName("get_resume 简历不存在抛 RESUME_NOT_FOUND")
+    void getResumeNotFoundFails() {
+      when(resumePersistenceService.findById(999L)).thenReturn(Optional.empty());
+
+      assertThatThrownBy(() -> agentToolService.execute(
+          "get_resume", Map.of("resumeId", 999)))
+          .isInstanceOf(BusinessException.class)
+          .hasFieldOrPropertyWithValue("code", ErrorCode.RESUME_NOT_FOUND.getCode());
     }
   }
 

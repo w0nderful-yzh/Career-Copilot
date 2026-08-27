@@ -15,6 +15,8 @@ import interview.guide.modules.knowledgebase.model.QueryRequest;
 import interview.guide.modules.knowledgebase.model.QueryResponse;
 import interview.guide.modules.knowledgebase.service.KnowledgeBaseListService;
 import interview.guide.modules.knowledgebase.service.KnowledgeBaseQueryService;
+import interview.guide.modules.resume.model.ResumeContentDTO;
+import interview.guide.modules.resume.model.ResumeEntity;
 import interview.guide.modules.resume.service.ResumeHistoryService;
 import interview.guide.modules.resume.service.ResumePersistenceService;
 import java.util.List;
@@ -38,6 +40,8 @@ public class AgentToolService {
   private static final Map<AgentToolName, String> INPUT_SCHEMAS = Map.ofEntries(
       Map.entry(AgentToolName.GET_RESUME_LIST, "{}"),
       Map.entry(AgentToolName.GET_RESUME_ANALYSIS, "{\"resumeId\": Long}"),
+      Map.entry(AgentToolName.GET_RESUME,
+          "{\"resumeId\": Long, \"maxChars\": Integer, optional}"),
       Map.entry(AgentToolName.GET_INTERVIEW_HISTORY, "{\"resumeId\": Long, optional}"),
       Map.entry(AgentToolName.GET_INTERVIEW_REPORT, "{\"sessionId\": String}"),
       Map.entry(AgentToolName.LIST_KNOWLEDGE_BASES, "{}"),
@@ -78,6 +82,7 @@ public class AgentToolService {
     return switch (tool) {
       case GET_RESUME_LIST -> executeGetResumeList();
       case GET_RESUME_ANALYSIS -> executeGetResumeAnalysis(arguments);
+      case GET_RESUME -> executeGetResume(arguments);
       case GET_INTERVIEW_HISTORY -> executeGetInterviewHistory(arguments);
       case GET_INTERVIEW_REPORT -> executeGetInterviewReport(arguments);
       case LIST_KNOWLEDGE_BASES -> executeListKnowledgeBases();
@@ -100,6 +105,33 @@ public class AgentToolService {
         .orElseThrow(() -> new BusinessException(ErrorCode.RESUME_ANALYSIS_NOT_FOUND,
             "简历分析结果不存在: resumeId=" + resumeId));
     return new ToolResponse(AgentToolName.GET_RESUME_ANALYSIS.getName(), analysis);
+  }
+
+  /**
+   * 简历完整内容：解析文本 + 元信息，供 Agent 做内容级分析与简历优化。
+   *
+   * <p>maxChars 可选，用于服务端截断（Token 纪律）；默认 20000 字符，
+   * 覆盖绝大多数简历文本长度。
+   */
+  private ToolResponse executeGetResume(Map<String, Object> arguments) {
+    Long resumeId = requireLong(arguments, "resumeId");
+    Integer maxChars = arguments.containsKey("maxChars")
+        ? requireInt(arguments, "maxChars")
+        : null;
+    ResumeEntity resume = resumePersistenceService.findById(resumeId)
+        .orElseThrow(() -> new BusinessException(
+            ErrorCode.RESUME_NOT_FOUND, "简历不存在: id=" + resumeId));
+
+    String text = resume.getResumeText();
+    if (text != null && maxChars != null && text.length() > maxChars) {
+      text = text.substring(0, Math.max(maxChars, 0));
+    }
+    return new ToolResponse(AgentToolName.GET_RESUME.getName(), new ResumeContentDTO(
+        resume.getId(),
+        resume.getOriginalFilename(),
+        text,
+        resume.getAnalyzeStatus(),
+        resume.getUploadedAt()));
   }
 
   /**
@@ -174,6 +206,23 @@ public class AgentToolService {
     Object value = arguments.get(key);
     if (value instanceof String text && !text.isBlank()) {
       return text;
+    }
+    throw new BusinessException(
+        ErrorCode.AGENT_TOOL_ARGUMENT_INVALID, "参数缺失或类型错误: " + key);
+  }
+
+  /** 提取 Integer 参数（兼容 JSON 数字与字符串两种形态） */
+  private Integer requireInt(Map<String, Object> arguments, String key) {
+    Object value = arguments.get(key);
+    if (value instanceof Number number) {
+      return number.intValue();
+    }
+    if (value instanceof String text) {
+      try {
+        return Integer.parseInt(text);
+      } catch (NumberFormatException e) {
+        // 非数字字符串，走下方统一参数错误
+      }
     }
     throw new BusinessException(
         ErrorCode.AGENT_TOOL_ARGUMENT_INVALID, "参数缺失或类型错误: " + key);

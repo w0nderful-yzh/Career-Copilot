@@ -194,7 +194,7 @@ async def test_graph_attachment_only_produces_choice(backend_transport):
 
 
 async def test_graph_action_routes_to_execute_action(backend_transport):
-    """Graph 端到端：action 提交 → execute_action → 确定性分发。"""
+    """Graph 端到端：action 提交 → execute_action → ANALYZE_RESUME 真实分析。"""
     deps, router = make_deps(
         IntentClassification(intent=Intent.GENERAL_CHAT), backend_transport
     )
@@ -211,13 +211,13 @@ async def test_graph_action_routes_to_execute_action(backend_transport):
     )
     result = await graph.ainvoke(state)
 
-    assert router.calls == 0
+    assert router.calls == 0, "action 提交应确定性路由，不经意图分类"
     plan = result["plan"]
+    # Copilot 内真实分析：产出 resume_summary 内容卡片而非跳转导航
     assert len(plan.blocks) == 1
     block = plan.blocks[0]
-    assert block.type == "action"
-    assert block.route == "RESUME_DETAIL"
-    assert block.params["resumeId"] == 9
+    assert block.type == "resume_summary"
+    assert block.resumes[0]["id"] == 9
 
 
 async def test_graph_text_routes_to_direct_answer(backend_transport):

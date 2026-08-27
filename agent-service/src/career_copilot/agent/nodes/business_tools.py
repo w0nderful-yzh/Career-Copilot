@@ -4,6 +4,7 @@
 PROFILE_QUERY / PREPARATION_QUERY 的 Tool（Java 侧）尚未开通，返回友好占位。
 """
 
+import asyncio
 from typing import Any, cast
 
 from career_copilot.agent.deps import GraphDeps
@@ -21,6 +22,10 @@ from career_copilot.tools import (
     summarize_interviews,
     summarize_resume_analysis,
 )
+
+# 新上传简历的分析异步就绪窗口：有限次重试（实测数秒内完成）
+ANALYSIS_RETRY_ATTEMPTS = 3
+ANALYSIS_RETRY_DELAY_SECONDS = 3.0
 
 
 async def business_tools(state: CareerAgentState, deps: GraphDeps) -> dict[str, Any]:
@@ -147,10 +152,21 @@ async def _plan_targeted_resume(
         state.get("history") or [], state.get("history_summary")
     )
     resume_id = state["active_resume_id"]
-    try:
-        emit_tool_started("resume_insight")
-        analysis = await backend.get_resume_analysis(resume_id)
-    except BusinessToolError:
+
+    # 新上传的简历分析异步完成（实测数秒内就绪），对未就绪做有限次退避重试，
+    # 避免用户在窗口期提问时只得到"后台分析中"而看不到内容
+    analysis: dict[str, Any] | None = None
+    for attempt in range(ANALYSIS_RETRY_ATTEMPTS):
+        try:
+            emit_tool_started("resume_insight")
+            analysis = await backend.get_resume_analysis(resume_id)
+            break
+        except BusinessToolError:
+            if attempt < ANALYSIS_RETRY_ATTEMPTS - 1:
+                await asyncio.sleep(ANALYSIS_RETRY_DELAY_SECONDS)
+    emit_tool_completed("resume_insight")
+
+    if analysis is None:
         return {
             "plan": StreamPlan(
                 text=static_text(
@@ -169,8 +185,6 @@ async def _plan_targeted_resume(
         context = f"{format_resume_content(resume)}\n\n{context}"
     except BusinessToolError:
         pass
-    finally:
-        emit_tool_completed("resume_insight")
 
     if context_note:
         context = f"{context}\n{context_note}"

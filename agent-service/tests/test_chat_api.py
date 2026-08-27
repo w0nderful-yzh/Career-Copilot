@@ -636,10 +636,14 @@ def test_chat_stream_with_action_routes_execute_action(backend_transport):
     assert events[-1]["type"] == "done"
     assert not any(e["type"] == "error" for e in events)
     blocks = [e["payload"] for e in events if e["type"] == "block"]
-    action_blocks = [b for b in blocks if b["type"] == "action"]
-    assert action_blocks, "应产出 action 块"
-    assert action_blocks[0]["route"] == "RESUME_DETAIL"
-    assert action_blocks[0]["params"]["resumeId"] == 9
+    # Copilot 内真实分析：产出 resume_summary 内容卡片而非跳转导航
+    summary_blocks = [b for b in blocks if b["type"] == "resume_summary"]
+    assert summary_blocks, "应产出 resume_summary 分析卡片"
+    assert summary_blocks[0]["resumes"][0]["id"] == 9
+    deltas = "".join(
+        e["payload"]["content"] for e in events if e["type"] == "message_delta"
+    )
+    assert deltas == "fake answer"
 
 
 def test_chat_stream_text_with_attachment_uses_llm_intent(backend_transport):

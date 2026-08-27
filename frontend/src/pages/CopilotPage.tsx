@@ -187,11 +187,14 @@ export default function CopilotPage() {
       userContent,
       attachments = [],
       action,
+      existingAssistantId,
     }: {
       message: string;
       userContent: string;
       attachments?: AttachmentRef[];
       action?: ActionSelected;
+      /** 附件上传等前置阶段已插入气泡时，复用该助手消息而非再追加 */
+      existingAssistantId?: string;
     }) => {
       // 无会话时先创建（Java System of Record），并同步到 Layout 会话列表。
       let conversationId = activeConversationId;
@@ -205,16 +208,26 @@ export default function CopilotPage() {
           selectConversation(created.id);
         } catch (err) {
           console.error('Failed to create conversation:', err);
+          if (existingAssistantId) {
+            updateMessage(existingAssistantId, (m) => ({
+              ...m,
+              status: 'error',
+              error: '会话创建失败，请稍后重试',
+            }));
+            return;
+          }
           return;
         }
       }
 
-      const assistantId = nextId();
-      setMessages((prev) => [
-        ...prev,
-        { id: nextId(), role: 'user', content: userContent, blocks: [], status: 'done' },
-        { id: assistantId, role: 'assistant', content: '', blocks: [], status: 'streaming' },
-      ]);
+      const assistantId = existingAssistantId ?? nextId();
+      if (!existingAssistantId) {
+        setMessages((prev) => [
+          ...prev,
+          { id: nextId(), role: 'user', content: userContent, blocks: [], status: 'done' },
+          { id: assistantId, role: 'assistant', content: '', blocks: [], status: 'streaming' },
+        ]);
+      }
       setStreaming(true);
 
       const controller = new AbortController();
@@ -256,37 +269,62 @@ export default function CopilotPage() {
 
   const send = useCallback(
     async (text: string, attachment?: File) => {
-      // 有附件（PDF 简历）时先上传到 Java 简历库（文件不经 Agent，只传资源 id）
-      let attachments: AttachmentRef[] = [];
-      if (attachment) {
-        try {
-          const result = await resumeUploadApi.uploadAndAnalyze(attachment);
-          const resumeId = result.storage?.resumeId;
-          if (!resumeId) {
-            throw new Error('上传成功但未返回简历 ID');
-          }
-          attachments = [{
-            kind: 'resume',
-            resumeId,
-            filename: attachment.name,
-            duplicate: result.duplicate ?? false,
-          }];
-        } catch (err) {
-          console.error('Failed to upload resume:', err);
-          // 上传失败：不发送，直接提示
-          window.alert('简历上传失败，请重试');
-          return;
-        }
-      }
-
       // 带附件时保留用户输入的文字，并把附件提示追加在其后（气泡与持久化历史保持一致）
-      const userContent = attachments.length > 0
-        ? (text ? `${text}\n[简历附件：${attachment?.name}]` : `上传了简历附件：${attachment?.name}`)
+      const userContent = attachment
+        ? (text ? `${text}\n[简历附件：${attachment.name}]` : `上传了简历附件：${attachment.name}`)
         : text;
 
-      await runTurn({ message: userContent, userContent, attachments });
+      if (!attachment) {
+        await runTurn({ message: userContent, userContent });
+        return;
+      }
+
+      // 乐观 UI：上传前先插入用户气泡与助手占位（活动行显示上传进度）
+      const assistantId = nextId();
+      setMessages((prev) => [
+        ...prev,
+        { id: nextId(), role: 'user', content: userContent, blocks: [], status: 'done' },
+        { id: assistantId, role: 'assistant', content: '', blocks: [], status: 'streaming', toolTrace: [{ label: '正在上传并解析简历…', pending: true }] },
+      ]);
+      setStreaming(true);
+
+      // 上传到 Java 简历库（文件不经 Agent，只传资源 id；分析异步进行）
+      let attachments: AttachmentRef[] = [];
+      try {
+        const result = await resumeUploadApi.uploadAndAnalyze(attachment);
+        const resumeId = result.storage?.resumeId;
+        if (!resumeId) {
+          throw new Error('上传成功但未返回简历 ID');
+        }
+        attachments = [{
+          kind: 'resume',
+          resumeId,
+          filename: attachment.name,
+          duplicate: result.duplicate ?? false,
+        }];
+      } catch (err) {
+        console.error('Failed to upload resume:', err);
+        updateMessage(assistantId, (m) => ({
+          ...m,
+          status: 'error',
+          error: err instanceof Error && err.message !== '请求失败'
+            ? `简历上传失败：${err.message}`
+            : '简历上传失败，请重试',
+          toolTrace: [],
+        }));
+        setStreaming(false);
+        return;
+      }
+
+      // 复用已插入的气泡继续本轮对话（SSE 分析在 Copilot 内完成）
+      await runTurn({
+        message: text || '请帮我分析这份简历',
+        userContent,
+        attachments,
+        existingAssistantId: assistantId,
+      });
     },
-    [runTurn],
+    [runTurn, updateMessage],
   );
 
   const submitAction = useCallback(

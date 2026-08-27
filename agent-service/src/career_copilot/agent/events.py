@@ -55,6 +55,11 @@ def emit_tool_started(tool_key: str) -> None:
     )
 
 
+def emit_tool_progress(tool_key: str, label: str) -> None:
+    """更新当前 pending 步骤的文案（如轮询等待中的第 N 次提示）。"""
+    _emit({"type": "tool_progress", "payload": {"tool": tool_key, "label": label}})
+
+
 def emit_tool_completed(tool_key: str) -> None:
     _emit({"type": "tool_completed", "payload": {"tool": tool_key}})
 

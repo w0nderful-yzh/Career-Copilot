@@ -8,7 +8,7 @@ import asyncio
 from typing import Any, cast
 
 from career_copilot.agent.deps import GraphDeps
-from career_copilot.agent.events import emit_tool_completed, emit_tool_started
+from career_copilot.agent.events import emit_tool_completed, emit_tool_progress, emit_tool_started
 from career_copilot.agent.plan import StreamPlan, static_text
 from career_copilot.agent.response import interview_summary_block, resume_summary_block
 from career_copilot.agent.router import ActionRoute, Intent
@@ -22,10 +22,6 @@ from career_copilot.tools import (
     summarize_interviews,
     summarize_resume_analysis,
 )
-
-# 新上传简历的分析异步就绪窗口：有限次重试（实测数秒内完成）
-ANALYSIS_RETRY_ATTEMPTS = 3
-ANALYSIS_RETRY_DELAY_SECONDS = 3.0
 
 
 async def business_tools(state: CareerAgentState, deps: GraphDeps) -> dict[str, Any]:
@@ -151,30 +147,48 @@ async def _plan_targeted_resume(
     history = format_history(
         state.get("history") or [], state.get("history_summary")
     )
-    resume_id = state["active_resume_id"]
+    # 上游 _plan_resume_query 保证 active_resume_id 非空才进入本路径
+    raw_resume_id = state["active_resume_id"]
+    assert raw_resume_id is not None
+    resume_id = int(raw_resume_id)
 
-    # 新上传的简历分析异步完成（实测数秒内就绪），对未就绪做有限次退避重试，
-    # 避免用户在窗口期提问时只得到"后台分析中"而看不到内容
+    # 新上传的简历分析异步完成（真实简历常需十余秒），在就绪窗口内轮询等待，
+    # 让用户本轮直接拿到分析结果；等待期通过 tool_progress 实时反馈进度。
     analysis: dict[str, Any] | None = None
-    for attempt in range(ANALYSIS_RETRY_ATTEMPTS):
+    attempts = settings.analysis_wait_attempts
+    delay = settings.analysis_wait_delay_seconds
+    emit_tool_started("resume_insight")
+    for attempt in range(attempts):
         try:
-            emit_tool_started("resume_insight")
             analysis = await backend.get_resume_analysis(resume_id)
             break
         except BusinessToolError:
-            if attempt < ANALYSIS_RETRY_ATTEMPTS - 1:
-                await asyncio.sleep(ANALYSIS_RETRY_DELAY_SECONDS)
+            # 分析尚未就绪。先探测状态：FAILED 直接诚实报错，避免白等整个窗口
+            status = await _resume_analyze_status(backend, resume_id)
+            if status == "FAILED":
+                break
+            if attempt >= attempts - 1:
+                break
+            emit_tool_progress(
+                "resume_insight",
+                f"正在等待简历分析完成…（{attempt + 1}/{attempts - 1}）",
+            )
+            await asyncio.sleep(delay)
     emit_tool_completed("resume_insight")
 
     if analysis is None:
-        return {
-            "plan": StreamPlan(
-                text=static_text(
-                    "这份简历还在后台分析中，分析完成后我会帮你解读。"
-                    "你可以先来一场模拟面试，或稍后再问我。"
-                )
+        status = await _resume_analyze_status(backend, resume_id)
+        if status == "FAILED":
+            hint = (
+                "这份简历的上次自动分析失败了。你可以在简历库中对该简历点击"
+                "「重新分析」，完成后再来问我，我会帮你解读。"
             )
-        }
+        else:
+            hint = (
+                "这份简历还在后台分析中（稍等片刻即可完成）。"
+                "你可以先来一场模拟面试，或过一会儿再问我，我会直接给你解读结果。"
+            )
+        return {"plan": StreamPlan(text=static_text(hint))}
 
     context = await summarize_resume_analysis(analysis)
     # 内容感知：读取完整简历文本（失败不阻断，回落纯摘要）
@@ -220,6 +234,19 @@ async def _plan_targeted_resume(
             text=deps.answerer.answer_stream(message, context, history or None),
         )
     }
+
+
+async def _resume_analyze_status(backend: Any, resume_id: int) -> str:
+    """探测简历分析状态（PENDING / PROCESSING / COMPLETED / FAILED，未知返回空串）。
+
+    通过 get_resume 的元信息（maxChars 很小）获取，避免拉全量文本。
+    """
+    try:
+        meta = await backend.get_resume(resume_id, max_chars=1)
+        return (meta.get("analyzeStatus") or "").upper()
+    except BusinessToolError:
+        # 简历读取不到（如已被删除）：返回空串，由上层按未就绪兜底
+        return ""
 
 
 def _attachment_filename(state: CareerAgentState) -> str | None:

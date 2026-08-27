@@ -40,5 +40,10 @@ class Settings(BaseSettings):
     # 简历内容注入上限（Agent 内容级分析 / 简历优化，Token 纪律）
     resume_context_max_chars: int = 8000
 
+    # 新上传简历的异步分析就绪窗口：分析未完成时有限次轮询
+    # 总等待 ≈ attempts × delay（默认约 48s），期间通过 tool_progress 事件向前端反馈
+    analysis_wait_attempts: int = 12
+    analysis_wait_delay_seconds: float = 4.0
+
 
 settings = Settings()

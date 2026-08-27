@@ -126,6 +126,20 @@ export default function CopilotPage() {
             ],
           }));
           break;
+        case 'tool_progress':
+          // 轮询等待等场景：原地更新最后一个 pending 步骤的文案（如「等待分析完成 3/11」）
+          updateMessage(assistantId, (message) => {
+            if (!message.toolTrace?.length) return message;
+            const trace = [...message.toolTrace];
+            for (let i = trace.length - 1; i >= 0; i -= 1) {
+              if (trace[i].pending) {
+                trace[i] = { ...trace[i], label: event.payload.label };
+                break;
+              }
+            }
+            return { ...message, toolTrace: trace };
+          });
+          break;
         case 'tool_completed':
           updateMessage(assistantId, (message) => {
             if (!message.toolTrace?.length) return message;

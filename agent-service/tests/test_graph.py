@@ -519,19 +519,158 @@ async def test_graph_resolves_bound_resume_without_attachment():
 
     assert result.get("active_resume_id") == 7
     assert "绑定简历的内容" in seen["context"], "无附件也应走内容感知路径"
+
+
+# ===== 新上传简历的分析就绪窗口：轮询等待 / 失败快速返回 =====
+
+
+async def test_graph_analysis_pending_waits_until_ready(monkeypatch):
+    """分析前两次未就绪、第三次成功时应轮询等待并最终给出真实解读。"""
+    from career_copilot.agent.nodes import business_tools as bt
+
+    monkeypatch.setattr(bt.settings, "analysis_wait_attempts", 5)
+    monkeypatch.setattr(bt.settings, "analysis_wait_delay_seconds", 0.01)
+
+    store: dict = {"calls": 0}
+    progress: list[str] = []
+
+    def flaky_handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/context"):
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "data": {"messages": [], "summary": None, "totalCount": 0},
+                    "message": "success",
+                },
+            )
+        tool = path.rsplit("/", 1)[-1]
+        if tool == "get_resume_analysis":
+            store["calls"] += 1
+            if store["calls"] < 3:
+                return httpx.Response(
+                    200,
+                    json={"code": 2008, "data": None, "message": "简历分析结果不存在"},
+                )
+            analysis = {
+                "overallScore": 74,
+                "scoreDetail": {},
+                "summary": "成熟",
+                "strengths": [],
+                "suggestions": [],
+            }
+            return httpx.Response(200, json={"code": 200, "data": analysis, "message": "success"})
+        data = {
+            "get_resume": {
+                "id": 1,
+                "filename": "a.pdf",
+                "resumeText": "正文",
+                "analyzeStatus": "PROCESSING",
+            }
+        }.get(tool, [])
+        return httpx.Response(200, json={"code": 200, "data": data, "message": "success"})
+
+    class CapAnswerer:
+        async def answer_stream(self, message, context=None, history=None):
+            yield context or ""
+
+        async def summarize_history(self, t):
+            return ""
+
+    deps = GraphDeps(
+        intent_router=FakeIntentRouter(IntentClassification(intent=Intent.RESUME_QUERY)),
+        answerer=CapAnswerer(),
+        backend=BackendClient(base_url="http://t", transport=httpx.MockTransport(flaky_handler)),
+    )
     graph = build_graph(deps)
     state = build_initial_state(
-        conversation_id=5,
-        message="再详细讲讲项目经历",
-        attachments=[],  # 无附件：依赖上一轮绑定
+        conversation_id=None,
+        message="分析简历",
+        attachments=[{"kind": "resume", "resume_id": 1, "filename": "a.pdf"}],
         action=None,
     )
-    result = await graph.ainvoke(state)
-    async for _ in result["plan"].text:
-        pass
 
-    assert result.get("active_resume_id") == 7
-    assert "绑定简历的内容" in seen["context"], "无附件也应走内容感知路径"
+    plan_holder: list = []
+    async for mode, chunk in graph.astream(state, stream_mode=["custom", "values"]):
+        if mode == "custom":
+            if chunk["type"] == "tool_progress":
+                progress.append(chunk["payload"]["label"])
+        else:
+            plan_holder.append(chunk)
+
+    # 等待进度事件已发出，且最终给出真实解读而非"后台分析中"
+    assert any("正在等待简历分析完成" in p for p in progress)
+    final_state = plan_holder[-1]
+    context_text = None
+    async for piece in final_state["plan"].text:
+        context_text = (context_text or "") + piece
+    assert "成熟" in context_text
+    assert store["calls"] == 3
+
+
+async def test_graph_analysis_failed_fails_fast(monkeypatch):
+    """analyzeStatus=FAILED 时应快速诚实报错（不消耗整段等待窗口）。"""
+    import time
+
+    from career_copilot.agent.nodes import business_tools as bt
+
+    monkeypatch.setattr(bt.settings, "analysis_wait_attempts", 12)
+    monkeypatch.setattr(bt.settings, "analysis_wait_delay_seconds", 4.0)
+
+    def failed_handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/context"):
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "data": {"messages": [], "summary": None, "totalCount": 0},
+                    "message": "success",
+                },
+            )
+        tool = path.rsplit("/", 1)[-1]
+        if tool == "get_resume_analysis":
+            return httpx.Response(
+                200,
+                json={"code": 2008, "data": None, "message": "不存在"},
+            )
+        data = {
+            "get_resume": {
+                "id": 1,
+                "filename": "a.pdf",
+                "resumeText": "正文",
+                "analyzeStatus": "FAILED",
+            }
+        }.get(tool, [])
+        return httpx.Response(200, json={"code": 200, "data": data, "message": "success"})
+
+    class SilentAnswerer:
+        async def answer_stream(self, message, context=None, history=None):
+            yield ""
+        async def summarize_history(self, t):
+            return ""
+
+    deps = GraphDeps(
+        intent_router=FakeIntentRouter(IntentClassification(intent=Intent.RESUME_QUERY)),
+        answerer=SilentAnswerer(),
+        backend=BackendClient(base_url="http://t", transport=httpx.MockTransport(failed_handler)),
+    )
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None,
+        message="分析",
+        attachments=[{"kind": "resume", "resume_id": 1, "filename": "a.pdf"}],
+        action=None,
+    )
+
+    started = time.monotonic()
+    result = await graph.ainvoke(state)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 2, f"FAILED 状态应快速返回，实际 {elapsed:.1f}s"
+    text = "".join([c async for c in result["plan"].text])
+    assert "重新分析" in text
 
 
 # ===== 短期记忆：load_history / 滚动摘要 / checkpoint =====

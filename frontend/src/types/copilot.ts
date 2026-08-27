@@ -142,5 +142,6 @@ export type StreamEvent =
   | { type: 'done'; payload: Record<string, unknown> }
   // P1-2：Graph 执行期轻量进度事件
   | { type: 'tool_started'; payload: { tool: string; label?: string } }
+  | { type: 'tool_progress'; payload: { tool: string; label: string } }
   | { type: 'tool_completed'; payload: { tool: string } }
   | { type: 'run_status'; payload: { status: string } };

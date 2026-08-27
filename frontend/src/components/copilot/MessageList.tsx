@@ -4,6 +4,7 @@ import {
   BookOpenCheck,
   Bot,
   FileSearch,
+  Loader2,
   MessagesSquare,
   Send,
   Sparkles,
@@ -40,6 +41,16 @@ function AssistantContent({
           <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-300" />
           <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-300 [animation-delay:0.15s]" />
           <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-300 [animation-delay:0.3s]" />
+        </div>
+      )}
+      {/* P1-2：工具执行轻量状态行 */}
+      {message.status === 'streaming' && message.activity && (
+        <div
+          data-testid="tool-activity"
+          className="flex items-center gap-1.5 text-xs text-slate-400 dark:text-slate-500"
+        >
+          <Loader2 className="h-3 w-3 animate-spin" />
+          {message.activity}
         </div>
       )}
       {message.blocks.map((block, index) => (

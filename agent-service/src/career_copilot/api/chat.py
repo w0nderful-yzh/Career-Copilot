@@ -19,6 +19,7 @@ from career_copilot.agent.answerer import Answerer
 from career_copilot.agent.deps import GraphDeps
 from career_copilot.agent.graph import build_graph, build_initial_state
 from career_copilot.agent.router import IntentRouter
+from career_copilot.agent.state import RunStatus
 from career_copilot.clients.backend import BackendClient, BusinessToolError
 from career_copilot.config import settings
 from career_copilot.schemas.message import ChatRequest, CopilotResponse
@@ -229,9 +230,12 @@ async def chat_stream(
     answerer: Annotated[Answerer, Depends(get_answerer)],
     backend: Annotated[BackendClient, Depends(get_backend_client)],
 ) -> StreamingResponse:
-    """SSE 流式入口：block → message_delta... → done / error，供 Copilot Workspace 使用。
+    """SSE 流式入口：run_status/tool_* → block → message_delta... → done / error。
 
-    流式结束后若携带 conversation_id，则把本轮（用户消息 + 助手回复含 blocks）保存到 Java。
+    Graph 执行期经 LangGraph custom stream 实时转发节点内埋点
+    （tool_started / tool_completed / WAITING_USER 等 run_status），
+    执行完毕后按既有顺序产出 blocks 与文本增量。
+    流式结束后若携带 conversation_id，则把本轮保存到 Java。
     """
 
     async def event_stream() -> AsyncIterator[str]:
@@ -243,7 +247,22 @@ async def chat_stream(
             initial_state = _initial_state(payload)
             deps = _build_deps(intent_router, answerer, backend)
             graph = _build_graph_with_checkpointer(http_request, deps, initial_state)
-            state = await _invoke_graph(graph, initial_state)
+            config = _graph_config(initial_state)
+
+            yield _sse({"type": "run_status", "payload": {"status": RunStatus.RUNNING.value}})
+
+            # astream 泵：custom 模式实时转发节点事件，values 追踪最终状态
+            state_holder: dict[str, dict[str, Any]] = {}
+            stream_kwargs: dict[str, Any] = {"stream_mode": ["custom", "values"]}
+            if config is not None:
+                stream_kwargs["config"] = config
+            async for mode, chunk in graph.astream(initial_state, **stream_kwargs):
+                if mode == "custom":
+                    yield _sse(chunk)
+                else:
+                    state_holder["state"] = chunk
+
+            state = state_holder.get("state") or {}
             plan = state.get("plan")
             # 结构化块先于文本一次性产出，前端无需从 token 流中猜测块边界
             for block in plan.blocks if plan else []:
@@ -253,9 +272,13 @@ async def chat_stream(
                 async for chunk in plan.text:
                     collected_content.append(chunk)
                     yield _sse({"type": "message_delta", "payload": {"content": chunk}})
+            yield _sse(
+                {"type": "run_status", "payload": {"status": RunStatus.COMPLETED.value}}
+            )
         except Exception:
             logger.exception("chat stream failed")
             yield _sse({"type": "error", "payload": {"message": "处理失败，请稍后重试"}})
+            yield _sse({"type": "run_status", "payload": {"status": RunStatus.FAILED.value}})
         finally:
             yield _sse({"type": "done", "payload": {}})
             # 持久化本轮消息：失败不影响流式响应，仅告警

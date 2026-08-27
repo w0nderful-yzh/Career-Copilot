@@ -88,6 +88,8 @@ export interface CopilotMessage {
   blocks: AgentBlock[];
   status: MessageStatus;
   error?: string;
+  /** 正在执行的轻量状态行（tool_started / tool_completed / run_status 驱动） */
+  activity?: string | null;
 }
 
 // Copilot 对话会话（Java System of Record）
@@ -130,4 +132,8 @@ export type StreamEvent =
   | { type: 'block'; payload: Record<string, unknown> }
   | { type: 'message_delta'; payload: { content: string } }
   | { type: 'error'; payload: { message: string } }
-  | { type: 'done'; payload: Record<string, unknown> };
+  | { type: 'done'; payload: Record<string, unknown> }
+  // P1-2：Graph 执行期轻量进度事件
+  | { type: 'tool_started'; payload: { tool: string; label?: string } }
+  | { type: 'tool_completed'; payload: { tool: string } }
+  | { type: 'run_status'; payload: { status: string } };

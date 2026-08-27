@@ -8,8 +8,9 @@ V1 只识别简历附件（kind=resume），产出「已登记到简历库」说
 from typing import Any
 
 from career_copilot.agent.deps import GraphDeps
+from career_copilot.agent.events import emit_run_status
 from career_copilot.agent.plan import StreamPlan, static_text
-from career_copilot.agent.state import CareerAgentState
+from career_copilot.agent.state import CareerAgentState, RunStatus
 from career_copilot.schemas.action import AgentAction
 from career_copilot.schemas.message import ChoiceBlock, ChoiceOption
 
@@ -30,6 +31,8 @@ async def attachment_flow(
                 text=static_text("我暂时无法识别这个文件的类型，目前支持上传 PDF 简历。")
             )
         }
+    # 产出选择块即进入等待用户决策状态（前端可据此高亮待选项）
+    emit_run_status(RunStatus.WAITING_USER.value)
     return _resume_attachment_plan(resume)
 
 

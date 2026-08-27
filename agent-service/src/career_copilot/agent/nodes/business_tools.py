@@ -7,6 +7,7 @@ PROFILE_QUERY / PREPARATION_QUERY 的 Tool（Java 侧）尚未开通，返回友
 from typing import Any, cast
 
 from career_copilot.agent.deps import GraphDeps
+from career_copilot.agent.events import emit_tool_completed, emit_tool_started
 from career_copilot.agent.plan import StreamPlan, static_text
 from career_copilot.agent.response import interview_summary_block, resume_summary_block
 from career_copilot.agent.router import ActionRoute, Intent
@@ -59,7 +60,9 @@ async def _plan_resume_query(
     if state.get("active_resume_id") is not None:
         return await _plan_targeted_resume(state, backend, deps)
 
+    emit_tool_started("resume_query")
     resumes = await backend.list_resumes()
+    emit_tool_completed("resume_query")
     if not resumes:
         return {
             "plan": StreamPlan(
@@ -145,6 +148,7 @@ async def _plan_targeted_resume(
     )
     resume_id = state["active_resume_id"]
     try:
+        emit_tool_started("resume_insight")
         analysis = await backend.get_resume_analysis(resume_id)
     except BusinessToolError:
         return {
@@ -165,6 +169,8 @@ async def _plan_targeted_resume(
         context = f"{format_resume_content(resume)}\n\n{context}"
     except BusinessToolError:
         pass
+    finally:
+        emit_tool_completed("resume_insight")
 
     if context_note:
         context = f"{context}\n{context_note}"
@@ -209,7 +215,9 @@ async def _plan_interview_review(
         state.get("history") or [], state.get("history_summary")
     )
     history_txt = history or None
+    emit_tool_started("interview_review")
     backend_history = await backend.get_interview_history()
+    emit_tool_completed("interview_review")
     if not backend_history:
         return {
             "plan": StreamPlan(

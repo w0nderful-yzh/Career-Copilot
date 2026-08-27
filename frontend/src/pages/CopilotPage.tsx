@@ -108,25 +108,50 @@ export default function CopilotPage() {
           updateMessage(assistantId, (message) => ({
             ...message,
             blocks: [...message.blocks, event.payload as unknown as AgentBlock],
+            // 有结构化产出后活动行不再有信息量
+            activity: null,
           }));
           break;
         case 'message_delta':
           updateMessage(assistantId, (message) => ({
             ...message,
             content: message.content + (event.payload.content ?? ''),
+            activity: null,
           }));
+          break;
+        case 'tool_started':
+          updateMessage(assistantId, (message) => ({
+            ...message,
+            activity: event.payload.label ?? event.payload.tool,
+          }));
+          break;
+        case 'tool_completed':
+          updateMessage(assistantId, (message) => ({
+            ...message,
+            activity: null,
+          }));
+          break;
+        case 'run_status':
+          if (event.payload.status === 'WAITING_USER') {
+            updateMessage(assistantId, (message) => ({
+              ...message,
+              activity: '等待你的选择…',
+            }));
+          }
           break;
         case 'error':
           updateMessage(assistantId, (message) => ({
             ...message,
             status: 'error',
             error: event.payload.message ?? '处理失败，请稍后重试',
+            activity: null,
           }));
           break;
         case 'done':
           updateMessage(assistantId, (message) => ({
             ...message,
             status: message.status === 'error' ? 'error' : 'done',
+            activity: null,
           }));
           break;
       }

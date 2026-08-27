@@ -1,13 +1,12 @@
 """Chat API：Agent 统一对话入口。
 
-API 层只负责请求校验、依赖组装与意图短路编排，业务决策在 Agent/Tool 层。
-提供同步 JSON 与 SSE 流式两种响应，流式供 Copilot Workspace 使用。
+API 层只负责：请求解析 → 构造初始 State → 调用 Copilot Turn Graph → SSE 流式转发
+→ 流式结束后持久化。业务编排全部在 Graph / Tool 层，本文件保持薄。
 """
 
 import json
 import logging
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends
@@ -16,25 +15,12 @@ from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
 from career_copilot.agent.answerer import Answerer
-from career_copilot.agent.response import (
-    citations_block,
-    interview_summary_block,
-    resume_summary_block,
-)
-from career_copilot.agent.router import ActionRoute, Intent, IntentRouter
+from career_copilot.agent.deps import GraphDeps
+from career_copilot.agent.graph import build_graph, build_initial_state
+from career_copilot.agent.router import IntentRouter
 from career_copilot.clients.backend import BackendClient, BusinessToolError
 from career_copilot.config import settings
-from career_copilot.schemas.message import (
-    ActionBlock,
-    ChatRequest,
-    CopilotResponse,
-    MessageBlock,
-)
-from career_copilot.tools import (
-    resolve_knowledge_base_ids,
-    summarize_interviews,
-    summarize_resumes,
-)
+from career_copilot.schemas.message import ChatRequest, CopilotResponse
 
 logger = logging.getLogger(__name__)
 
@@ -126,162 +112,23 @@ async def get_backend_client() -> AsyncIterator[BackendClient]:
         await client.aclose()
 
 
-@dataclass
-class StreamPlan:
-    """意图分支的执行计划：先产出的结构化块 + 可选的流式文本。
-
-    blocks 在文本流之前一次性产出，text 为 None 表示无文本。
-    """
-
-    blocks: list[MessageBlock] = field(default_factory=list)
-    text: AsyncIterator[str] | None = None
-
-
-async def _static_text(content: str) -> AsyncIterator[str]:
-    """静态文本一次性产出。"""
-    yield content
-
-
-def _action_plan(route: ActionRoute) -> StreamPlan:
-    """NAVIGATION 分支：动作块 + 引导文案，路由来自白名单。"""
-    copy: dict[ActionRoute, tuple[str, str]] = {
-        ActionRoute.RESUME_UPLOAD: ("好的，我们先从简历开始吧。", "上传简历"),
-        ActionRoute.RESUME_LIBRARY: ("好的，简历库在这里。", "查看简历库"),
-        ActionRoute.INTERVIEW_CREATE: ("好的，准备开始一场模拟面试。", "开始模拟面试"),
-        ActionRoute.INTERVIEW_HISTORY: ("好的，这是你的面试记录入口。", "查看面试历史"),
-        ActionRoute.KNOWLEDGE_BASE: ("好的，知识库管理入口在这里。", "管理知识库"),
-        ActionRoute.KNOWLEDGE_CHAT: ("好的，可以在这里向知识库提问。", "打开问答助手"),
-        ActionRoute.SETTINGS: ("好的，模型与系统设置在这里。", "打开设置"),
-    }
-    content, label = copy.get(route, ("你想开始哪项操作？", "开始模拟面试"))
-    return StreamPlan(
-        blocks=[ActionBlock(route=route.value, label=label)],
-        text=_static_text(content),
-    )
-
-
-async def _build_plan(
-    classification: Any,
-    message: str,
+def _build_deps(
+    intent_router: IntentRouter,
     answerer: Answerer,
     backend: BackendClient,
-) -> StreamPlan:
-    """按意图短路构建执行计划，供同步与流式端点共用。"""
-    match classification.intent:
-        case Intent.RESUME_QUERY:
-            return await _plan_resume_query(message, answerer, backend)
-        case Intent.INTERVIEW_REVIEW:
-            return await _plan_interview_review(message, answerer, backend)
-        case Intent.KNOWLEDGE_QA:
-            return await _plan_knowledge_qa(message, backend)
-        case Intent.NAVIGATION:
-            return _action_plan(classification.action_route)
-        case _:
-            # GENERAL_CHAT 及未匹配意图：无块，纯流式文本
-            return StreamPlan(text=answerer.answer_stream(message))
+) -> GraphDeps:
+    """组装 Graph 依赖（每请求一次）。"""
+    return GraphDeps(intent_router=intent_router, answerer=answerer, backend=backend)
 
 
-async def _plan_resume_attachment(attachment: dict[str, Any]) -> StreamPlan:
-    """简历附件上传后的确定性确认：告知结果并引导下一步。
-
-    文件上传与入库已由前端直接调用 Java 完成，Agent 只做确认与引导。
-    注意：MVP 阶段文件直接进入简历库；是否入库/仅分析属于用户意图，
-    未来由 Graph 决定，此处只如实告知结果。
-    """
-    filename = attachment.get("filename") or "简历"
-    resume_id = attachment.get("resume_id")
-    if attachment.get("duplicate"):
-        content = (
-            f"「{filename}」与简历库中的已有简历相同（ID: {resume_id}），"
-            "已直接复用历史记录，没有重复上传。需要我帮你分析这份简历、"
-            "做岗位匹配，还是先来一场模拟面试？"
-        )
-    else:
-        content = (
-            f"已收到「{filename}」，并加入简历库（ID: {resume_id}），正在后台分析。"
-            "我可以帮你：分析简历、岗位匹配，或直接开始模拟面试。"
-        )
-    return StreamPlan(
-        blocks=[
-            ActionBlock(route=ActionRoute.RESUME_LIBRARY.value, label="查看简历库"),
-        ],
-        text=_static_text(content),
+def _initial_state(request: ChatRequest) -> dict[str, Any]:
+    """把 ChatRequest 归一化为 Graph 初始状态。"""
+    return build_initial_state(
+        conversation_id=request.conversation_id,
+        message=request.message,
+        attachments=[att.model_dump() for att in request.attachments],
+        action=request.action.model_dump() if request.action else None,
     )
-
-
-async def _attachment_plan(request: ChatRequest) -> StreamPlan | None:
-    """附件确定性短接：简历已由前端上传到 Java 简历库，这里只做确认与引导。
-
-    在调用意图分类之前判断，使简历附件路径完全不依赖 LLM（快速、可预期），
-    分类器不可用时也不影响「上传简历」这一确定行为。
-    """
-    for att in request.attachments:
-        if att.kind == "resume":
-            return await _plan_resume_attachment(att.model_dump())
-    return None
-
-
-async def _plan_resume_query(
-    message: str, answerer: Answerer, backend: BackendClient
-) -> StreamPlan:
-    """简历查询：先产出 resume_summary 块，再基于摘要流式回答。"""
-    resumes = await backend.list_resumes()
-    if not resumes:
-        return StreamPlan(
-            blocks=[ActionBlock(route=ActionRoute.RESUME_UPLOAD.value, label="上传简历")],
-            text=_static_text("你还没有上传简历，上传后我可以帮你分析简历与岗位的匹配情况。"),
-        )
-    context = await summarize_resumes(resumes)
-    return StreamPlan(
-        blocks=[resume_summary_block(resumes)],
-        text=answerer.answer_stream(message, context),
-    )
-
-
-async def _plan_interview_review(
-    message: str, answerer: Answerer, backend: BackendClient
-) -> StreamPlan:
-    """面试回顾：先产出 interview_summary 块，再基于摘要流式回答。"""
-    history = await backend.get_interview_history()
-    if not history:
-        return StreamPlan(
-            blocks=[
-                ActionBlock(route=ActionRoute.INTERVIEW_CREATE.value, label="开始模拟面试")
-            ],
-            text=_static_text("你还没有模拟面试记录，可以先来一场模拟面试练练手。"),
-        )
-    context = await summarize_interviews(history)
-    return StreamPlan(
-        blocks=[interview_summary_block(history)],
-        text=answerer.answer_stream(message, context),
-    )
-
-
-async def _plan_knowledge_qa(
-    message: str, backend: BackendClient
-) -> StreamPlan:
-    """知识问答：复用 Java RAG 链路，产出引用块与答案文本。"""
-    knowledge_base_ids = await resolve_knowledge_base_ids(backend)
-    if not knowledge_base_ids:
-        return StreamPlan(text=_static_text("知识库为空，暂时无法检索资料。"))
-    try:
-        result = await backend.search_knowledge(message, knowledge_base_ids)
-    except BusinessToolError:
-        return StreamPlan(text=_static_text("知识库查询失败，请稍后重试。"))
-    answer = result.get("answer") or "未检索到相关内容。"
-    blocks: list[MessageBlock] = []
-    if result.get("knowledgeBaseId") is not None:
-        blocks.append(
-            citations_block(
-                [
-                    {
-                        "knowledgeBaseId": result["knowledgeBaseId"],
-                        "name": result.get("knowledgeBaseName") or "知识库",
-                    }
-                ]
-            )
-        )
-    return StreamPlan(blocks=blocks, text=_static_text(answer))
 
 
 def _sse(event: dict[str, Any]) -> str:
@@ -297,15 +144,14 @@ async def chat(
     backend: Annotated[BackendClient, Depends(get_backend_client)],
 ) -> CopilotResponse:
     """同步入口：完整 JSON 响应，供简单调用与测试使用。"""
-    plan = await _attachment_plan(request)
-    if plan is None:
-        classification = await intent_router.classify(request.message)
-        plan = await _build_plan(classification, request.message, answerer, backend)
+    graph = build_graph(_build_deps(intent_router, answerer, backend))
+    state = await graph.ainvoke(_initial_state(request))
+    plan = state.get("plan")
     content = ""
-    if plan.text is not None:
+    if plan is not None and plan.text is not None:
         async for chunk in plan.text:
             content += chunk
-    return CopilotResponse(content=content, blocks=plan.blocks)
+    return CopilotResponse(content=content, blocks=plan.blocks if plan else [])
 
 
 @router.post("/chat/stream")
@@ -324,17 +170,14 @@ async def chat_stream(
         collected_blocks: list[dict[str, Any]] = []
         collected_content: list[str] = []
         try:
-            plan = await _attachment_plan(request)
-            if plan is None:
-                classification = await intent_router.classify(request.message)
-                plan = await _build_plan(
-                    classification, request.message, answerer, backend
-                )
+            graph = build_graph(_build_deps(intent_router, answerer, backend))
+            state = await graph.ainvoke(_initial_state(request))
+            plan = state.get("plan")
             # 结构化块先于文本一次性产出，前端无需从 token 流中猜测块边界
-            for block in plan.blocks:
+            for block in plan.blocks if plan else []:
                 collected_blocks.append(block.model_dump())
                 yield _sse({"type": "block", "payload": block.model_dump()})
-            if plan.text is not None:
+            if plan is not None and plan.text is not None:
                 async for chunk in plan.text:
                     collected_content.append(chunk)
                     yield _sse({"type": "message_delta", "payload": {"content": chunk}})
@@ -345,8 +188,11 @@ async def chat_stream(
             yield _sse({"type": "done", "payload": {}})
             # 持久化本轮消息：失败不影响流式响应，仅告警
             await _persist_conversation_turn(
-                backend, request.conversation_id, request.message,
-                "".join(collected_content), collected_blocks,
+                backend,
+                request.conversation_id,
+                request.message.strip() or "[附件]",
+                "".join(collected_content),
+                collected_blocks,
             )
 
     return StreamingResponse(
@@ -376,20 +222,28 @@ async def _persist_conversation_turn(
         logger.warning("conversation_id 非法，跳过持久化: %s", conversation_id)
         return
 
-    blocks_json = json.dumps(assistant_blocks, ensure_ascii=False) if assistant_blocks else None
+    blocks_json = (
+        json.dumps(assistant_blocks, ensure_ascii=False) if assistant_blocks else None
+    )
     try:
         await backend.save_conversation_messages(
             conversation_id_int,
             [
                 {"role": "USER", "content": user_message, "blocks": None},
-                {"role": "ASSISTANT", "content": assistant_content, "blocks": blocks_json},
+                {
+                    "role": "ASSISTANT",
+                    "content": assistant_content,
+                    "blocks": blocks_json,
+                },
             ],
         )
         logger.info("conversation turn persisted: id=%s", conversation_id)
     except BusinessToolError as exc:
         logger.warning(
             "conversation turn persist failed: id=%s code=%s message=%s",
-            conversation_id, exc.code, exc.message,
+            conversation_id,
+            exc.code,
+            exc.message,
         )
     except Exception:
         logger.exception("conversation turn persist unexpected error: id=%s", conversation_id)

@@ -1,12 +1,14 @@
 """聊天消息协议：请求、响应与结构化消息块。
 
 块类型与 Career Copilot 前端渲染器约定一致，禁止 LLM 直接返回任意 UI 代码。
-首批受控 Block：text / action / resume_summary / interview_summary / knowledge_citations。
+受控 Block：text / action / choice / resume_summary / interview_summary / knowledge_citations。
 """
 
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
+
+from career_copilot.schemas.action import ActionSelected
 
 
 class AttachmentRef(BaseModel):
@@ -24,12 +26,19 @@ class AttachmentRef(BaseModel):
 class ChatRequest(BaseModel):
     """用户发送给 Copilot 的消息。"""
 
-    message: str = Field(min_length=1, max_length=4000, description="用户消息")
+    message: str = Field(
+        default="",
+        max_length=4000,
+        description="用户消息（仅附件或 action 提交时可为空）",
+    )
     conversation_id: str | int | None = Field(
         default=None, description="会话 ID（Java conversation 主键，前端传数字）"
     )
     attachments: list[AttachmentRef] = Field(
         default_factory=list, description="消息附带的结构化资源引用"
+    )
+    action: ActionSelected | None = Field(
+        default=None, description="按钮点击回传的确定性动作（与 message 二选一）"
     )
 
 
@@ -76,9 +85,28 @@ class KnowledgeCitationsBlock(BaseModel):
     )
 
 
+class ChoiceOption(BaseModel):
+    """选择块中的单个选项：点击后回传 ActionSelected。"""
+
+    action: str = Field(description="动作 key，前端原样回传")
+    label: str = Field(description="按钮文案")
+    payload: dict[str, Any] = Field(
+        default_factory=dict, description="动作参数（如 resumeId）"
+    )
+
+
+class ChoiceBlock(BaseModel):
+    """选择块：向用户展示一组确定性动作选项（如附件识别后的操作选择）。"""
+
+    type: Literal["choice"] = "choice"
+    title: str | None = Field(default=None, description="选择说明标题")
+    options: list[ChoiceOption] = Field(default_factory=list, description="可选动作")
+
+
 MessageBlock = Annotated[
     TextBlock
     | ActionBlock
+    | ChoiceBlock
     | ResumeSummaryBlock
     | InterviewSummaryBlock
     | KnowledgeCitationsBlock,

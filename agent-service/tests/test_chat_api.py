@@ -74,6 +74,26 @@ def backend_transport():
         tool = path.rsplit("/", 1)[-1]
         data = {
             "get_resume_list": [{"id": 1, "filename": "resume.pdf", "latestScore": 82}],
+            "get_resume_analysis": {
+                "overallScore": 82,
+                "scoreDetail": {
+                    "contentScore": 20,
+                    "structureScore": 16,
+                    "skillMatchScore": 21,
+                    "expressionScore": 12,
+                    "projectScore": 13,
+                },
+                "summary": "整体较好，项目经验突出。",
+                "strengths": ["项目描述清晰"],
+                "suggestions": [
+                    {
+                        "category": "内容",
+                        "priority": "高",
+                        "issue": "缺乏量化",
+                        "recommendation": "补充量化数据",
+                    }
+                ],
+            },
             "get_interview_history": [{"sessionId": "s1", "skillId": "java-backend"}],
             "list_knowledge_bases": [{"id": 1, "name": "Java 知识库"}],
             "search_knowledge": {
@@ -359,7 +379,7 @@ def test_chat_stream_skips_persist_without_conversation_id(backend_transport):
 
 
 def test_chat_stream_with_resume_attachment(backend_transport):
-    """携带 resume 附件时应确定性确认已加入简历库（不依赖意图分类）。"""
+    """仅附件（无文本）时应确定性识别简历并返回 ChoiceBlock（不依赖意图分类）。"""
     client = setup_overrides(
         IntentClassification(intent=Intent.GENERAL_CHAT), backend_transport
     )
@@ -367,7 +387,7 @@ def test_chat_stream_with_resume_attachment(backend_transport):
         "POST",
         "/api/chat/stream",
         json={
-            "message": "这是我的简历",
+            "message": "",
             "attachments": [
                 {"kind": "resume", "resume_id": 9, "filename": "resume.pdf"}
             ],
@@ -380,10 +400,15 @@ def test_chat_stream_with_resume_attachment(backend_transport):
     deltas = "".join(e["payload"]["content"] for e in events if e["type"] == "message_delta")
     assert "加入简历库" in deltas
     assert "resume.pdf" in deltas
-    assert any(
-        e["type"] == "block" and e["payload"]["type"] == "action"
-        for e in events
-    )
+    blocks = [e["payload"] for e in events if e["type"] == "block"]
+    assert any(b["type"] == "choice" for b in blocks)
+    choice = next(b for b in blocks if b["type"] == "choice")
+    assert {opt["action"] for opt in choice["options"]} == {
+        "ANALYZE_RESUME",
+        "OPTIMIZE_RESUME",
+        "START_INTERVIEW",
+        "JOB_MATCH",
+    }
 
 
 def test_chat_stream_with_duplicate_resume_attachment(backend_transport):
@@ -395,7 +420,7 @@ def test_chat_stream_with_duplicate_resume_attachment(backend_transport):
         "POST",
         "/api/chat/stream",
         json={
-            "message": "这是我的简历",
+            "message": "",
             "attachments": [
                 {
                     "kind": "resume",
@@ -415,13 +440,11 @@ def test_chat_stream_with_duplicate_resume_attachment(backend_transport):
     assert "复用历史记录" in deltas
     assert "加入简历库" not in deltas
     blocks = [e["payload"] for e in events if e["type"] == "block"]
-    assert any(
-        b["type"] == "action" and b["route"] == "RESUME_LIBRARY" for b in blocks
-    )
+    assert any(b["type"] == "choice" for b in blocks)
 
 
 def test_chat_stream_resume_attachment_skips_classifier(backend_transport):
-    """简历附件路径应完全跳过意图分类：分类器不可用时仍返回确定性确认。"""
+    """仅附件路径应完全跳过意图分类：分类器不可用时仍返回确定性 ChoiceBlock。"""
 
     class BrokenIntentRouter:
         async def classify(self, message: str) -> IntentClassification:
@@ -442,7 +465,7 @@ def test_chat_stream_resume_attachment_skips_classifier(backend_transport):
         "POST",
         "/api/chat/stream",
         json={
-            "message": "这是我的简历",
+            "message": "",
             "attachments": [
                 {"kind": "resume", "resume_id": 9, "filename": "resume.pdf"}
             ],
@@ -455,3 +478,122 @@ def test_chat_stream_resume_attachment_skips_classifier(backend_transport):
     deltas = "".join(e["payload"]["content"] for e in events if e["type"] == "message_delta")
     assert "加入简历库" in deltas
     assert "resume.pdf" in deltas
+    assert any(
+        e["type"] == "block" and e["payload"]["type"] == "choice"
+        for e in events
+    )
+
+
+def test_chat_stream_with_action_routes_execute_action(backend_transport):
+    """action 提交应走确定性 execute_action 分支（不依赖意图分类）。"""
+    client = setup_overrides(
+        IntentClassification(intent=Intent.GENERAL_CHAT), backend_transport
+    )
+    with client.stream(
+        "POST",
+        "/api/chat/stream",
+        json={
+            "message": "",
+            "action": {
+                "type": "ACTION_SELECTED",
+                "action": "ANALYZE_RESUME",
+                "payload": {"resumeId": 9},
+            },
+        },
+    ) as response:
+        events = _parse_sse("".join(response.iter_text()))
+
+    assert events[-1]["type"] == "done"
+    assert not any(e["type"] == "error" for e in events)
+    blocks = [e["payload"] for e in events if e["type"] == "block"]
+    action_blocks = [b for b in blocks if b["type"] == "action"]
+    assert action_blocks, "应产出 action 块"
+    assert action_blocks[0]["route"] == "RESUME_DETAIL"
+    assert action_blocks[0]["params"]["resumeId"] == 9
+
+
+def test_chat_stream_text_with_attachment_uses_llm_intent(backend_transport):
+    """带文本的附件应进入 LLM 意图分类（符合确定性优先原则：仅无文本附件才短路）。"""
+    client = setup_overrides(
+        IntentClassification(intent=Intent.RESUME_QUERY), backend_transport
+    )
+    with client.stream(
+        "POST",
+        "/api/chat/stream",
+        json={
+            "message": "帮我分析这份简历",
+            "attachments": [
+                {"kind": "resume", "resume_id": 9, "filename": "resume.pdf"}
+            ],
+        },
+    ) as response:
+        events = _parse_sse("".join(response.iter_text()))
+
+    assert events[-1]["type"] == "done"
+    assert not any(e["type"] == "error" for e in events)
+    block_events = [e for e in events if e["type"] == "block"]
+    assert block_events, "应产出 block 事件"
+    assert block_events[0]["payload"]["type"] == "resume_summary"
+
+
+def test_chat_stream_resume_query_uses_uploaded_resume(backend_transport):
+    """上传简历并询问时，应基于该份简历的分析回答，而非整库反问。"""
+    client = setup_overrides(
+        IntentClassification(intent=Intent.RESUME_QUERY), backend_transport
+    )
+    with client.stream(
+        "POST",
+        "/api/chat/stream",
+        json={
+            "message": "我的这份简历怎么样",
+            "attachments": [
+                {"kind": "resume", "resume_id": 9, "filename": "resume.pdf"}
+            ],
+        },
+    ) as response:
+        events = _parse_sse("".join(response.iter_text()))
+
+    assert events[-1]["type"] == "done"
+    assert not any(e["type"] == "error" for e in events)
+    blocks = [e["payload"] for e in events if e["type"] == "block"]
+    assert blocks, "应产出 resume_summary 块"
+    assert blocks[0]["type"] == "resume_summary"
+    assert blocks[0]["resumes"][0]["id"] == 9
+    deltas = "".join(e["payload"]["content"] for e in events if e["type"] == "message_delta")
+    assert "".join(deltas) == "fake answer"
+
+
+def test_chat_stream_resume_query_analysis_pending():
+    """目标简历仍在后台分析时应如实告知，而不是反问是哪份。"""
+
+    def pending_handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/get_resume_analysis"):
+            return httpx.Response(
+                200,
+                json={"code": 5001, "message": "简历分析结果不存在", "data": None},
+            )
+        tool = path.rsplit("/", 1)[-1]
+        data = {"get_resume_list": []}.get(tool, [])
+        return httpx.Response(200, json={"code": 200, "data": data, "message": "success"})
+
+    client = setup_overrides(
+        IntentClassification(intent=Intent.RESUME_QUERY), pending_handler
+    )
+    with client.stream(
+        "POST",
+        "/api/chat/stream",
+        json={
+            "message": "我的这份简历怎么样",
+            "attachments": [
+                {"kind": "resume", "resume_id": 9, "filename": "resume.pdf"}
+            ],
+        },
+    ) as response:
+        events = _parse_sse("".join(response.iter_text()))
+
+    assert events[-1]["type"] == "done"
+    assert not any(e["type"] == "error" for e in events)
+    deltas = "".join(e["payload"]["content"] for e in events if e["type"] == "message_delta")
+    assert "后台分析" in deltas
+    assert not any(e["type"] == "block" for e in events)

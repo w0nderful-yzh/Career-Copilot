@@ -12,13 +12,22 @@ from pydantic import BaseModel, field_validator
 
 
 class Intent(StrEnum):
-    """Agent 支持的最小意图集合，路由输出必须是有限、稳定的枚举。"""
+    """Agent 支持的最小意图集合，路由输出必须是有限、稳定的枚举。
+
+    ATTACHMENT_RECEIVED / COMPLEX_GOAL 由确定性规则或预留分支产生，
+    不进入 LLM 分类输出；PROFILE_QUERY / PREPARATION_QUERY 为预留意图。
+    """
 
     GENERAL_CHAT = "GENERAL_CHAT"  # 普通闲聊/无业务数据需求的回答
     RESUME_QUERY = "RESUME_QUERY"  # 简历相关查询（列表/分析结果）
+    RESUME_OPTIMIZATION = "RESUME_OPTIMIZATION"  # 简历优化（子图，预留）
     INTERVIEW_REVIEW = "INTERVIEW_REVIEW"  # 面试表现回顾
     KNOWLEDGE_QA = "KNOWLEDGE_QA"  # 技术知识问答（需要 RAG）
+    PROFILE_QUERY = "PROFILE_QUERY"  # 能力画像查询（工具未开通，预留）
+    PREPARATION_QUERY = "PREPARATION_QUERY"  # 学习计划/复习进度查询（预留）
+    ATTACHMENT_RECEIVED = "ATTACHMENT_RECEIVED"  # 收到附件（确定性，非 LLM 输出）
     NAVIGATION = "NAVIGATION"  # 建议跳转到业务页面
+    COMPLEX_GOAL = "COMPLEX_GOAL"  # 复杂目标（Goal Execution，预留）
 
 
 class ActionRoute(StrEnum):
@@ -26,6 +35,7 @@ class ActionRoute(StrEnum):
 
     RESUME_UPLOAD = "RESUME_UPLOAD"
     RESUME_LIBRARY = "RESUME_LIBRARY"
+    RESUME_DETAIL = "RESUME_DETAIL"
     INTERVIEW_CREATE = "INTERVIEW_CREATE"
     INTERVIEW_HISTORY = "INTERVIEW_HISTORY"
     KNOWLEDGE_BASE = "KNOWLEDGE_BASE"
@@ -50,8 +60,11 @@ INTENT_SYSTEM_PROMPT = """你是 Career Copilot 的意图识别器。
 根据用户消息判断其意图，只能从以下枚举中选择：
 - GENERAL_CHAT：普通闲聊、问候，或不需要业务数据即可回答的问题
 - RESUME_QUERY：询问简历、简历分析、简历上传相关
+- RESUME_OPTIMIZATION：请求优化简历（如"帮我优化简历""按这份 JD 改简历"）
 - INTERVIEW_REVIEW：询问模拟面试历史、面试表现、面试回顾
 - KNOWLEDGE_QA：询问技术知识概念（如 JVM、Redis、算法），需要知识库回答
+- PROFILE_QUERY：询问能力画像、技能水平、擅长/薄弱技能
+- PREPARATION_QUERY：询问学习计划、复习进度、今天该学什么
 - NAVIGATION：用户想直接开始某项操作（如开始面试、上传简历），适合跳转页面
 
 如果意图是 NAVIGATION，必须同时从以下白名单路由中选择一个：

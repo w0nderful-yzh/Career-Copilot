@@ -73,6 +73,15 @@ class BackendClient:
         data = await self.call_tool("get_resume_list")
         return data if isinstance(data, list) else []
 
+    async def get_resume_analysis(self, resume_id: int) -> dict[str, Any]:
+        """获取指定简历的最新分析结果（评分/优势/建议）。
+
+        分析尚未完成或不存在时抛 BusinessToolError（RESUME_ANALYSIS_NOT_FOUND），
+        由上层决定如何引导（如实告知正在后台分析）。
+        """
+        data = await self.call_tool("get_resume_analysis", {"resumeId": resume_id})
+        return data if isinstance(data, dict) else {}
+
     async def get_interview_history(self) -> list[dict[str, Any]]:
         """模拟面试历史列表。"""
         data = await self.call_tool("get_interview_history")

@@ -49,6 +49,28 @@ async def summarize_resumes(resumes: list[dict[str, Any]], limit: int = 5) -> st
     return "用户简历：\n" + "\n".join(rows)
 
 
+async def summarize_resume_analysis(analysis: dict[str, Any]) -> str:
+    """把单份简历分析结果裁剪为 Prompt 摘要（排除 originalText，遵守 Token 纪律）。"""
+    if not analysis:
+        return "（暂无简历分析结果）"
+    score = analysis.get("scoreDetail") or {}
+    lines = [
+        f"- 总分: {analysis.get('overallScore')}/100",
+        f"- 内容{score.get('contentScore')} 结构{score.get('structureScore')} "
+        f"技能匹配{score.get('skillMatchScore')} 表达{score.get('expressionScore')} "
+        f"项目{score.get('projectScore')}",
+    ]
+    if analysis.get("summary"):
+        lines.append(f"- 摘要: {analysis['summary']}")
+    for strength in analysis.get("strengths") or []:
+        lines.append(f"- 优点: {strength}")
+    for suggestion in (analysis.get("suggestions") or [])[:5]:
+        lines.append(
+            f"- 建议({suggestion.get('priority', '')}): {suggestion.get('recommendation')}"
+        )
+    return "该简历分析结果：\n" + "\n".join(lines)
+
+
 async def summarize_interviews(history: list[dict[str, Any]], limit: int = 5) -> str:
     """把面试历史裁剪为摘要，避免完整列表塞入上下文。"""
     if not history:

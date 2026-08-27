@@ -170,9 +170,9 @@ export default function CopilotPage() {
         }
       }
 
-      // 带附件时用户消息用文件名提示，让历史记录可读
+      // 带附件时保留用户输入的文字，并把附件提示追加在其后（气泡与持久化历史保持一致）
       const userContent = attachments.length > 0
-        ? `上传了简历附件：${attachment?.name}`
+        ? (text ? `${text}\n[简历附件：${attachment?.name}]` : `上传了简历附件：${attachment?.name}`)
         : text;
 
       const assistantId = nextId();
@@ -187,7 +187,7 @@ export default function CopilotPage() {
       abortRef.current = controller;
       try {
         await streamChat(
-          text || `请处理我上传的简历：${attachment?.name}`,
+          userContent,
           (event) => handleEvent(assistantId, event),
           controller.signal,
           conversationId ?? undefined,

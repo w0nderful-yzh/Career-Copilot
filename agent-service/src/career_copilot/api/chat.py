@@ -146,6 +146,7 @@ def _action_plan(route: ActionRoute) -> StreamPlan:
     """NAVIGATION 分支：动作块 + 引导文案，路由来自白名单。"""
     copy: dict[ActionRoute, tuple[str, str]] = {
         ActionRoute.RESUME_UPLOAD: ("好的，我们先从简历开始吧。", "上传简历"),
+        ActionRoute.RESUME_LIBRARY: ("好的，简历库在这里。", "查看简历库"),
         ActionRoute.INTERVIEW_CREATE: ("好的，准备开始一场模拟面试。", "开始模拟面试"),
         ActionRoute.INTERVIEW_HISTORY: ("好的，这是你的面试记录入口。", "查看面试历史"),
         ActionRoute.KNOWLEDGE_BASE: ("好的，知识库管理入口在这里。", "管理知识库"),
@@ -178,6 +179,46 @@ async def _build_plan(
         case _:
             # GENERAL_CHAT 及未匹配意图：无块，纯流式文本
             return StreamPlan(text=answerer.answer_stream(message))
+
+
+async def _plan_resume_attachment(attachment: dict[str, Any]) -> StreamPlan:
+    """简历附件上传后的确定性确认：告知结果并引导下一步。
+
+    文件上传与入库已由前端直接调用 Java 完成，Agent 只做确认与引导。
+    注意：MVP 阶段文件直接进入简历库；是否入库/仅分析属于用户意图，
+    未来由 Graph 决定，此处只如实告知结果。
+    """
+    filename = attachment.get("filename") or "简历"
+    resume_id = attachment.get("resume_id")
+    if attachment.get("duplicate"):
+        content = (
+            f"「{filename}」与简历库中的已有简历相同（ID: {resume_id}），"
+            "已直接复用历史记录，没有重复上传。需要我帮你分析这份简历、"
+            "做岗位匹配，还是先来一场模拟面试？"
+        )
+    else:
+        content = (
+            f"已收到「{filename}」，并加入简历库（ID: {resume_id}），正在后台分析。"
+            "我可以帮你：分析简历、岗位匹配，或直接开始模拟面试。"
+        )
+    return StreamPlan(
+        blocks=[
+            ActionBlock(route=ActionRoute.RESUME_LIBRARY.value, label="查看简历库"),
+        ],
+        text=_static_text(content),
+    )
+
+
+async def _attachment_plan(request: ChatRequest) -> StreamPlan | None:
+    """附件确定性短接：简历已由前端上传到 Java 简历库，这里只做确认与引导。
+
+    在调用意图分类之前判断，使简历附件路径完全不依赖 LLM（快速、可预期），
+    分类器不可用时也不影响「上传简历」这一确定行为。
+    """
+    for att in request.attachments:
+        if att.kind == "resume":
+            return await _plan_resume_attachment(att.model_dump())
+    return None
 
 
 async def _plan_resume_query(
@@ -256,8 +297,10 @@ async def chat(
     backend: Annotated[BackendClient, Depends(get_backend_client)],
 ) -> CopilotResponse:
     """同步入口：完整 JSON 响应，供简单调用与测试使用。"""
-    classification = await intent_router.classify(request.message)
-    plan = await _build_plan(classification, request.message, answerer, backend)
+    plan = await _attachment_plan(request)
+    if plan is None:
+        classification = await intent_router.classify(request.message)
+        plan = await _build_plan(classification, request.message, answerer, backend)
     content = ""
     if plan.text is not None:
         async for chunk in plan.text:
@@ -281,8 +324,12 @@ async def chat_stream(
         collected_blocks: list[dict[str, Any]] = []
         collected_content: list[str] = []
         try:
-            classification = await intent_router.classify(request.message)
-            plan = await _build_plan(classification, request.message, answerer, backend)
+            plan = await _attachment_plan(request)
+            if plan is None:
+                classification = await intent_router.classify(request.message)
+                plan = await _build_plan(
+                    classification, request.message, answerer, backend
+                )
             # 结构化块先于文本一次性产出，前端无需从 token 流中猜测块边界
             for block in plan.blocks:
                 collected_blocks.append(block.model_dump())

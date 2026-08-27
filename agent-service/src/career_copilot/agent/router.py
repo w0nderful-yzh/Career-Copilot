@@ -25,6 +25,7 @@ class ActionRoute(StrEnum):
     """动作白名单路由 key，由前端映射到真实路由，禁止 LLM 输出任意 URL。"""
 
     RESUME_UPLOAD = "RESUME_UPLOAD"
+    RESUME_LIBRARY = "RESUME_LIBRARY"
     INTERVIEW_CREATE = "INTERVIEW_CREATE"
     INTERVIEW_HISTORY = "INTERVIEW_HISTORY"
     KNOWLEDGE_BASE = "KNOWLEDGE_BASE"
@@ -55,6 +56,7 @@ INTENT_SYSTEM_PROMPT = """你是 Career Copilot 的意图识别器。
 
 如果意图是 NAVIGATION，必须同时从以下白名单路由中选择一个：
 - RESUME_UPLOAD：上传简历
+- RESUME_LIBRARY：查看简历库（已上传的简历管理页）
 - INTERVIEW_CREATE：创建/开始模拟面试
 - INTERVIEW_HISTORY：查看面试历史
 - KNOWLEDGE_BASE：管理知识库

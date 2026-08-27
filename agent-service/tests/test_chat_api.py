@@ -356,3 +356,102 @@ def test_chat_stream_skips_persist_without_conversation_id(backend_transport):
     ) as response:
         events = _parse_sse("".join(response.iter_text()))
     assert events[-1]["type"] == "done"
+
+
+def test_chat_stream_with_resume_attachment(backend_transport):
+    """携带 resume 附件时应确定性确认已加入简历库（不依赖意图分类）。"""
+    client = setup_overrides(
+        IntentClassification(intent=Intent.GENERAL_CHAT), backend_transport
+    )
+    with client.stream(
+        "POST",
+        "/api/chat/stream",
+        json={
+            "message": "这是我的简历",
+            "attachments": [
+                {"kind": "resume", "resume_id": 9, "filename": "resume.pdf"}
+            ],
+        },
+    ) as response:
+        events = _parse_sse("".join(response.iter_text()))
+
+    assert events[-1]["type"] == "done"
+    assert not any(e["type"] == "error" for e in events)
+    deltas = "".join(e["payload"]["content"] for e in events if e["type"] == "message_delta")
+    assert "加入简历库" in deltas
+    assert "resume.pdf" in deltas
+    assert any(
+        e["type"] == "block" and e["payload"]["type"] == "action"
+        for e in events
+    )
+
+
+def test_chat_stream_with_duplicate_resume_attachment(backend_transport):
+    """重复简历附件应如实告知已复用历史记录，而不是声称新加入简历库。"""
+    client = setup_overrides(
+        IntentClassification(intent=Intent.GENERAL_CHAT), backend_transport
+    )
+    with client.stream(
+        "POST",
+        "/api/chat/stream",
+        json={
+            "message": "这是我的简历",
+            "attachments": [
+                {
+                    "kind": "resume",
+                    "resume_id": 9,
+                    "filename": "resume.pdf",
+                    "duplicate": True,
+                }
+            ],
+        },
+    ) as response:
+        events = _parse_sse("".join(response.iter_text()))
+
+    assert events[-1]["type"] == "done"
+    assert not any(e["type"] == "error" for e in events)
+    deltas = "".join(e["payload"]["content"] for e in events if e["type"] == "message_delta")
+    assert "已有简历相同" in deltas
+    assert "复用历史记录" in deltas
+    assert "加入简历库" not in deltas
+    blocks = [e["payload"] for e in events if e["type"] == "block"]
+    assert any(
+        b["type"] == "action" and b["route"] == "RESUME_LIBRARY" for b in blocks
+    )
+
+
+def test_chat_stream_resume_attachment_skips_classifier(backend_transport):
+    """简历附件路径应完全跳过意图分类：分类器不可用时仍返回确定性确认。"""
+
+    class BrokenIntentRouter:
+        async def classify(self, message: str) -> IntentClassification:
+            raise RuntimeError("intent classifier unavailable")
+
+    app.dependency_overrides[get_intent_router] = lambda: BrokenIntentRouter()
+    app.dependency_overrides[get_answerer] = lambda: FakeAnswerer()
+
+    def fake_client() -> BackendClient:
+        return BackendClient(
+            base_url="http://test",
+            transport=httpx.MockTransport(backend_transport),
+        )
+
+    app.dependency_overrides[get_backend_client] = fake_client
+    client = TestClient(app)
+    with client.stream(
+        "POST",
+        "/api/chat/stream",
+        json={
+            "message": "这是我的简历",
+            "attachments": [
+                {"kind": "resume", "resume_id": 9, "filename": "resume.pdf"}
+            ],
+        },
+    ) as response:
+        events = _parse_sse("".join(response.iter_text()))
+
+    assert events[-1]["type"] == "done"
+    assert not any(e["type"] == "error" for e in events)
+    deltas = "".join(e["payload"]["content"] for e in events if e["type"] == "message_delta")
+    assert "加入简历库" in deltas
+    assert "resume.pdf" in deltas

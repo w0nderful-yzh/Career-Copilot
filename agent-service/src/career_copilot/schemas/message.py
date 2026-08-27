@@ -9,12 +9,27 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, Field
 
 
+class AttachmentRef(BaseModel):
+    """用户随消息附带的结构化资源引用（文件二进制不经 Agent，只传资源 id）。"""
+
+    kind: Literal["resume"] = "resume"
+    resume_id: int = Field(description="简历资源 id（Java resume 主键）")
+    filename: str | None = Field(default=None, description="原始文件名")
+    duplicate: bool = Field(
+        default=False,
+        description="Java 判定为内容重复、未新增记录时置 true（复用已有简历）",
+    )
+
+
 class ChatRequest(BaseModel):
     """用户发送给 Copilot 的消息。"""
 
     message: str = Field(min_length=1, max_length=4000, description="用户消息")
     conversation_id: str | int | None = Field(
         default=None, description="会话 ID（Java conversation 主键，前端传数字）"
+    )
+    attachments: list[AttachmentRef] = Field(
+        default_factory=list, description="消息附带的结构化资源引用"
     )
 
 

@@ -96,6 +96,15 @@ export interface ConversationDetail {
   updatedAt: string;
 }
 
+// 结构化资源引用（随消息附带，文件二进制不经 Agent，只传资源 id）
+export interface AttachmentRef {
+  kind: 'resume';
+  resumeId: number;
+  filename?: string;
+  /** Java 判定内容重复、未新增记录时置 true（复用已有简历） */
+  duplicate?: boolean;
+}
+
 // SSE 流式事件（与 Python StreamEvent 协议一致）
 export type StreamEvent =
   | { type: 'block'; payload: Record<string, unknown> }
@@ -107,6 +116,7 @@ export type StreamEvent =
 // 未知路由不渲染按钮，禁止任意跳转
 export const ACTION_ROUTE_MAP: Record<string, { path: string; label: string }> = {
   RESUME_UPLOAD: { path: '/upload', label: '上传简历' },
+  RESUME_LIBRARY: { path: '/history', label: '简历库' },
   INTERVIEW_CREATE: { path: '/interview-hub', label: '开始模拟面试' },
   INTERVIEW_HISTORY: { path: '/interviews', label: '面试记录' },
   KNOWLEDGE_BASE: { path: '/knowledgebase', label: '知识库管理' },

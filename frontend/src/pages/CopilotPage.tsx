@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
-import { conversationApi, streamChat } from '../api/agentChat';
+import { conversationApi, resumeUploadApi, streamChat } from '../api/agentChat';
 import Composer from '../components/copilot/Composer';
 import MessageList from '../components/copilot/MessageList';
 import type { CopilotOutletContext } from '../components/Layout';
 import type {
   AgentBlock,
+  AttachmentRef,
   ConversationDetail,
   ConversationItem,
   CopilotMessage,
@@ -130,7 +131,30 @@ export default function CopilotPage() {
   );
 
   const send = useCallback(
-    async (text: string) => {
+    async (text: string, attachment?: File) => {
+      // 有附件（PDF 简历）时先上传到 Java 简历库（文件不经 Agent，只传资源 id）
+      let attachments: AttachmentRef[] = [];
+      if (attachment) {
+        try {
+          const result = await resumeUploadApi.uploadAndAnalyze(attachment);
+          const resumeId = result.storage?.resumeId;
+          if (!resumeId) {
+            throw new Error('上传成功但未返回简历 ID');
+          }
+          attachments = [{
+            kind: 'resume',
+            resumeId,
+            filename: attachment.name,
+            duplicate: result.duplicate ?? false,
+          }];
+        } catch (err) {
+          console.error('Failed to upload resume:', err);
+          // 上传失败：不发送，直接提示
+          window.alert('简历上传失败，请重试');
+          return;
+        }
+      }
+
       // 无会话时先创建（Java System of Record），并同步到 Layout 会话列表
       let conversationId = activeConversationId;
       if (conversationId === null) {
@@ -146,10 +170,15 @@ export default function CopilotPage() {
         }
       }
 
+      // 带附件时用户消息用文件名提示，让历史记录可读
+      const userContent = attachments.length > 0
+        ? `上传了简历附件：${attachment?.name}`
+        : text;
+
       const assistantId = nextId();
       setMessages((prev) => [
         ...prev,
-        { id: nextId(), role: 'user', content: text, blocks: [], status: 'done' },
+        { id: nextId(), role: 'user', content: userContent, blocks: [], status: 'done' },
         { id: assistantId, role: 'assistant', content: '', blocks: [], status: 'streaming' },
       ]);
       setStreaming(true);
@@ -158,10 +187,11 @@ export default function CopilotPage() {
       abortRef.current = controller;
       try {
         await streamChat(
-          text,
+          text || `请处理我上传的简历：${attachment?.name}`,
           (event) => handleEvent(assistantId, event),
           controller.signal,
           conversationId ?? undefined,
+          attachments,
         );
       } catch (err) {
         if (controller.signal.aborted) {

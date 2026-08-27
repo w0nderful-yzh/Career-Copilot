@@ -78,7 +78,23 @@ public class AgentConversationService {
         conversation.getIsPinned(),
         messageDTOs,
         conversation.getCreatedAt(),
-        conversation.getUpdatedAt());
+        conversation.getUpdatedAt(),
+        conversation.getActiveResumeId());
+  }
+
+  /**
+   * 绑定会话活动简历（Conversation Memory 的 Active Resume）。
+   *
+   * <p>Python Agent 在定向简历分析/优化后调用，使下一轮「继续分析这份简历」
+   * 无需附件即可恢复目标。resumeId 为 null 表示解绑。
+   */
+  @Transactional
+  public void bindActiveResume(Long conversationId, Long resumeId) {
+    AgentConversationEntity conversation = getConversationOrThrow(conversationId);
+    conversation.setActiveResumeId(resumeId);
+    conversationRepository.save(conversation);
+    log.info("Conversation active resume bound: id={}, resumeId={}",
+        conversationId, resumeId);
   }
 
   @Transactional
@@ -109,7 +125,8 @@ public class AgentConversationService {
             message.getCreatedAt()))
         .toList();
     long totalCount = messageRepository.countByConversationId(conversationId);
-    return new ConversationContextDTO(messages, conversation.getSummary(), totalCount);
+return new ConversationContextDTO(
+        messages, conversation.getSummary(), totalCount, conversation.getActiveResumeId());
   }
 
   @Transactional

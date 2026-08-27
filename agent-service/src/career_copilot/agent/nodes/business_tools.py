@@ -180,6 +180,16 @@ async def _plan_targeted_resume(
         or _attachment_filename(state)
         or f"简历 #{resume_id}"
     )
+
+    # Conversation Memory：定向分析后绑定活动简历，
+    # 下一轮无附件提问也能锁定同一目标（失败仅告警不阻断）
+    conversation_id = state.get("conversation_id")
+    if conversation_id is not None:
+        try:
+            await backend.bind_active_resume(int(conversation_id), resume_id)
+        except BusinessToolError:
+            pass
+
     return {
         "plan": StreamPlan(
             blocks=[

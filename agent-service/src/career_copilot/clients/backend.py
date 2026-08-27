@@ -207,6 +207,22 @@ class BackendClient:
             raise BusinessToolError(500, f"后端服务不可达: {exc}", retryable=True) from exc
         self._unwrap_result(response)
 
+    async def bind_active_resume(
+        self, conversation_id: int, resume_id: int | None
+    ) -> None:
+        """绑定会话活动简历（resumeId 为 None 表示解绑）。
+
+        定向简历分析/优化后调用，使下一轮无附件提问也能锁定目标简历。
+        """
+        try:
+            response = await self._client.put(
+                f"/api/agent/conversations/{conversation_id}/active-resume",
+                json={"resumeId": resume_id},
+            )
+        except httpx.HTTPError as exc:
+            raise BusinessToolError(500, f"后端服务不可达: {exc}", retryable=True) from exc
+        self._unwrap_result(response)
+
     async def _post_plain(self, path: str, payload: dict[str, Any]) -> Any:
         """通用 POST：请求 Java 非 Tool 端点并解包 Result。"""
         try:

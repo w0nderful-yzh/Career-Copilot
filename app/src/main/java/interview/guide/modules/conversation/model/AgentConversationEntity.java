@@ -73,6 +73,10 @@ public class AgentConversationEntity {
   @Column(columnDefinition = "TEXT")
   private String summary;
 
+  /** 会话绑定的活动简历（Conversation Memory 的 Active Resume，Agent 跨轮恢复上下文用） */
+  @Column(name = "active_resume_id")
+  private Long activeResumeId;
+
   public enum ConversationStatus {
     ACTIVE,    // 活跃会话
     ARCHIVED   // 已归档

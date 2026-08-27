@@ -74,6 +74,23 @@ public class AgentConversationController {
     return Result.success();
   }
 
+  /** Conversation Memory：绑定活动简历（resumeId 为 null 表示解绑） */
+  @PutMapping("/{conversationId}/active-resume")
+  @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 30)
+  public Result<Void> bindActiveResume(
+      @PathVariable Long conversationId,
+      @RequestBody Map<String, Object> body) {
+    Object value = body.get("resumeId");
+    Long resumeId = null;
+    if (value instanceof Number number) {
+      resumeId = number.longValue();
+    } else if (value instanceof String text && !text.isBlank()) {
+      resumeId = Long.parseLong(text);
+    }
+    conversationService.bindActiveResume(conversationId, resumeId);
+    return Result.success();
+  }
+
   @PutMapping("/{conversationId}/title")
   @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 10)
   public Result<Void> renameConversation(

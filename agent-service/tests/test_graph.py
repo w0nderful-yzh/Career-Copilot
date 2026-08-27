@@ -436,6 +436,104 @@ async def test_graph_resume_query_filename_hint_wins_over_latest():
     assert "最近上传的" not in seen["context"], "文件名命中时无需多份说明"
 
 
+# ===== P1-3 Conversation 绑定活动资源 =====
+
+
+def _make_binding_handler(store: dict):
+    """带 activeResumeId 的 context 响应 + 绑定写回追踪（store: {'resume_id': x, 'bound': []}）。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if request.method == "PUT" and path.endswith("/active-resume"):
+            import json as _json
+
+            body = _json.loads(request.read().decode())
+            store["bound"].append(body.get("resumeId"))
+            return httpx.Response(200, json={"code": 200, "data": None, "message": "success"})
+        if path.endswith("/context"):
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "data": {
+                        "messages": [],
+                        "summary": None,
+                        "totalCount": 0,
+                        "activeResumeId": store.get("resume_id"),
+                    },
+                    "message": "success",
+                },
+            )
+        tool = path.rsplit("/", 1)[-1]
+        data = {
+            "get_resume_analysis": {
+                "overallScore": 74,
+                "scoreDetail": {},
+                "summary": "",
+                "strengths": [],
+                "suggestions": [],
+            },
+            "get_resume": {
+                "id": store.get("resume_id"),
+                "filename": "bound.pdf",
+                "resumeText": "绑定简历的内容",
+                "analyzeStatus": "COMPLETED",
+            },
+        }.get(tool, [])
+        return httpx.Response(200, json={"code": 200, "data": data, "message": "success"})
+
+    return handler
+
+
+async def test_graph_binds_active_resume_after_targeted_query():
+    """定向简历分析后应把该简历绑定为会话活动资源。"""
+    store: dict = {"bound": []}
+    deps, _ = _capture_deps(_make_binding_handler(store), Intent.RESUME_QUERY)
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=5,
+        message="看看我的简历",
+        attachments=[{"kind": "resume", "resume_id": 8, "filename": "a.pdf"}],
+        action=None,
+    )
+    result = await graph.ainvoke(state)
+    async for _ in result["plan"].text:
+        pass
+    assert store["bound"] == [8]
+
+
+async def test_graph_resolves_bound_resume_without_attachment():
+    """无附件轮次应从会话绑定恢复目标简历（内容感知继续生效）。"""
+    store: dict = {"bound": [], "resume_id": 7}
+    deps, seen = _capture_deps(_make_binding_handler(store), Intent.RESUME_QUERY)
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=5,
+        message="再详细讲讲项目经历",
+        attachments=[],  # 无附件：依赖上一轮绑定
+        action=None,
+    )
+    result = await graph.ainvoke(state)
+    async for _ in result["plan"].text:
+        pass
+
+    assert result.get("active_resume_id") == 7
+    assert "绑定简历的内容" in seen["context"], "无附件也应走内容感知路径"
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=5,
+        message="再详细讲讲项目经历",
+        attachments=[],  # 无附件：依赖上一轮绑定
+        action=None,
+    )
+    result = await graph.ainvoke(state)
+    async for _ in result["plan"].text:
+        pass
+
+    assert result.get("active_resume_id") == 7
+    assert "绑定简历的内容" in seen["context"], "无附件也应走内容感知路径"
+
+
 # ===== 短期记忆：load_history / 滚动摘要 / checkpoint =====
 
 

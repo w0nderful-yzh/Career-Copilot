@@ -69,6 +69,10 @@ public class AgentConversationEntity {
   @Column(name = "is_pinned", nullable = false)
   private Boolean isPinned = false;
 
+  /** 会话滚动摘要：Python Agent 对超出窗口的早期轮次做 LLM 摘要后写回，用于短期记忆恢复 */
+  @Column(columnDefinition = "TEXT")
+  private String summary;
+
   public enum ConversationStatus {
     ACTIVE,    // 活跃会话
     ARCHIVED   // 已归档

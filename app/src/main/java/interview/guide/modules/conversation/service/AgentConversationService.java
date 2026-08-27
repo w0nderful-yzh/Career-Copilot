@@ -3,6 +3,7 @@ package interview.guide.modules.conversation.service;
 import interview.guide.common.exception.BusinessException;
 import interview.guide.common.exception.ErrorCode;
 import interview.guide.modules.conversation.dto.AgentMessageDTO;
+import interview.guide.modules.conversation.dto.ConversationContextDTO;
 import interview.guide.modules.conversation.dto.ConversationDetailDTO;
 import interview.guide.modules.conversation.dto.ConversationListItemDTO;
 import interview.guide.modules.conversation.dto.CreateConversationRequest;
@@ -16,6 +17,7 @@ import interview.guide.modules.conversation.repository.AgentMessageRepository;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -84,6 +86,36 @@ public class AgentConversationService {
     AgentConversationEntity conversation = getConversationOrThrow(conversationId);
     String newTitle = trimTitle(title);
     conversation.setTitle(newTitle);
+    conversationRepository.save(conversation);
+  }
+
+  /**
+   * 会话上下文：最近 N 条消息（正序）+ 会话级滚动摘要，供 Python Agent 短期记忆注入。
+   *
+   * <p>只返回 role/content，不含 blocks 与全量历史（Token 纪律）。
+   */
+  public ConversationContextDTO getConversationContext(Long conversationId, int limit) {
+    AgentConversationEntity conversation = getConversationOrThrow(conversationId);
+    int safeLimit = Math.max(1, Math.min(limit, 100));
+    List<AgentMessageEntity> recent =
+        messageRepository.findByConversationIdOrderByMessageOrderDesc(
+            conversationId, PageRequest.of(0, safeLimit));
+    List<AgentMessageDTO> messages = recent.reversed().stream()
+        .map(message -> new AgentMessageDTO(
+            message.getId(),
+            message.getRole().name(),
+            message.getContent(),
+            null,
+            message.getCreatedAt()))
+        .toList();
+    long totalCount = messageRepository.countByConversationId(conversationId);
+    return new ConversationContextDTO(messages, conversation.getSummary(), totalCount);
+  }
+
+  @Transactional
+  public void updateSummary(Long conversationId, String summary) {
+    AgentConversationEntity conversation = getConversationOrThrow(conversationId);
+    conversation.setSummary(summary);
     conversationRepository.save(conversation);
   }
 

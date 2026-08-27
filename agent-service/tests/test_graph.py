@@ -23,15 +23,22 @@ class FakeIntentRouter:
         self._classification = classification
         self.calls = 0
 
-    async def classify(self, message: str) -> IntentClassification:
+    async def classify(
+        self, message: str, history: str | None = None
+    ) -> IntentClassification:
         self.calls += 1
         return self._classification
 
 
 class FakeAnswerer:
-    async def answer_stream(self, message: str, context: str | None = None):
+    async def answer_stream(
+        self, message: str, context: str | None = None, history: str | None = None
+    ):
         for char in "fake answer":
             yield char
+
+    async def summarize_history(self, history_text: str) -> str:
+        return "早期对话摘要：用户咨询 Java 后端实习。"
 
 
 def make_deps(
@@ -253,3 +260,185 @@ async def test_graph_resume_query_targets_uploaded_resume(backend_transport):
     # 应只调用目标简历分析，不查整库
     assert any("get_resume_analysis" in path for path in called)
     assert not any("get_resume_list" in path for path in called)
+
+
+# ===== 短期记忆：load_history / 滚动摘要 / checkpoint =====
+
+
+async def test_graph_loads_history_and_passes_to_answerer():
+    """携带 conversation_id 时应拉取最近消息注入回答，并透传滚动摘要。"""
+    seen: dict[str, str] = {}
+
+    class HistoryAnswerer:
+        async def answer_stream(self, message, context=None, history=None):
+            seen["history"] = history or ""
+            for char in "fake answer":
+                yield char
+
+        async def summarize_history(self, history_text: str) -> str:
+            return "早期对话摘要：用户咨询 Java 后端实习。"
+
+    def history_handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/context"):
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "data": {
+                        "messages": [
+                            {"role": "USER", "content": "我目标 Java 后端"},
+                            {"role": "ASSISTANT", "content": "好的，我们开始准备。"},
+                        ],
+                        "summary": "早期对话摘要：用户咨询 Java 后端实习。",
+                        "totalCount": 4,
+                    },
+                    "message": "success",
+                },
+            )
+        tool = path.rsplit("/", 1)[-1]
+        data = {"get_resume_list": []}.get(tool, [])
+        return httpx.Response(200, json={"code": 200, "data": data, "message": "success"})
+
+    router = FakeIntentRouter(
+        IntentClassification(intent=Intent.GENERAL_CHAT)
+    )
+    backend = BackendClient(
+        base_url="http://test", transport=httpx.MockTransport(history_handler)
+    )
+    deps = GraphDeps(intent_router=router, answerer=HistoryAnswerer(), backend=backend)
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=5, message="继续", attachments=[], action=None
+    )
+    result = await graph.ainvoke(state)
+    # plan.text 是惰性迭代器：消费后才触发回答器（与 API 层 SSE 流式一致）
+    async for _ in result["plan"].text:
+        pass
+
+    assert "用户: 我目标 Java 后端" in seen["history"]
+    assert "助手: 好的，我们开始准备。" in seen["history"]
+    assert "早期对话摘要" in seen["history"]
+
+
+async def test_graph_triggers_rolling_summary_and_writes_back():
+    """历史超出窗口且无摘要时，应生成滚动摘要并写回 Java。"""
+    calls: list[tuple[str, str]] = []
+
+    def summary_handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/context"):
+            messages = [
+                {"role": "USER", "content": f"第 {i} 轮问题"}
+                for i in range(10)
+            ]
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "data": {
+                        "messages": messages,
+                        "summary": None,
+                        "totalCount": 10,
+                    },
+                    "message": "success",
+                },
+            )
+        if path.endswith("/summary"):
+            import json
+
+            calls.append((request.method, json.loads(request.read().decode())["summary"]))
+            return httpx.Response(
+                200, json={"code": 200, "data": None, "message": "success"}
+            )
+        return httpx.Response(
+            200, json={"code": 200, "data": [], "message": "success"}
+        )
+
+    router = FakeIntentRouter(
+        IntentClassification(intent=Intent.GENERAL_CHAT)
+    )
+    backend = BackendClient(
+        base_url="http://test", transport=httpx.MockTransport(summary_handler)
+    )
+    deps = GraphDeps(intent_router=router, answerer=FakeAnswerer(), backend=backend)
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=5, message="继续", attachments=[], action=None
+    )
+    result = await graph.ainvoke(state)
+
+    # 摘要已生成并写回 Java；注入窗口保留最近 8 条
+    assert len(calls) == 1
+    assert "早期对话摘要" in calls[0][1]
+    assert result.get("history_summary") == "早期对话摘要：用户咨询 Java 后端实习。"
+    assert len(result.get("history") or []) == 8
+
+
+async def test_graph_checkpoint_persists_working_state():
+    """启用 checkpoint 后：plan 不被持久化，history 跨轮次恢复。"""
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from career_copilot.agent.checkpointer import TRANSIENT_KEYS
+
+    # 用内存版验证剥离逻辑（与 PG 版共用剥离思路，避免测试依赖真实 PG）
+    class MemoryCopilotSaver(MemorySaver):
+        async def aput(self, config, checkpoint, metadata, new_versions):
+            copy = checkpoint.copy()
+            copy["channel_values"] = {
+                k: v
+                for k, v in checkpoint["channel_values"].items()
+                if k not in TRANSIENT_KEYS
+            }
+            return await super().aput(config, copy, metadata, new_versions)
+
+        async def aput_writes(self, config, writes, task_id, task_path=""):
+            writes = [(c, v) for c, v in writes if c not in TRANSIENT_KEYS]
+            return await super().aput_writes(config, writes, task_id, task_path)
+
+    def history_handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/context"):
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "data": {
+                        "messages": [
+                            {"role": "USER", "content": "我目标 Java 后端"},
+                        ],
+                        "summary": None,
+                        "totalCount": 1,
+                    },
+                    "message": "success",
+                },
+            )
+        return httpx.Response(
+            200, json={"code": 200, "data": [], "message": "success"}
+        )
+
+    router = FakeIntentRouter(
+        IntentClassification(intent=Intent.GENERAL_CHAT)
+    )
+    backend = BackendClient(
+        base_url="http://test", transport=httpx.MockTransport(history_handler)
+    )
+    deps = GraphDeps(intent_router=router, answerer=FakeAnswerer(), backend=backend)
+    checkpointer = MemoryCopilotSaver()
+    graph = build_graph(deps, checkpointer=checkpointer)
+    config = {"configurable": {"thread_id": "5"}}
+
+    state1 = build_initial_state(
+        conversation_id=5, message="第一轮", attachments=[], action=None
+    )
+    result1 = await graph.ainvoke(state1, config=config)
+    assert result1["plan"] is not None, "内存返回值应保留 plan（供 API 流式）"
+
+    # 第二轮同 thread：检查点恢复上一轮 working state
+    state2 = build_initial_state(
+        conversation_id=5, message="第二轮", attachments=[], action=None
+    )
+    result2 = await graph.ainvoke(state2, config=config)
+
+    assert len(result2.get("history") or []) >= 1, "history 应跨轮次恢复"
+    assert result2.get("history")[0]["content"] == "我目标 Java 后端"

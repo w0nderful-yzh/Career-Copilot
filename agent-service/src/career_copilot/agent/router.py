@@ -93,12 +93,11 @@ class IntentRouter:
             IntentClassification, method="json_mode"
         )
 
-    async def classify(self, message: str) -> IntentClassification:
-        result = await self._structured.ainvoke(
-            [
-                SystemMessage(content=INTENT_SYSTEM_PROMPT),
-                HumanMessage(content=message),
-            ]
-        )
+    async def classify(self, message: str, history: str | None = None) -> IntentClassification:
+        messages: list[Any] = [SystemMessage(content=INTENT_SYSTEM_PROMPT)]
+        if history:
+            messages.append(HumanMessage(content=f"对话历史：\n{history}"))
+        messages.append(HumanMessage(content=message))
+        result = await self._structured.ainvoke(messages)
         assert isinstance(result, IntentClassification)
         return result

@@ -29,19 +29,28 @@ class FakeIntentRouter:
     def __init__(self, classification: IntentClassification) -> None:
         self._classification = classification
 
-    async def classify(self, message: str) -> IntentClassification:
+    async def classify(
+        self, message: str, history: str | None = None
+    ) -> IntentClassification:
         return self._classification
 
 
 class FakeAnswerer:
     """返回固定文本的回答器，支持同步与流式两种调用。"""
 
-    async def answer(self, message: str, context: str | None = None) -> str:
+    async def answer(
+        self, message: str, context: str | None = None, history: str | None = None
+    ) -> str:
         return "fake answer"
 
-    async def answer_stream(self, message: str, context: str | None = None):
+    async def answer_stream(
+        self, message: str, context: str | None = None, history: str | None = None
+    ):
         for char in "fake answer":
             yield char
+
+    async def summarize_history(self, history_text: str) -> str:
+        return "早期对话摘要：用户咨询 Java 后端实习。"
 
 
 def setup_overrides(
@@ -256,6 +265,40 @@ async def test_sync_agent_llm_config_failure_falls_back(monkeypatch):
     assert chat_module._agent_llm_config is None
 
 
+@pytest.mark.asyncio
+async def test_ensure_llm_config_synced_retries_lazily(monkeypatch):
+    """启动同步失败后，首个请求应惰性重试同步（解决 Agent 先于 Java 启动）。"""
+    chat_module._agent_llm_config = None
+    calls = {"count": 0}
+
+    class LazyClient:
+        def __init__(self, base_url, timeout) -> None:
+            pass
+
+        async def get_agent_llm_config(self) -> dict:
+            calls["count"] += 1
+            return {
+                "providerId": "deepseek",
+                "baseUrl": "https://api.deepseek.com",
+                "model": "deepseek-v4-flash",
+                "apiKey": "secret",
+            }
+
+        async def aclose(self) -> None:
+            pass
+
+    monkeypatch.setattr(chat_module, "BackendClient", LazyClient)
+    # 首次请求触发重试并同步成功
+    await chat_module._ensure_llm_config_synced()
+    assert chat_module._agent_llm_config is not None
+    assert calls["count"] == 1
+    # 已同步后不再重试
+    await chat_module._ensure_llm_config_synced()
+    assert calls["count"] == 1
+    # 清理全局缓存，避免污染其他测试
+    chat_module._agent_llm_config = None
+
+
 # ===== SSE 流式端点 =====
 
 
@@ -330,10 +373,23 @@ def test_chat_stream_persists_turn_with_conversation_id():
 
     def tracking_handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
-        if path.startswith("/api/agent/conversations"):
+        if path.startswith("/api/agent/conversations") and path.endswith("/messages"):
             import json as _json
 
             saved.append(_json.loads(request.read().decode()))
+            return httpx.Response(
+                200, json={"code": 200, "data": None, "message": "success"}
+            )
+        if path.endswith("/context"):
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "data": {"messages": [], "summary": None, "totalCount": 0},
+                    "message": "success",
+                },
+            )
+        if path.startswith("/api/agent/conversations"):
             return httpx.Response(
                 200, json={"code": 200, "data": None, "message": "success"}
             )
@@ -447,7 +503,7 @@ def test_chat_stream_resume_attachment_skips_classifier(backend_transport):
     """仅附件路径应完全跳过意图分类：分类器不可用时仍返回确定性 ChoiceBlock。"""
 
     class BrokenIntentRouter:
-        async def classify(self, message: str) -> IntentClassification:
+        async def classify(self, message: str, history: str | None = None) -> IntentClassification:
             raise RuntimeError("intent classifier unavailable")
 
     app.dependency_overrides[get_intent_router] = lambda: BrokenIntentRouter()

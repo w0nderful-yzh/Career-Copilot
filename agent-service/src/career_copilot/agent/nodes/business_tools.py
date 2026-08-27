@@ -14,6 +14,7 @@ from career_copilot.agent.state import CareerAgentState
 from career_copilot.clients.backend import BusinessToolError
 from career_copilot.schemas.message import ActionBlock
 from career_copilot.tools import (
+    format_history,
     summarize_interviews,
     summarize_resume_analysis,
     summarize_resumes,
@@ -27,7 +28,7 @@ async def business_tools(state: CareerAgentState, deps: GraphDeps) -> dict[str, 
     if intent == Intent.RESUME_QUERY.value:
         return await _plan_resume_query(state, backend, deps)
     if intent == Intent.INTERVIEW_REVIEW.value:
-        return await _plan_interview_review(state.get("message") or "", backend, deps)
+        return await _plan_interview_review(state, backend, deps)
 
     # PROFILE_QUERY / PREPARATION_QUERY：工具未开通，友好占位（避免空回复）
     return {
@@ -48,10 +49,13 @@ async def _plan_resume_query(
     附件/会话指定了目标简历（active_resume_id）时，直接读取该简历的分析结果，
     而不是把整库简历塞给 LLM 让它反问你"是哪一份"；否则回退简历列表。
     """
+    message = state.get("message") or ""
+    history = format_history(
+        state.get("history") or [], state.get("history_summary")
+    )
     if state.get("active_resume_id") is not None:
         return await _plan_targeted_resume(state, backend, deps)
 
-    message = state.get("message") or ""
     resumes = await backend.list_resumes()
     if not resumes:
         return {
@@ -68,7 +72,7 @@ async def _plan_resume_query(
     return {
         "plan": StreamPlan(
             blocks=[resume_summary_block(resumes)],
-            text=deps.answerer.answer_stream(message, context),
+            text=deps.answerer.answer_stream(message, context, history or None),
         )
     }
 
@@ -82,6 +86,9 @@ async def _plan_targeted_resume(
     避免把"正在分析"误判为"没有简历"。
     """
     message = state.get("message") or ""
+    history = format_history(
+        state.get("history") or [], state.get("history_summary")
+    )
     resume_id = state["active_resume_id"]
     try:
         analysis = await backend.get_resume_analysis(resume_id)
@@ -110,7 +117,7 @@ async def _plan_targeted_resume(
                     ]
                 )
             ],
-            text=deps.answerer.answer_stream(message, context),
+            text=deps.answerer.answer_stream(message, context, history or None),
         )
     }
 
@@ -124,11 +131,16 @@ def _attachment_filename(state: CareerAgentState) -> str | None:
 
 
 async def _plan_interview_review(
-    message: str, backend: Any, deps: GraphDeps
+    state: CareerAgentState, backend: Any, deps: GraphDeps
 ) -> dict[str, Any]:
     """面试回顾：先产出 interview_summary 块，再基于摘要流式回答。"""
-    history = await backend.get_interview_history()
-    if not history:
+    message = state.get("message") or ""
+    history = format_history(
+        state.get("history") or [], state.get("history_summary")
+    )
+    history_txt = history or None
+    backend_history = await backend.get_interview_history()
+    if not backend_history:
         return {
             "plan": StreamPlan(
                 blocks=[
@@ -139,10 +151,10 @@ async def _plan_interview_review(
                 text=static_text("你还没有模拟面试记录，可以先来一场模拟面试练练手。"),
             )
         }
-    context = await summarize_interviews(history)
+    context = await summarize_interviews(backend_history)
     return {
         "plan": StreamPlan(
-            blocks=[interview_summary_block(history)],
-            text=deps.answerer.answer_stream(message, context),
+            blocks=[interview_summary_block(backend_history)],
+            text=deps.answerer.answer_stream(message, context, history_txt),
         )
     }

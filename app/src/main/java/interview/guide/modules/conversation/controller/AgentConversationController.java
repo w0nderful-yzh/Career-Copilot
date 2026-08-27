@@ -2,6 +2,7 @@ package interview.guide.modules.conversation.controller;
 
 import interview.guide.common.annotation.RateLimit;
 import interview.guide.common.result.Result;
+import interview.guide.modules.conversation.dto.ConversationContextDTO;
 import interview.guide.modules.conversation.dto.ConversationDetailDTO;
 import interview.guide.modules.conversation.dto.ConversationListItemDTO;
 import interview.guide.modules.conversation.dto.CreateConversationRequest;
@@ -18,6 +19,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -51,6 +53,25 @@ public class AgentConversationController {
   @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 60)
   public Result<ConversationDetailDTO> getConversationDetail(@PathVariable Long conversationId) {
     return Result.success(conversationService.getConversationDetail(conversationId));
+  }
+
+  /** Python Agent 短期记忆：最近 N 条消息（role/content）+ 会话滚动摘要 */
+  @GetMapping("/{conversationId}/context")
+  @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 60)
+  public Result<ConversationContextDTO> getConversationContext(
+      @PathVariable Long conversationId,
+      @RequestParam(defaultValue = "8") int limit) {
+    return Result.success(conversationService.getConversationContext(conversationId, limit));
+  }
+
+  /** Python Agent 滚动摘要写回 */
+  @PutMapping("/{conversationId}/summary")
+  @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 20)
+  public Result<Void> updateSummary(
+      @PathVariable Long conversationId,
+      @RequestBody Map<String, String> body) {
+    conversationService.updateSummary(conversationId, body.get("summary"));
+    return Result.success();
   }
 
   @PutMapping("/{conversationId}/title")

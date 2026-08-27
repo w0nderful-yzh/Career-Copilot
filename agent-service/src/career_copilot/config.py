@@ -26,5 +26,16 @@ class Settings(BaseSettings):
     agent_service_host: str = "0.0.0.0"
     agent_service_port: int = 8000
 
+    # LangGraph Checkpoint：Agent 工作状态持久化（跨轮次恢复/HITL）
+    # 使用独立数据库（agent_checkpoint），避免与 Java 业务库混用；
+    # 默认匹配 docker-compose.dev.yml 的本地开发凭据
+    checkpoint_database_url: str = "postgresql://postgres:123456@localhost:5432/agent_checkpoint"
+    checkpoint_schema: str = "agent_checkpoint"
+
+    # 短期记忆（会话历史注入）参数
+    history_max_messages: int = 8  # 注入的最近消息条数
+    history_max_message_chars: int = 500  # 单条消息注入上限
+    summary_trigger_messages: int = 12  # 历史超过该条数时触发滚动摘要
+
 
 settings = Settings()

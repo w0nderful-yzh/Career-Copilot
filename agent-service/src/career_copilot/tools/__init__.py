@@ -92,3 +92,19 @@ async def resolve_knowledge_base_ids(client: BackendClient) -> list[int]:
         if kb_id is not None:
             ids.append(int(kb_id))
     return ids
+
+
+def format_history(
+    history: list[dict[str, str]], summary: str | None = None
+) -> str:
+    """把会话历史裁剪为适合放入 Prompt 的文本（角色 + 内容，正序）。"""
+    if not history and not summary:
+        return ""
+    lines: list[str] = []
+    if summary:
+        lines.append(f"[早期对话摘要] {summary}")
+    for item in history:
+        role = "用户" if item.get("role") == "USER" else "助手"
+        content = item.get("content") or ""
+        lines.append(f"{role}: {content}")
+    return "\n".join(lines)

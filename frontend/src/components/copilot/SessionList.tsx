@@ -36,10 +36,10 @@ export default function SessionList({
 }: SessionListProps) {
   return (
     <div>
-      <div className="px-2 pb-2">
+      <div className="px-2 pb-4 pt-1">
         <button
           onClick={onNew}
-          className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-primary-700 dark:bg-primary-500 dark:hover:bg-primary-600"
+          className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary-600 px-3 py-2.5 text-sm font-semibold text-white shadow-lg shadow-primary-500/20 transition hover:-translate-y-0.5 hover:bg-primary-700 dark:bg-primary-500 dark:hover:bg-primary-600"
         >
           <Plus className="h-4 w-4" />
           新对话
@@ -49,7 +49,7 @@ export default function SessionList({
       <div className="px-2 pb-2">
         <div className="mb-1 px-3">
           <span className="text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
-            历史对话
+            最近对话
           </span>
         </div>
         {loading ? (
@@ -64,14 +64,16 @@ export default function SessionList({
               const active = conversation.id === activeConversationId;
               return (
                 <li key={conversation.id}>
-                  <div
-                    onClick={() => onSelect(conversation.id)}
-                    className={`group flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 transition ${
+                  <div className="group relative">
+                    <button
+                      type="button"
+                      onClick={() => onSelect(conversation.id)}
+                      className={`flex w-full items-center gap-2 rounded-xl px-3 py-2.5 pr-9 text-left transition ${
                       active
                         ? 'bg-primary-50 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300'
                         : 'text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-800'
                     }`}
-                  >
+                    >
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-medium">
                         {conversation.title}
@@ -80,13 +82,14 @@ export default function SessionList({
                         {conversation.messageCount} 条 · {formatRelativeTime(conversation.updatedAt)}
                       </p>
                     </div>
+                    </button>
                     <button
                       onClick={(event) => {
                         event.stopPropagation();
                         onDelete(conversation.id);
                       }}
                       title="删除对话"
-                      className="shrink-0 rounded p-1 text-slate-300 opacity-0 transition hover:bg-red-50 hover:text-red-500 group-hover:opacity-100 dark:text-slate-600 dark:hover:bg-red-900/30 dark:hover:text-red-300"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-slate-300 opacity-0 transition hover:bg-red-50 hover:text-red-500 focus:opacity-100 group-hover:opacity-100 dark:text-slate-600 dark:hover:bg-red-900/30 dark:hover:text-red-300"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>

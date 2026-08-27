@@ -2,11 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { conversationApi, resumeUploadApi, streamChat } from '../api/agentChat';
 import Composer from '../components/copilot/Composer';
+import ContextPanel from '../components/copilot/ContextPanel';
 import MessageList from '../components/copilot/MessageList';
 import type { CopilotOutletContext } from '../components/Layout';
 import type {
+  ActionSelected,
   AgentBlock,
   AttachmentRef,
+  ChoiceOption,
   ConversationDetail,
   ConversationItem,
   CopilotMessage,
@@ -46,6 +49,7 @@ function toCopilotMessages(detail: ConversationDetail): CopilotMessage[] {
 
 export default function CopilotPage() {
   const {
+    conversations,
     activeConversationId,
     refreshConversations,
     selectConversation,
@@ -130,6 +134,79 @@ export default function CopilotPage() {
     [updateMessage],
   );
 
+  const runTurn = useCallback(
+    async ({
+      message,
+      userContent,
+      attachments = [],
+      action,
+    }: {
+      message: string;
+      userContent: string;
+      attachments?: AttachmentRef[];
+      action?: ActionSelected;
+    }) => {
+      // 无会话时先创建（Java System of Record），并同步到 Layout 会话列表。
+      let conversationId = activeConversationId;
+      if (conversationId === null) {
+        try {
+          const created: ConversationItem = await conversationApi.create();
+          conversationId = created.id;
+          onConversationCreated(created);
+          // 标记跳过本次历史加载，避免刚追加的消息被空历史覆盖。
+          skipHistoryLoadRef.current = created.id;
+          selectConversation(created.id);
+        } catch (err) {
+          console.error('Failed to create conversation:', err);
+          return;
+        }
+      }
+
+      const assistantId = nextId();
+      setMessages((prev) => [
+        ...prev,
+        { id: nextId(), role: 'user', content: userContent, blocks: [], status: 'done' },
+        { id: assistantId, role: 'assistant', content: '', blocks: [], status: 'streaming' },
+      ]);
+      setStreaming(true);
+
+      const controller = new AbortController();
+      abortRef.current = controller;
+      try {
+        await streamChat(
+          message,
+          (event) => handleEvent(assistantId, event),
+          controller.signal,
+          conversationId,
+          attachments,
+          action,
+        );
+      } catch (err) {
+        if (controller.signal.aborted) {
+          updateMessage(assistantId, (current) => ({ ...current, status: 'done' }));
+        } else {
+          updateMessage(assistantId, (current) => ({
+            ...current,
+            status: 'error',
+            error: err instanceof Error ? err.message : '网络异常，请稍后重试',
+          }));
+        }
+      } finally {
+        abortRef.current = null;
+        setStreaming(false);
+        refreshConversations();
+      }
+    },
+    [
+      activeConversationId,
+      handleEvent,
+      onConversationCreated,
+      refreshConversations,
+      selectConversation,
+      updateMessage,
+    ],
+  );
+
   const send = useCallback(
     async (text: string, attachment?: File) => {
       // 有附件（PDF 简历）时先上传到 Java 简历库（文件不经 Agent，只传资源 id）
@@ -155,91 +232,76 @@ export default function CopilotPage() {
         }
       }
 
-      // 无会话时先创建（Java System of Record），并同步到 Layout 会话列表
-      let conversationId = activeConversationId;
-      if (conversationId === null) {
-        try {
-          const created: ConversationItem = await conversationApi.create();
-          conversationId = created.id;
-          onConversationCreated(created);
-          // 标记跳过本次历史加载，避免刚追加的消息被空历史覆盖
-          skipHistoryLoadRef.current = created.id;
-          selectConversation(created.id);
-        } catch (err) {
-          console.error('Failed to create conversation:', err);
-        }
-      }
-
       // 带附件时保留用户输入的文字，并把附件提示追加在其后（气泡与持久化历史保持一致）
       const userContent = attachments.length > 0
         ? (text ? `${text}\n[简历附件：${attachment?.name}]` : `上传了简历附件：${attachment?.name}`)
         : text;
 
-      const assistantId = nextId();
-      setMessages((prev) => [
-        ...prev,
-        { id: nextId(), role: 'user', content: userContent, blocks: [], status: 'done' },
-        { id: assistantId, role: 'assistant', content: '', blocks: [], status: 'streaming' },
-      ]);
-      setStreaming(true);
-
-      const controller = new AbortController();
-      abortRef.current = controller;
-      try {
-        await streamChat(
-          userContent,
-          (event) => handleEvent(assistantId, event),
-          controller.signal,
-          conversationId ?? undefined,
-          attachments,
-        );
-      } catch (err) {
-        if (controller.signal.aborted) {
-          updateMessage(assistantId, (message) => ({
-            ...message,
-            status: 'done',
-          }));
-        } else {
-          updateMessage(assistantId, (message) => ({
-            ...message,
-            status: 'error',
-            error: err instanceof Error ? err.message : '网络异常，请稍后重试',
-          }));
-        }
-      } finally {
-        abortRef.current = null;
-        setStreaming(false);
-        // 流式结束：刷新会话列表（消息数/标题/时间更新）
-        refreshConversations();
-      }
+      await runTurn({ message: userContent, userContent, attachments });
     },
-    [activeConversationId, handleEvent, onConversationCreated, refreshConversations, selectConversation, updateMessage],
+    [runTurn],
+  );
+
+  const submitAction = useCallback(
+    (option: ChoiceOption) => {
+      // 文案仅用于可读的用户气泡和历史；Graph 只按结构化 action 确定性路由。
+      void runTurn({
+        message: option.label,
+        userContent: `已选择：${option.label}`,
+        action: {
+          type: 'ACTION_SELECTED',
+          action: option.action,
+          payload: option.payload ?? {},
+        },
+      });
+    },
+    [runTurn],
   );
 
   const cancel = useCallback(() => {
     abortRef.current?.abort();
   }, []);
 
+  const activeConversation = conversations.find((item) => item.id === activeConversationId);
+
   return (
-    <div className="flex h-full flex-col">
-      <header className="border-b border-slate-200 bg-white/80 px-6 py-3 backdrop-blur dark:border-slate-700 dark:bg-slate-900/80">
-        <div className="mx-auto flex w-full max-w-3xl items-center justify-between">
-          <h1 className="text-sm font-bold text-slate-800 dark:text-white">Career Copilot</h1>
-          <span className="text-xs text-slate-400 dark:text-slate-500">Agent 工作台</span>
-        </div>
-      </header>
-
-      <main className="flex-1 overflow-y-auto bg-slate-50/50 dark:bg-slate-900/50">
-        {loadingHistory ? (
-          <div className="flex h-full items-center justify-center text-sm text-slate-400">
-            加载对话中…
+    <div className="grid h-full min-w-0 grid-cols-1 overflow-hidden bg-[#fbfbfd] dark:bg-slate-950 xl:grid-cols-[minmax(0,1fr)_20rem]">
+      <section className="flex min-w-0 flex-col overflow-hidden">
+        <header className="flex h-16 shrink-0 items-center justify-between border-b border-slate-200/80 bg-white/90 px-6 backdrop-blur dark:border-slate-700 dark:bg-slate-900/90 lg:px-8">
+          <div className="min-w-0">
+            <h1 className="truncate font-display text-base font-bold text-slate-950 dark:text-white">
+              {activeConversation?.title || 'Career Copilot'}
+            </h1>
+            <p className="mt-0.5 text-xs text-slate-400">
+              {streaming ? '正在处理你的请求…' : 'Agent 求职工作台'}
+            </p>
           </div>
-        ) : (
-          <MessageList messages={messages} />
-        )}
-      </main>
+          <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-500 shadow-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
+            <span className={`h-2 w-2 rounded-full ${streaming ? 'animate-pulse bg-amber-400' : 'bg-emerald-500'}`} />
+            {streaming ? '运行中' : '已就绪'}
+          </div>
+        </header>
 
-      <Composer streaming={streaming} onSend={send} onCancel={cancel} />
+        <main className="relative flex-1 overflow-y-auto bg-[radial-gradient(circle_at_top,_rgba(99,102,241,0.06),_transparent_38%)] dark:bg-[radial-gradient(circle_at_top,_rgba(99,102,241,0.10),_transparent_38%)]">
+          {loadingHistory ? (
+            <div className="flex h-full items-center justify-center text-sm text-slate-400">
+              加载对话中…
+            </div>
+          ) : (
+            <MessageList
+              messages={messages}
+              actionDisabled={streaming}
+              onActionSelect={submitAction}
+              onQuickPrompt={(prompt) => void send(prompt)}
+            />
+          )}
+        </main>
+
+        <div className="shrink-0 border-t border-slate-200/60 bg-white/85 pt-3 backdrop-blur-xl dark:border-slate-700 dark:bg-slate-900/85">
+          <Composer streaming={streaming} onSend={send} onCancel={cancel} />
+        </div>
+      </section>
+      <ContextPanel messages={messages} />
     </div>
   );
 }

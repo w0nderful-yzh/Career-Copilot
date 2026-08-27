@@ -1,5 +1,6 @@
 import request from './request';
 import type {
+  ActionSelected,
   AttachmentRef,
   ConversationDetail,
   ConversationItem,
@@ -20,6 +21,7 @@ export async function streamChat(
   signal: AbortSignal,
   conversationId?: number,
   attachments?: AttachmentRef[],
+  action?: ActionSelected,
 ): Promise<void> {
   const response = await fetch('/api/chat/stream', {
     method: 'POST',
@@ -34,6 +36,7 @@ export async function streamChat(
         filename: att.filename ?? null,
         duplicate: att.duplicate ?? false,
       })),
+      action: action ?? null,
     }),
     signal,
   });

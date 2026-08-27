@@ -4,6 +4,7 @@
 export type AgentBlockType =
   | 'text'
   | 'action'
+  | 'choice'
   | 'resume_summary'
   | 'interview_summary'
   | 'knowledge_citations';
@@ -18,6 +19,24 @@ export interface ActionBlock {
   route: string;
   label: string;
   params?: Record<string, unknown>;
+}
+
+export interface ChoiceOption {
+  action: string;
+  label: string;
+  payload?: Record<string, unknown>;
+}
+
+export interface ChoiceBlock {
+  type: 'choice';
+  title?: string | null;
+  options: ChoiceOption[];
+}
+
+export interface ActionSelected {
+  type: 'ACTION_SELECTED';
+  action: string;
+  payload?: Record<string, unknown>;
 }
 
 export interface ResumeSummaryBlock {
@@ -55,6 +74,7 @@ export interface KnowledgeCitationsBlock {
 export type AgentBlock =
   | TextBlock
   | ActionBlock
+  | ChoiceBlock
   | ResumeSummaryBlock
   | InterviewSummaryBlock
   | KnowledgeCitationsBlock;
@@ -111,15 +131,3 @@ export type StreamEvent =
   | { type: 'message_delta'; payload: { content: string } }
   | { type: 'error'; payload: { message: string } }
   | { type: 'done'; payload: Record<string, unknown> };
-
-// Action 白名单：路由 key → 前端真实路径
-// 未知路由不渲染按钮，禁止任意跳转
-export const ACTION_ROUTE_MAP: Record<string, { path: string; label: string }> = {
-  RESUME_UPLOAD: { path: '/upload', label: '上传简历' },
-  RESUME_LIBRARY: { path: '/history', label: '简历库' },
-  INTERVIEW_CREATE: { path: '/interview-hub', label: '开始模拟面试' },
-  INTERVIEW_HISTORY: { path: '/interviews', label: '面试记录' },
-  KNOWLEDGE_BASE: { path: '/knowledgebase', label: '知识库管理' },
-  KNOWLEDGE_CHAT: { path: '/knowledgebase/chat', label: '问答助手' },
-  SETTINGS: { path: '/settings', label: '设置' },
-};

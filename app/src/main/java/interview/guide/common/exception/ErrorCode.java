@@ -81,7 +81,15 @@ public enum ErrorCode {
     MODULE_NOT_FOUND(11008, "模块不存在"),
     VOICE_CONFIG_READ_FAILED(11009, "读取语音服务配置失败"),
     VOICE_CONFIG_WRITE_FAILED(11010, "写入语音服务配置失败"),
-    VOICE_CONFIG_TEST_FAILED(11011, "语音服务连通性测试失败");
+    VOICE_CONFIG_TEST_FAILED(11011, "语音服务连通性测试失败"),
+
+    // ========== Agent Tool 模块错误 12xxx ==========
+    AGENT_TOOL_NOT_FOUND(12001, "Agent Tool 不存在"),
+    AGENT_TOOL_ARGUMENT_INVALID(12002, "Agent Tool 参数无效"),
+
+    // ========== Copilot 对话模块错误 13xxx ==========
+    CONVERSATION_NOT_FOUND(13001, "对话不存在"),
+    CONVERSATION_MESSAGE_INVALID(13002, "对话消息参数无效");
 
     private final Integer code;
     private final String message;

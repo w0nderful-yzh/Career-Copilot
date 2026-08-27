@@ -25,6 +25,7 @@ const VoiceInterviewEvaluationPage = lazy(() => import('./pages/VoiceInterviewEv
 const InterviewSchedulePage = lazy(() => import('./pages/InterviewSchedulePage'));
 const InterviewHubPage = lazy(() => import('./pages/InterviewHubPage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
+const CopilotPage = lazy(() => import('./pages/CopilotPage'));
 const InterviewDetailPanel = lazy(() => import('./components/InterviewDetailPanel'));
 
 // Loading component
@@ -192,8 +193,11 @@ function App() {
       <Suspense fallback={<Loading />}>
         <Routes>
           <Route path="/" element={<Layout />}>
-            {/* 默认重定向到简历管理页面 */}
-            <Route index element={<Navigate to="/history" replace />} />
+            {/* 默认入口：Career Copilot 工作台 */}
+            <Route index element={<Navigate to={ROUTES.copilot} replace />} />
+
+            {/* Copilot 工作台 */}
+            <Route path={ROUTES.copilot.slice(1)} element={<CopilotPage />} />
 
             {/* 上传页面 */}
             <Route path="upload" element={<UploadPageWrapper />} />

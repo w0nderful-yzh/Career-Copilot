@@ -31,6 +31,10 @@ public class LlmGlobalSettingEntity {
   @Column(name = "default_embedding_provider_id", nullable = false, length = 64)
   private String defaultEmbeddingProviderId;
 
+  /** Agent Service 使用的默认 Provider，可空：为空时回落默认聊天 Provider */
+  @Column(name = "default_agent_provider_id", length = 64)
+  private String defaultAgentProviderId;
+
   @Column(name = "created_at", nullable = false)
   private LocalDateTime createdAt;
 

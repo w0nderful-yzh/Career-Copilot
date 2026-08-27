@@ -41,6 +41,7 @@ export interface ProviderTestResult {
 export interface DefaultProvider {
   defaultProvider: string;
   defaultEmbeddingProvider: string;
+  defaultAgentProvider: string;
 }
 
 export interface AsrConfig {

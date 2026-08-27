@@ -40,6 +40,15 @@ export const llmProviderApi = {
   updateDefaultEmbeddingProvider: (data: DefaultProvider) =>
     request.put<void>('/api/llm-provider/default-embedding-provider', data),
 
+  updateDefaultAgentProvider: (data: DefaultProvider) =>
+    request.put<void>('/api/llm-provider/default-agent-provider', data),
+
+  // Agent Service 模型连接配置（仅供内网 Agent Runtime 使用）
+  getAgentConfig: () =>
+    request.get<{ providerId: string; baseUrl: string; model: string }>(
+      '/api/llm-provider/agent-config',
+    ),
+
   // Voice ASR/TTS Config
   getAsrConfig: () =>
     request.get<AsrConfig>('/api/llm-provider/voice/asr'),

@@ -2,6 +2,7 @@ package interview.guide.modules.llmprovider.controller;
 
 import interview.guide.common.annotation.RateLimit;
 import interview.guide.common.result.Result;
+import interview.guide.modules.llmprovider.dto.AgentLlmConfigDTO;
 import interview.guide.modules.llmprovider.dto.AsrConfigDTO;
 import interview.guide.modules.llmprovider.dto.AsrConfigRequest;
 import interview.guide.modules.llmprovider.dto.CreateProviderRequest;
@@ -99,6 +100,25 @@ public class LlmProviderController {
   public Result<Void> updateDefaultEmbeddingProvider(@RequestBody DefaultProviderDTO request) {
     configService.updateDefaultEmbeddingProvider(request);
     return Result.success();
+  }
+
+  // ===== Agent 模型配置 =====
+
+  @PutMapping("/default-agent-provider")
+  @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 5)
+  public Result<Void> updateDefaultAgentProvider(@RequestBody DefaultProviderDTO request) {
+    configService.updateDefaultAgentProvider(request);
+    return Result.success();
+  }
+
+  /**
+   * Agent Service 的 LLM 连接配置（含解密 apiKey）。
+   * 仅供内网 Python Agent Runtime 调用，禁止浏览器访问。
+   */
+  @GetMapping("/agent-config")
+  @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 30)
+  public Result<AgentLlmConfigDTO> getAgentLlmConfig() {
+    return Result.success(configService.getAgentLlmConfig());
   }
 
   // ===== Voice ASR/TTS Config =====

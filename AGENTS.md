@@ -423,6 +423,14 @@ Java style:
 * keep methods focused,
 * do not introduce abstractions without a concrete need.
 
+Code comments:
+
+* code must include necessary Chinese comments explaining business intent,
+  non-obvious branches and complex call chains (applies to Java, Python and TypeScript),
+* comments should explain *why*, not restate what the code obviously does,
+* simple self-explanatory code does not need comments,
+* keep comments in sync with the code when changing behavior.
+
 Logging:
 
 ```java

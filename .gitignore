@@ -28,3 +28,11 @@ frontend/test-results/
 frontend/playwright-report/
 /.agents
 skills-lock.json
+
+# Python / Agent Service
+agent-service/.venv/
+agent-service/**/__pycache__/
+agent-service/.ruff_cache/
+agent-service/.mypy_cache/
+agent-service/.pytest_cache/
+.dev-logs/

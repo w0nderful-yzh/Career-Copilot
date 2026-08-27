@@ -333,6 +333,21 @@ pnpm dev
 
 前端服务启动于 `http://localhost:5173`
 
+### 5. 一键启停三个服务
+
+使用 `scripts/dev.sh` 统一管理 Java / Python Agent / React 三个服务（按端口启停，避免残留进程）：
+
+```bash
+./scripts/dev.sh start      # 启动三个服务（等待 Java 就绪后打印状态）
+./scripts/dev.sh stop       # 停止三个服务并释放端口
+./scripts/dev.sh restart    # 重启
+./scripts/dev.sh status     # 查看各服务健康状态
+./scripts/dev.sh logs java  # 查看日志（java|agent|web）
+./scripts/dev.sh stop-port 8081   # 忘记端口时按端口兜底清理
+```
+
+端口默认 `8081 / 8001 / 5173`（本机 8080/8000 常被其他项目占用），可通过 `SERVER_PORT` / `AGENT_PORT` / `WEB_PORT` 环境变量覆盖；前端与 Agent 的代理目标由脚本自动注入，无需手工改 `.env`。日志位于 `.dev-logs/`。
+
 ---
 
 ## Docker 快速部署

@@ -68,6 +68,16 @@ def backend_transport():
         tool = path.rsplit("/", 1)[-1]
         data = {
             "get_resume_list": [{"id": 1, "filename": "resume.pdf", "latestScore": 82}],
+            "get_resume": {
+                "id": 1,
+                "filename": "resume.pdf",
+                "resumeText": (
+                    "姓名：张三\n"
+                    "项目经历：基于 LangGraph 构建 Agent 平台\n"
+                    "技能：Java、Redis"
+                ),
+                "analyzeStatus": "COMPLETED",
+            },
             "get_resume_analysis": {
                 "overallScore": 82,
                 "scoreDetail": {
@@ -260,6 +270,170 @@ async def test_graph_resume_query_targets_uploaded_resume(backend_transport):
     # 应只调用目标简历分析，不查整库
     assert any("get_resume_analysis" in path for path in called)
     assert not any("get_resume_list" in path for path in called)
+
+
+async def test_graph_targeted_resume_includes_content(backend_transport):
+    """定向简历查询应把完整简历内容（get_resume）注入回答上下文。"""
+    seen: dict[str, str] = {}
+
+    class ContentAnswerer:
+        async def answer_stream(self, message, context=None, history=None):
+            seen["context"] = context or ""
+            for char in "fake answer":
+                yield char
+
+        async def summarize_history(self, history_text: str) -> str:
+            return ""
+
+    router = FakeIntentRouter(
+        IntentClassification(intent=Intent.RESUME_QUERY)
+    )
+    backend = BackendClient(
+        base_url="http://test", transport=httpx.MockTransport(backend_transport)
+    )
+    deps = GraphDeps(intent_router=router, answerer=ContentAnswerer(), backend=backend)
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None,
+        message="分析我的项目经历",
+        attachments=[{"kind": "resume", "resume_id": 1, "filename": "resume.pdf"}],
+        action=None,
+    )
+    result = await graph.ainvoke(state)
+    async for _ in result["plan"].text:
+        pass
+
+    # 上下文应同时包含完整简历内容与分析摘要（内容感知）
+    assert "基于 LangGraph 构建 Agent 平台" in seen["context"]
+    assert "该简历分析结果" in seen["context"]
+
+
+# ===== 无附件时的目标简历解析（设计文档 §26）=====
+
+
+def _capture_deps(backend_transport, intent: Intent):
+    """返回带上下文捕获的 deps 与 seen 字典。"""
+    seen: dict[str, str] = {}
+
+    class CaptureAnswerer:
+        async def answer_stream(self, message, context=None, history=None):
+            seen["message"] = message
+            seen["context"] = context or ""
+            for char in "fake answer":
+                yield char
+
+        async def summarize_history(self, history_text: str) -> str:
+            return ""
+
+    router = FakeIntentRouter(IntentClassification(intent=intent))
+    backend = BackendClient(
+        base_url="http://test", transport=httpx.MockTransport(backend_transport)
+    )
+    return GraphDeps(intent_router=router, answerer=CaptureAnswerer(), backend=backend), seen
+
+
+async def test_graph_resume_query_single_resume_auto_targets(backend_transport):
+    """无附件但库中仅一份简历时应自动锁定并走内容感知路径。"""
+    deps, seen = _capture_deps(backend_transport, Intent.RESUME_QUERY)
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None,
+        message="你能看到我简历里的内容吗",
+        attachments=[],
+        action=None,
+    )
+    result = await graph.ainvoke(state)
+    async for _ in result["plan"].text:
+        pass
+
+    # 唯一简历（fixture 中 id=1）被锁定，上下文含完整简历内容，无"多份说明"
+    assert "基于 LangGraph 构建 Agent 平台" in seen["context"]
+    assert "最近上传的" not in seen["context"]
+
+
+async def test_graph_resume_query_multiple_defaults_to_latest():
+    """多份简历且未指定时默认分析最近上传的一份，并在上下文中说明便于用户纠正。"""
+
+    def multi_handler(request: httpx.Request) -> httpx.Response:
+        tool = request.url.path.rsplit("/", 1)[-1]
+        data = {
+            "get_resume_list": [
+                {"id": 1, "filename": "old.pdf", "uploadedAt": "2026-01-01T00:00:00"},
+                {"id": 2, "filename": "new.pdf", "uploadedAt": "2026-08-01T00:00:00"},
+            ],
+            "get_resume": {
+                "id": 2,
+                "filename": "new.pdf",
+                "resumeText": "新简历内容",
+                "analyzeStatus": "COMPLETED",
+            },
+            "get_resume_analysis": {
+                "overallScore": 80,
+                "scoreDetail": {},
+                "summary": "",
+                "strengths": [],
+                "suggestions": [],
+            },
+        }.get(tool, [])
+        return httpx.Response(200, json={"code": 200, "data": data, "message": "success"})
+
+    deps, seen = _capture_deps(multi_handler, Intent.RESUME_QUERY)
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None,
+        message="帮我看看简历",
+        attachments=[],
+        action=None,
+    )
+    result = await graph.ainvoke(state)
+    async for _ in result["plan"].text:
+        pass
+
+    # 默认锁定最近上传的 new.pdf，且上下文有说明
+    assert "新简历内容" in seen["context"]
+    assert "最近上传的《new.pdf》" in seen["context"]
+
+
+async def test_graph_resume_query_filename_hint_wins_over_latest():
+    """消息中提到文件名时，优先分析该份而非最近上传的一份。"""
+
+    def named_handler(request: httpx.Request) -> httpx.Response:
+        tool = request.url.path.rsplit("/", 1)[-1]
+        data = {
+            "get_resume_list": [
+                {"id": 3, "filename": "yang.pdf", "uploadedAt": "2026-01-01T00:00:00"},
+                {"id": 2, "filename": "other.pdf", "uploadedAt": "2026-08-01T00:00:00"},
+            ],
+            "get_resume": {
+                "id": 3,
+                "filename": "yang.pdf",
+                "resumeText": "yang 简历的内容",
+                "analyzeStatus": "COMPLETED",
+            },
+            "get_resume_analysis": {
+                "overallScore": 70,
+                "scoreDetail": {},
+                "summary": "",
+                "strengths": [],
+                "suggestions": [],
+            },
+        }.get(tool, [])
+        return httpx.Response(200, json={"code": 200, "data": data, "message": "success"})
+
+    deps, seen = _capture_deps(named_handler, Intent.RESUME_QUERY)
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None,
+        message="帮我优化 yang.pdf 这份简历",
+        attachments=[],
+        action=None,
+    )
+    result = await graph.ainvoke(state)
+    async for _ in result["plan"].text:
+        pass
+
+    assert "yang 简历的内容" in seen["context"]
+    assert "最近上传的" not in seen["context"], "文件名命中时无需多份说明"
 
 
 # ===== 短期记忆：load_history / 滚动摘要 / checkpoint =====

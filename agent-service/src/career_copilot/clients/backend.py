@@ -82,6 +82,20 @@ class BackendClient:
         data = await self.call_tool("get_resume_analysis", {"resumeId": resume_id})
         return data if isinstance(data, dict) else {}
 
+    async def get_resume(
+        self, resume_id: int, max_chars: int | None = None
+    ) -> dict[str, Any]:
+        """获取指定简历的完整内容（解析文本）与元信息。
+
+        max_chars 由服务端截断（Token 纪律）；简历不存在抛
+        BusinessToolError（RESUME_NOT_FOUND）。
+        """
+        arguments: dict[str, Any] = {"resumeId": resume_id}
+        if max_chars is not None:
+            arguments["maxChars"] = max_chars
+        data = await self.call_tool("get_resume", arguments)
+        return data if isinstance(data, dict) else {}
+
     async def get_interview_history(self) -> list[dict[str, Any]]:
         """模拟面试历史列表。"""
         data = await self.call_tool("get_interview_history")

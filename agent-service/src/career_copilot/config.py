@@ -37,5 +37,8 @@ class Settings(BaseSettings):
     history_max_message_chars: int = 500  # 单条消息注入上限
     summary_trigger_messages: int = 12  # 历史超过该条数时触发滚动摘要
 
+    # 简历内容注入上限（Agent 内容级分析 / 简历优化，Token 纪律）
+    resume_context_max_chars: int = 8000
+
 
 settings = Settings()

@@ -83,6 +83,16 @@ def backend_transport():
         tool = path.rsplit("/", 1)[-1]
         data = {
             "get_resume_list": [{"id": 1, "filename": "resume.pdf", "latestScore": 82}],
+            "get_resume": {
+                "id": 1,
+                "filename": "resume.pdf",
+                "resumeText": (
+                    "姓名：张三\n"
+                    "项目经历：基于 LangGraph 构建 Agent 平台\n"
+                    "技能：Java、Redis"
+                ),
+                "analyzeStatus": "COMPLETED",
+            },
             "get_resume_analysis": {
                 "overallScore": 82,
                 "scoreDetail": {

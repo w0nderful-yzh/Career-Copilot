@@ -143,6 +143,44 @@ async def test_search_knowledge_passes_arguments():
         await client.aclose()
 
 @pytest.mark.asyncio
+async def test_get_resume_passes_max_chars():
+    """get_resume 应透传 resumeId 与可选 maxChars 参数。"""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        captured["arguments"] = json.loads(request.content).get("arguments", {})
+        return httpx.Response(
+            200,
+            json={
+                "code": 200,
+                "data": {
+                    "id": 1,
+                    "filename": "resume.pdf",
+                    "resumeText": "姓名：张三",
+                    "analyzeStatus": "COMPLETED",
+                },
+                "message": "success",
+            },
+        )
+
+    client = BackendClient(
+        base_url="http://test",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = await client.get_resume(1, max_chars=8000)
+        assert result["filename"] == "resume.pdf"
+        assert result["resumeText"] == "姓名：张三"
+        assert captured["arguments"] == {"resumeId": 1, "maxChars": 8000}
+
+        await client.get_resume(1)
+        assert captured["arguments"] == {"resumeId": 1}
+    finally:
+        await client.aclose()
+
+@pytest.mark.asyncio
 async def test_create_conversation():
     """创建会话应 POST /api/agent/conversations 并返回会话项。"""
     def handler(request: httpx.Request) -> httpx.Response:

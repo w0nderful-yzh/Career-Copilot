@@ -19,6 +19,10 @@ public enum AgentToolName {
       "get_resume_analysis",
       "获取指定简历的最新分析结果（各项评分、优势与改进建议）",
       AgentToolPermission.READ),
+  GET_RESUME(
+      "get_resume",
+      "获取指定简历的完整内容（解析文本）与元信息",
+      AgentToolPermission.READ),
   GET_INTERVIEW_HISTORY(
       "get_interview_history",
       "获取模拟面试历史列表，可按 resumeId 过滤",

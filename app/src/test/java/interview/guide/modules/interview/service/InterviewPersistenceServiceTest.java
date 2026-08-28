@@ -3,6 +3,7 @@ package interview.guide.modules.interview.service;
 import interview.guide.modules.interview.model.InterviewSessionEntity;
 import interview.guide.modules.interview.repository.InterviewAnswerRepository;
 import interview.guide.modules.interview.repository.InterviewSessionRepository;
+import interview.guide.modules.profile.service.SkillProfileAggregator;
 import interview.guide.modules.resume.repository.ResumeRepository;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -30,6 +31,9 @@ class InterviewPersistenceServiceTest {
 
   @Mock
   private ResumeRepository resumeRepository;
+
+  @Mock
+  private SkillProfileAggregator profileAggregator;
 
   private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -73,7 +77,8 @@ class InterviewPersistenceServiceTest {
         sessionRepository,
         answerRepository,
         resumeRepository,
-        objectMapper
+        objectMapper,
+        profileAggregator
     );
   }
 }

@@ -11,6 +11,7 @@ import interview.guide.modules.interview.model.InterviewReportDTO;
 import interview.guide.modules.interview.model.InterviewSessionEntity;
 import interview.guide.modules.interview.repository.InterviewAnswerRepository;
 import interview.guide.modules.interview.repository.InterviewSessionRepository;
+import interview.guide.modules.profile.service.SkillProfileAggregator;
 import interview.guide.modules.resume.model.ResumeEntity;
 import interview.guide.modules.resume.repository.ResumeRepository;
 import lombok.RequiredArgsConstructor;
@@ -39,6 +40,7 @@ public class InterviewPersistenceService {
     private final InterviewAnswerRepository answerRepository;
     private final ResumeRepository resumeRepository;
     private final ObjectMapper objectMapper;
+    private final SkillProfileAggregator profileAggregator;
     
     /**
      * 保存新的面试会话（支持可选简历）
@@ -322,11 +324,14 @@ public class InterviewPersistenceService {
     public void deleteSessionsByResumeId(Long resumeId) {
         List<InterviewSessionEntity> sessions = sessionRepository.findByResumeIdOrderByCreatedAtDesc(resumeId);
         if (!sessions.isEmpty()) {
+            // 先级联清理技能画像证据（删库后无法定位来源），再删会话
+            profileAggregator.removeInterviewSessionEvidence(
+                sessions.stream().map(InterviewSessionEntity::getSessionId).toList());
             sessionRepository.deleteAll(sessions);
             log.info("已删除 {} 个面试会话（包含所有答案）", sessions.size());
         }
     }
-    
+
     /**
      * 删除单个面试会话
      * 由于InterviewSessionEntity设置了cascade = CascadeType.ALL, orphanRemoval = true
@@ -336,6 +341,8 @@ public class InterviewPersistenceService {
     public void deleteSessionBySessionId(String sessionId) {
         Optional<InterviewSessionEntity> sessionOpt = sessionRepository.findBySessionId(sessionId);
         if (sessionOpt.isPresent()) {
+            // 级联清理该会话的技能画像证据并重聚合受影响技能
+            profileAggregator.removeInterviewSessionEvidence(sessionId);
             sessionRepository.delete(sessionOpt.get());
             log.info("已删除面试会话: sessionId={}", sessionId);
         } else {

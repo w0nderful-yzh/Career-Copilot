@@ -86,9 +86,12 @@
 > 目标：Evidence-driven Skill Profile，评分可追溯（Resume / Interview Session / Turn），并真正参与后续决策。
 > 数据现状就绪：简历分析（关键词/技能条目）与现有面试报告（categoryScores）已可聚合，P3 建成即有真实数据；画像必须在 P4 之前（自适应面试要消费画像定重点）。
 
-- [ ] **P3-1 Java SkillProfile + Evidence 存储**
+- [x] **P3-1 Java SkillProfile + Evidence 存储**
   - `skill_profiles`（skill / score / evidenceCount / updatedAt）与 `skill_evidence`（sourceType: RESUME/INTERVIEW_SESSION/INTERVIEW_TURN、sourceId、scoreContribution、timestamp）
   - Aggregator：简历分析关键词/技能条目 + 面试题评分为输入聚合出分；每次新 Evidence 触发增量更新
+  - 已落地：`modules/profile`（entity/repository/Aggregator/Extractor/Constants）+ `V20260829` 迁移；聚合 = 等权均值（可由 evidence 逐条还原），`(user_id, skill, source_type, source_id)` 唯一保证评估重放幂等；评估完成钩子（EvaluateStreamConsumer）+ 会话/简历删除级联清理已接；未作答题（「未考」）不计证据
+  - 一期证据输入只有面试逐题分（category=技能名）；RESUME 类型待 P2-0 结构化解析后接入，INTERVIEW_SESSION 为冗余证据暂不写入
+  - 已验证：13 个单测 + 真库集成测试（提取→聚合→级联全链路，.env 不可用时自动跳过）+ 全量 `:app:test` 通过
 - [ ] **P3-2 Profile 查询链路**
   - `get_skill_profile` Agent Tool + `/internal/agent/profile/skills`
   - Graph：`load_profile` 节点（PROFILE_QUERY / 简历优化 / 面试创建前使用）；`SkillProfileBlock` 前端渲染

@@ -25,8 +25,9 @@ from career_copilot.agent.nodes.navigation_action import navigation_action
 from career_copilot.agent.nodes.normalize_input import normalize_input
 from career_copilot.agent.nodes.profile_query import profile_query
 from career_copilot.agent.nodes.resolve_context import resolve_context
+from career_copilot.agent.nodes.resume_optimization import resume_optimization
 from career_copilot.agent.nodes.route_intent import ACTION_INTENT, route_intent
-from career_copilot.agent.nodes.stub import goal_execution, resume_optimization
+from career_copilot.agent.nodes.stub import goal_execution
 from career_copilot.agent.router import Intent
 from career_copilot.agent.state import CareerAgentState
 

@@ -11,6 +11,8 @@ from career_copilot.schemas.message import (
     InterviewProposalBlock,
     InterviewSummaryBlock,
     KnowledgeCitationsBlock,
+    ResumeOptimizationBlock,
+    ResumeOptimizationPatch,
     ResumeSummaryBlock,
     SkillProfileBlock,
     TextBlock,
@@ -97,6 +99,37 @@ def skill_profile_block(profile: dict[str, Any], skill_limit: int = 6) -> SkillP
             }
         )
     return SkillProfileBlock(skills=skills)
+
+
+def resume_optimization_block(
+    *,
+    proposal_id: int,
+    resume_id: int,
+    version_id: int,
+    summary: str,
+    patches: list[Any],
+    rejected_note: str | None = None,
+) -> ResumeOptimizationBlock:
+    """简历优化提案块：Patch Diff 卡片（P2-1 HITL 确认入口）。"""
+    items = [
+        ResumeOptimizationPatch(
+            id=patch.id,
+            type=patch.type.value,
+            path=patch.path,
+            oldValue=patch.oldValue,
+            newValue=patch.newValue,
+            reason=patch.reason,
+        )
+        for patch in patches
+    ]
+    return ResumeOptimizationBlock(
+        proposalId=proposal_id,
+        resumeId=resume_id,
+        versionId=version_id,
+        summary=summary,
+        patches=items,
+        rejectedNote=rejected_note,
+    )
 
 
 def interview_proposal_block(

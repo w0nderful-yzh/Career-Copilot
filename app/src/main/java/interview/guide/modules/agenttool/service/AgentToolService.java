@@ -24,6 +24,7 @@ import interview.guide.modules.resume.model.ResumeEntity;
 import interview.guide.modules.resume.model.ResumeVersionDTO;
 import interview.guide.modules.resume.model.ResumeVersionEntity;
 import interview.guide.modules.resume.service.ResumeHistoryService;
+import interview.guide.modules.resume.service.ResumePatchApplyService;
 import interview.guide.modules.resume.service.ResumePersistenceService;
 import interview.guide.modules.resume.service.ResumeVersionService;
 import java.util.List;
@@ -65,7 +66,9 @@ public class AgentToolService {
       Map.entry(AgentToolName.CREATE_INTERVIEW,
           "{\"skillId\": String, \"difficulty\": String, \"questionCount\": Integer, "
               + "optional, \"resumeId\": Long, optional, \"resumeText\": String, optional, "
-              + "\"forceCreate\": Boolean, optional, \"requestId\": String, optional}"));
+              + "\"forceCreate\": Boolean, optional, \"requestId\": String, optional}"),
+      Map.entry(AgentToolName.APPLY_RESUME_PATCHES,
+          "{\"proposalId\": Long, \"patchIds\": List[String], optional}"));
 
   private final ResumeHistoryService resumeHistoryService;
   private final ResumePersistenceService resumePersistenceService;
@@ -77,6 +80,7 @@ public class AgentToolService {
   private final InterviewSkillService interviewSkillService;
   private final SkillProfileQueryService skillProfileQueryService;
   private final ResumeVersionService resumeVersionService;
+  private final ResumePatchApplyService resumePatchApplyService;
   private final ObjectMapper objectMapper;
 
   /** 返回全部 Tool 的元信息，供 Agent Runtime 做 Tool Discovery */
@@ -113,6 +117,7 @@ public class AgentToolService {
       case SEARCH_KNOWLEDGE -> executeSearchKnowledge(arguments);
       case LIST_SKILLS -> executeListSkills();
       case CREATE_INTERVIEW -> executeCreateInterview(arguments);
+      case APPLY_RESUME_PATCHES -> executeApplyResumePatches(arguments);
     };
   }
 
@@ -265,6 +270,41 @@ public class AgentToolService {
         requestId);
     InterviewSessionDTO session = interviewSessionService.createSession(request);
     return new ToolResponse(AgentToolName.CREATE_INTERVIEW.getName(), session);
+  }
+
+  /**
+   * 应用简历优化提案（CONFIRM_WRITE：用户在 ResumeOptimizationBlock 上勾选确认后调用）。
+   *
+   * <p>按 proposalId 读取已落库提案，逐条 JSON path 应用（oldValue 一致性校验），
+   * 生成新版本（AI_OPTIMIZE，原版本不动）。返回新版本信息供 NavigationBlock 跳转。
+   */
+  private ToolResponse executeApplyResumePatches(Map<String, Object> arguments) {
+    Long proposalId = requireLong(arguments, "proposalId");
+    List<String> patchIds = arguments.containsKey("patchIds")
+        ? requireStringList(arguments, "patchIds")
+        : List.of();
+
+    ResumeVersionEntity newVersion = resumePatchApplyService.applyPatches(proposalId, patchIds);
+    return new ToolResponse(
+        AgentToolName.APPLY_RESUME_PATCHES.getName(),
+        Map.of(
+            "proposalId", proposalId,
+            "resumeId", newVersion.getResumeId(),
+            "versionId", newVersion.getId(),
+            "version", newVersion.getVersion()));
+  }
+
+  /** 提取非空 String 列表参数（patch id 列表用） */
+  private List<String> requireStringList(Map<String, Object> arguments, String key) {
+    Object value = arguments.get(key);
+    if (value instanceof List<?> list) {
+      return list.stream()
+          .filter(item -> item instanceof String text && !text.isBlank())
+          .map(item -> (String) item)
+          .toList();
+    }
+    throw new BusinessException(
+        ErrorCode.AGENT_TOOL_ARGUMENT_INVALID, "参数缺失或类型错误: " + key);
   }
 
   /**

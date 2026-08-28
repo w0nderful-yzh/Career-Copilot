@@ -124,6 +124,37 @@ class SkillProfileBlock(BaseModel):
     )
 
 
+class ResumeOptimizationPatch(BaseModel):
+    """单条简历优化建议（前端 Diff 卡片渲染）。"""
+
+    id: str = Field(description="patch id（勾选回传用）")
+    type: Literal["REPLACE", "ADD", "DELETE"] = Field(description="修改类型")
+    path: str = Field(description="JSON path")
+    oldValue: str | None = Field(default=None, description="原值")
+    newValue: str | None = Field(default=None, description="新值")
+    reason: str = Field(description="修改理由")
+
+
+class ResumeOptimizationBlock(BaseModel):
+    """简历优化提案块（P2-1）：Patch Diff 卡片 + 勾选应用（HITL 确认）。
+
+    用户勾选后前端回传 APPLY_RESUME_PATCHES action（只带 proposalId + patchIds），
+    由 apply_resume_patches CONFIRM_WRITE Tool 在 Java 侧应用并生成新版本。
+    """
+
+    type: Literal["resume_optimization"] = "resume_optimization"
+    proposalId: int = Field(description="提案 id（应用回传必带）")
+    resumeId: int = Field(description="目标简历 id")
+    versionId: int = Field(description="基于的版本 id")
+    summary: str = Field(default="", description="Agent 对本轮优化的总结")
+    patches: list[ResumeOptimizationPatch] = Field(
+        default_factory=list, description="修改建议列表（默认全部勾选）"
+    )
+    rejectedNote: str | None = Field(
+        default=None, description="被校验器剔除的建议说明（如实告知）"
+    )
+
+
 class ChoiceOption(BaseModel):
     """选择块中的单个选项：点击后回传 ActionSelected。"""
 
@@ -170,6 +201,7 @@ MessageBlock = Annotated[
     | InterviewSummaryBlock
     | KnowledgeCitationsBlock
     | SkillProfileBlock
+    | ResumeOptimizationBlock
     | InterviewProposalBlock,
     Field(discriminator="type"),
 ]

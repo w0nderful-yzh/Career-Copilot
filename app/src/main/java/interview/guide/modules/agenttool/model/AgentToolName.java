@@ -54,6 +54,10 @@ public enum AgentToolName {
   CREATE_INTERVIEW(
       "create_interview",
       "创建模拟面试会话（mode/direction/difficulty/focus，需用户确认后执行）",
+      AgentToolPermission.CONFIRM_WRITE),
+  APPLY_RESUME_PATCHES(
+      "apply_resume_patches",
+      "应用用户确认的简历优化建议并生成新版本（proposalId + 勾选的 patchIds，需用户确认后执行）",
       AgentToolPermission.CONFIRM_WRITE);
 
   private final String name;

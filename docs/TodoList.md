@@ -98,7 +98,9 @@
   - PROFILE_QUERY 占位分支替换为真实数据；Copilot 右侧画像面板从 P1-1 预览假数据切换为真实数据
   - 已落地：Java `GET_SKILL_PROFILE` READ Tool（画像 + 证据明细一次取全，双层信封）；Python `profile_query` 节点（无数据时引导面试，SkillProfileBlock + `summarize_skill_profile` 上下文）；前端 `SkillProfileBlockView`（分数条 + 点击展开证据来源）+ 侧栏 `ProfileSection`（真实 API、loading/error/empty 态）
   - 已实测（真实链路）：「我的技能水平怎么样」→ PROFILE_QUERY → 读取技能画像 → 画像卡（MySQL 83 绿条 / JVM 55 橙条）→ 点开 JVM 展开证据「模拟面试答题（sessionId:2）· 55 分」→ LLM 引用证据解读并如实说明样本量少；侧栏同步显示真实数据；空库时如实告知并引导面试
-- [ ] **P3-4 用户快照**：新会话首轮注入 top 技能 + 最近面试概要（低成本跨会话感知，复用 get_skill_profile/get_interview_history）
+- [x] **P3-4 用户快照**：新会话首轮注入 top 技能 + 最近面试概要（低成本跨会话感知，复用 get_skill_profile/get_interview_history）
+  - 已落地：`load_snapshot` 节点（仅首轮拉取，两 READ Tool 并行，失败静默降级）；快照经 `format_history(snapshot=...)` 注入 direct_answer / business_tools / profile_query 的回答上下文；PREPARATION_QUERY 占位分支升级为基于快照的真实回答（无快照时保持占位）
+  - 已实测（真实链路）：新会话「帮我看看最近复习得怎么样」→「了解你的近期表现」Tool 轨迹 → LLM 综合技能画像（MySQL 83 / JVM 55）+ 最近面试状态给出针对性复习建议，数值全部来自 Evidence；已有历史的会话不重复注入（Token 纪律）
 - [ ] P3-3 已拆分：「低分技能 → focus」并入 P4-3，「描述强度约束」并入 P2-1（没有这两个消费点，画像就没有意义）
 
 **验收**：能看到有数据来源的技能分列表；任一分数能点出其 Evidence 来源；「我 JVM 水平怎么样」返回真实 Evidence 驱动回答。

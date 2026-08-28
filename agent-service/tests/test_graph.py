@@ -1149,3 +1149,59 @@ async def test_graph_profile_query_empty_guides_to_interview(backend_transport):
     assert actions and actions[0].route == "INTERVIEW_CREATE"
     text = "".join([c async for c in plan.text])
     assert "画像" in text and "面试" in text
+
+
+# ===== load_snapshot（P3-4 用户快照） =====
+
+
+async def test_snapshot_injected_on_first_turn(backend_transport):
+    """新会话首轮（无历史）注入用户快照：top 技能 + 最近面试。"""
+    deps, _ = make_deps(
+        IntentClassification(intent=Intent.GENERAL_CHAT), backend_transport
+    )
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None,
+        message="帮我看看最近复习得怎么样",
+        attachments=[],
+        action=None,
+    )
+    result = await graph.ainvoke(state)
+
+    snapshot = result.get("user_snapshot")
+    assert snapshot, "首轮应注入快照"
+    assert "用户技能画像" in snapshot
+    assert "MySQL" in snapshot and "最近模拟面试" in snapshot
+
+
+async def test_snapshot_skipped_when_history_exists(backend_transport):
+    """已有历史的会话不重复注入快照（背景感知交给会话记忆）。"""
+    deps, _ = make_deps(
+        IntentClassification(intent=Intent.GENERAL_CHAT), backend_transport
+    )
+    from career_copilot.agent.nodes.load_snapshot import load_snapshot
+
+    # 模拟 load_history 之后的状态：会话已有历史 → 不拉快照
+    state: dict = {"history": [{"role": "USER", "content": "之前的问题"}]}
+    result = await load_snapshot(state, deps)
+
+    assert result == {"user_snapshot": None}
+
+
+async def test_snapshot_tolerates_backend_failures():
+    """画像与面试查询都失败时静默降级为空快照，不阻断对话。"""
+    def broken_transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"code": 500, "message": "boom"})
+
+    deps, _ = make_deps(IntentClassification(intent=Intent.GENERAL_CHAT), broken_transport)
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None,
+        message="你好",
+        attachments=[],
+        action=None,
+    )
+    result = await graph.ainvoke(state)
+
+    assert result.get("user_snapshot") is None
+    assert result.get("plan") is not None, "快照失败不应阻断后续流程"

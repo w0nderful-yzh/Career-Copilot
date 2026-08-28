@@ -20,6 +20,7 @@ from career_copilot.agent.nodes.execute_action import execute_action
 from career_copilot.agent.nodes.interview_proposal import interview_proposal
 from career_copilot.agent.nodes.knowledge_tool import knowledge_tool
 from career_copilot.agent.nodes.load_history import load_history
+from career_copilot.agent.nodes.load_snapshot import load_snapshot
 from career_copilot.agent.nodes.navigation_action import navigation_action
 from career_copilot.agent.nodes.normalize_input import normalize_input
 from career_copilot.agent.nodes.profile_query import profile_query
@@ -67,6 +68,7 @@ def build_graph(deps: GraphDeps, checkpointer: Any = None) -> Any:
     # 前置管线（确定性）
     graph.add_node("normalize_input", normalize_input)
     graph.add_node("load_history", partial(load_history, deps=deps))
+    graph.add_node("load_snapshot", partial(load_snapshot, deps=deps))
     graph.add_node("resolve_context", resolve_context)
     graph.add_node("route_intent", partial(route_intent, deps=deps))
 
@@ -87,7 +89,8 @@ def build_graph(deps: GraphDeps, checkpointer: Any = None) -> Any:
 
     graph.add_edge(START, "normalize_input")
     graph.add_edge("normalize_input", "load_history")
-    graph.add_edge("load_history", "resolve_context")
+    graph.add_edge("load_history", "load_snapshot")
+    graph.add_edge("load_snapshot", "resolve_context")
     graph.add_edge("resolve_context", "route_intent")
 
     graph.add_conditional_edges("route_intent", route_by_intent, INTENT_BRANCHES)

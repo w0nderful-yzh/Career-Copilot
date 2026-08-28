@@ -33,7 +33,17 @@ async def business_tools(state: CareerAgentState, deps: GraphDeps) -> dict[str, 
     if intent == Intent.INTERVIEW_REVIEW.value:
         return await _plan_interview_review(state, backend, deps)
 
-    # PREPARATION_QUERY：工具未开通，友好占位（避免空回复）
+    # PREPARATION_QUERY：Preparation Tool 未开通，用首轮注入的用户快照
+    # （top 技能 + 最近面试）做背景感知回答；无快照时如实占位
+    snapshot = state.get("user_snapshot")
+    if snapshot:
+        message = state.get("message") or ""
+        history = format_history(state.get("history") or [], state.get("history_summary"))
+        return {
+            "plan": StreamPlan(
+                text=deps.answerer.answer_stream(message, snapshot, history or None)
+            )
+        }
     return {
         "plan": StreamPlan(
             text=static_text(
@@ -145,7 +155,9 @@ async def _plan_targeted_resume(
     """
     message = state.get("message") or ""
     history = format_history(
-        state.get("history") or [], state.get("history_summary")
+        state.get("history") or [],
+        state.get("history_summary"),
+        snapshot=state.get("user_snapshot"),
     )
     # 上游 _plan_resume_query 保证 active_resume_id 非空才进入本路径
     raw_resume_id = state["active_resume_id"]
@@ -263,7 +275,9 @@ async def _plan_interview_review(
     """面试回顾：先产出 interview_summary 块，再基于摘要流式回答。"""
     message = state.get("message") or ""
     history = format_history(
-        state.get("history") or [], state.get("history_summary")
+        state.get("history") or [],
+        state.get("history_summary"),
+        snapshot=state.get("user_snapshot"),
     )
     history_txt = history or None
     emit_tool_started("interview_review")

@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 # 工具 key → 面向用户的中文描述（前端直接展示）
 TOOL_LABELS_ZH: dict[str, str] = {
     "load_history": "回忆对话上下文",
+    "user_snapshot": "了解你的近期表现",
     "resume_query": "查询简历库",
     "resume_insight": "读取简历分析",
     "interview_review": "读取面试记录",

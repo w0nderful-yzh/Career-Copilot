@@ -19,7 +19,11 @@ from career_copilot.tools import format_history, summarize_skill_profile
 async def profile_query(state: CareerAgentState, deps: GraphDeps) -> dict[str, Any]:
     """PROFILE_QUERY 分支：读画像 → 画像块 → 基于证据的流式解读。"""
     message = state.get("message") or ""
-    history = format_history(state.get("history") or [], state.get("history_summary"))
+    history = format_history(
+        state.get("history") or [],
+        state.get("history_summary"),
+        snapshot=state.get("user_snapshot"),
+    )
 
     emit_tool_started("profile_query")
     profile = await deps.backend.get_skill_profile()

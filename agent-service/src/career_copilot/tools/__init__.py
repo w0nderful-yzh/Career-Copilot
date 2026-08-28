@@ -172,12 +172,19 @@ async def resolve_knowledge_base_ids(client: BackendClient) -> list[int]:
 
 
 def format_history(
-    history: list[dict[str, str]], summary: str | None = None
+    history: list[dict[str, str]],
+    summary: str | None = None,
+    snapshot: str | None = None,
 ) -> str:
-    """把会话历史裁剪为适合放入 Prompt 的文本（角色 + 内容，正序）。"""
-    if not history and not summary:
+    """把会话历史裁剪为适合放入 Prompt 的文本（快照 + 摘要 + 轮次，正序）。
+
+    snapshot 为新会话首轮注入的用户背景快照（P3-4），置于最前作为背景感知。
+    """
+    if not history and not summary and not snapshot:
         return ""
     lines: list[str] = []
+    if snapshot:
+        lines.append(snapshot)
     if summary:
         lines.append(f"[早期对话摘要] {summary}")
     for item in history:

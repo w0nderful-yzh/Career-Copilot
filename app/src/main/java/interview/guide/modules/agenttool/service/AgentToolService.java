@@ -5,11 +5,14 @@ import interview.guide.common.exception.ErrorCode;
 import interview.guide.modules.agenttool.dto.ToolInfoDTO;
 import interview.guide.modules.agenttool.dto.ToolResponse;
 import interview.guide.modules.agenttool.model.AgentToolName;
+import interview.guide.modules.interview.model.CreateInterviewRequest;
 import interview.guide.modules.interview.model.InterviewDetailDTO;
+import interview.guide.modules.interview.model.InterviewSessionDTO;
 import interview.guide.modules.interview.model.ResumeAnalysisResponse;
 import interview.guide.modules.interview.model.SessionListItemDTO;
 import interview.guide.modules.interview.service.InterviewHistoryService;
 import interview.guide.modules.interview.service.InterviewPersistenceService;
+import interview.guide.modules.interview.service.InterviewSessionService;
 import interview.guide.modules.interview.skill.InterviewSkillService;
 import interview.guide.modules.knowledgebase.model.QueryRequest;
 import interview.guide.modules.knowledgebase.model.QueryResponse;
@@ -36,6 +39,9 @@ import org.springframework.stereotype.Service;
 @RequiredArgsConstructor
 public class AgentToolService {
 
+  /** 默认题目数量（Agent 未指定时使用，与前端创建面试默认一致） */
+  private static final int DEFAULT_QUESTION_COUNT = 8;
+
   /** 每个 Tool 的输入参数 schema 描述，用于 Tool Discovery 时帮助 LLM 生成正确参数 */
   private static final Map<AgentToolName, String> INPUT_SCHEMAS = Map.ofEntries(
       Map.entry(AgentToolName.GET_RESUME_LIST, "{}"),
@@ -47,12 +53,17 @@ public class AgentToolService {
       Map.entry(AgentToolName.LIST_KNOWLEDGE_BASES, "{}"),
       Map.entry(AgentToolName.SEARCH_KNOWLEDGE,
           "{\"knowledgeBaseIds\": List[Long], \"question\": String}"),
-      Map.entry(AgentToolName.LIST_SKILLS, "{}"));
+      Map.entry(AgentToolName.LIST_SKILLS, "{}"),
+      Map.entry(AgentToolName.CREATE_INTERVIEW,
+          "{\"skillId\": String, \"difficulty\": String, \"questionCount\": Integer, "
+              + "optional, \"resumeId\": Long, optional, \"resumeText\": String, optional, "
+              + "\"forceCreate\": Boolean, optional, \"requestId\": String, optional}"));
 
   private final ResumeHistoryService resumeHistoryService;
   private final ResumePersistenceService resumePersistenceService;
   private final InterviewPersistenceService interviewPersistenceService;
   private final InterviewHistoryService interviewHistoryService;
+  private final InterviewSessionService interviewSessionService;
   private final KnowledgeBaseListService knowledgeBaseListService;
   private final KnowledgeBaseQueryService knowledgeBaseQueryService;
   private final InterviewSkillService interviewSkillService;
@@ -88,6 +99,7 @@ public class AgentToolService {
       case LIST_KNOWLEDGE_BASES -> executeListKnowledgeBases();
       case SEARCH_KNOWLEDGE -> executeSearchKnowledge(arguments);
       case LIST_SKILLS -> executeListSkills();
+      case CREATE_INTERVIEW -> executeCreateInterview(arguments);
     };
   }
 
@@ -179,6 +191,46 @@ public class AgentToolService {
     return new ToolResponse(
         AgentToolName.LIST_SKILLS.getName(),
         interviewSkillService.getAllSkills());
+  }
+
+  /**
+   * 创建模拟面试会话（CONFIRM_WRITE：必须用户在前端确认后才由 Agent 调用）。
+   *
+   * <p>薄封装：复用 Java Interview Engine 现有创建链路（含 requestId 幂等与
+   * 未完成会话复用）。返回 InterviewSessionDTO，Agent 据此回传 sessionId 跳转。
+   */
+  private ToolResponse executeCreateInterview(Map<String, Object> arguments) {
+    String skillId = requireString(arguments, "skillId");
+    Integer questionCount = arguments.containsKey("questionCount")
+        ? requireInt(arguments, "questionCount")
+        : null;
+    Long resumeId = arguments.containsKey("resumeId")
+        ? requireLong(arguments, "resumeId")
+        : null;
+    String resumeText = arguments.containsKey("resumeText")
+        ? (String) arguments.get("resumeText")
+        : null;
+    String difficulty = arguments.containsKey("difficulty")
+        ? requireString(arguments, "difficulty")
+        : null;
+    boolean forceCreate = Boolean.TRUE.equals(arguments.get("forceCreate"));
+    String requestId = arguments.containsKey("requestId")
+        ? requireString(arguments, "requestId")
+        : null;
+
+    CreateInterviewRequest request = new CreateInterviewRequest(
+        resumeText,
+        questionCount != null ? questionCount : DEFAULT_QUESTION_COUNT,
+        resumeId,
+        forceCreate,
+        null,
+        skillId,
+        difficulty,
+        null,
+        null,
+        requestId);
+    InterviewSessionDTO session = interviewSessionService.createSession(request);
+    return new ToolResponse(AgentToolName.CREATE_INTERVIEW.getName(), session);
   }
 
   /**

@@ -26,3 +26,17 @@ test('静态白名单路由保持可用', () => {
     label: '开始模拟面试',
   });
 });
+
+test('INTERVIEW_SESSION 使用受控 sessionId 构造面试页路由（P1-4）', () => {
+  assert.deepEqual(
+    resolveActionRoute('INTERVIEW_SESSION', { sessionId: 'abc123def4567890' }),
+    { path: '/interview/session/abc123def4567890', label: '进入面试' },
+  );
+});
+
+test('INTERVIEW_SESSION 拒绝缺失或非法 sessionId（P1-4）', () => {
+  assert.equal(resolveActionRoute('INTERVIEW_SESSION'), null);
+  assert.equal(resolveActionRoute('INTERVIEW_SESSION', { sessionId: '../settings' }), null);
+  assert.equal(resolveActionRoute('INTERVIEW_SESSION', { sessionId: 'ABC' }), null);
+  assert.equal(resolveActionRoute('INTERVIEW_SESSION', { sessionId: 12345 }), null);
+});

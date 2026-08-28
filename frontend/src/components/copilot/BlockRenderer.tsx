@@ -7,7 +7,9 @@ import {
   FileSearch,
   FileStack,
   MessagesSquare,
+  SlidersHorizontal,
   Sparkles,
+  Target,
   Users,
 } from 'lucide-react';
 import type {
@@ -15,8 +17,10 @@ import type {
   ActionBlock,
   ChoiceBlock,
   ChoiceOption,
+  InterviewProposalBlock,
   InterviewSummaryBlock,
   KnowledgeCitationsBlock,
+  NavigationBlock,
   ResumeSummaryBlock,
 } from '../../types/copilot';
 import { resolveActionRoute } from '../../constants/routes';
@@ -41,6 +45,104 @@ function ActionBlockView({ block }: { block: ActionBlock }) {
       <ArrowRight className="h-4 w-4" />
       {block.label || target.label}
     </button>
+  );
+}
+
+function NavigationBlockView({ block }: { block: NavigationBlock }) {
+  const navigate = useNavigate();
+  const target = resolveActionRoute(block.route, block.params);
+
+  // 非白名单路由：不渲染按钮，防止任意跳转
+  if (!target) {
+    return null;
+  }
+
+  return (
+    <button
+      onClick={() => navigate(target.path)}
+      className="mt-3 inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-primary-500 to-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:-translate-y-0.5 hover:from-primary-600 hover:to-indigo-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
+    >
+      <ArrowRight className="h-4 w-4" />
+      {block.label || target.label}
+    </button>
+  );
+}
+
+function InterviewProposalBlockView({
+  block,
+  actionDisabled,
+  onConfirm,
+  onAdjust,
+}: {
+  block: InterviewProposalBlock;
+  actionDisabled: boolean;
+  onConfirm: (option: ChoiceOption) => void;
+  onAdjust: (option: ChoiceOption) => void;
+}) {
+  const focusNames = block.focus.length > 0 ? block.focus.join(' / ') : '综合考察';
+
+  const confirmOption: ChoiceOption = {
+    action: 'CREATE_INTERVIEW',
+    label: '按推荐开始',
+    payload: {
+      direction: block.direction,
+      difficulty: block.difficulty,
+      focus: block.focus,
+      questionCount: block.question_count,
+      resumeId: block.resume_id ?? null,
+    },
+  };
+  const adjustOption: ChoiceOption = {
+    action: 'START_INTERVIEW',
+    label: '调整配置',
+    payload: {},
+  };
+
+  return (
+    <div className="mt-4 overflow-hidden rounded-2xl border border-primary-200/70 bg-gradient-to-br from-primary-50/80 to-indigo-50/60 p-4 dark:border-primary-800/40 dark:from-primary-950/40 dark:to-indigo-950/30">
+      <div className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white">
+        <Target className="h-4 w-4 text-primary-600 dark:text-primary-400" />
+        面试推荐
+      </div>
+      <p className="mt-3 text-lg font-bold tracking-tight text-slate-900 dark:text-white">
+        {block.direction_name} · {block.difficulty_name} · {block.mode === 'VOICE' ? '语音' : '文字'}
+      </p>
+      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-600 dark:text-slate-300">
+        <span className="inline-flex items-center gap-1.5">
+          <span className="font-semibold">重点：</span>
+          {focusNames}
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="font-semibold">题量：</span>
+          {block.question_count} 题
+        </span>
+      </div>
+      {block.summary && (
+        <p className="mt-3 rounded-xl bg-white/70 px-3 py-2 text-sm leading-6 text-slate-700 dark:bg-slate-800/70 dark:text-slate-200">
+          {block.summary}
+        </p>
+      )}
+      <div className="mt-4 flex flex-wrap gap-2.5">
+        <button
+          type="button"
+          disabled={actionDisabled}
+          onClick={() => onConfirm(confirmOption)}
+          className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-primary-500 to-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:-translate-y-0.5 hover:from-primary-600 hover:to-indigo-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-55"
+        >
+          <Sparkles className="h-4 w-4" />
+          按推荐开始
+        </button>
+        <button
+          type="button"
+          disabled={actionDisabled}
+          onClick={() => onAdjust(adjustOption)}
+          className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:-translate-y-0.5 hover:border-primary-300 hover:text-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-55 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:border-primary-500 dark:hover:text-primary-300"
+        >
+          <SlidersHorizontal className="h-4 w-4" />
+          调整配置
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -196,6 +298,17 @@ export default function BlockRenderer({
       return null; // 文本由消息内容统一渲染，不渲染独立 text 块
     case 'action':
       return <ActionBlockView block={block} />;
+    case 'navigation':
+      return <NavigationBlockView block={block} />;
+    case 'interview_proposal':
+      return (
+        <InterviewProposalBlockView
+          block={block}
+          actionDisabled={actionDisabled}
+          onConfirm={(option) => onActionSelect?.(option)}
+          onAdjust={(option) => onActionSelect?.(option)}
+        />
+      );
     case 'choice':
       return (
         <ChoiceBlockView

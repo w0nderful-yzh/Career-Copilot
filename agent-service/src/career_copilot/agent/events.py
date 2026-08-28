@@ -23,6 +23,9 @@ TOOL_LABELS_ZH: dict[str, str] = {
     "resume_insight": "读取简历分析",
     "interview_review": "读取面试记录",
     "knowledge_search": "检索知识库",
+    "interview_proposal": "推导面试推荐",
+    "list_skills": "读取面试方向",
+    "create_interview": "创建面试会话",
 }
 
 

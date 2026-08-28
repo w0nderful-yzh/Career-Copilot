@@ -17,6 +17,7 @@ from career_copilot.agent.nodes.build_response import build_response
 from career_copilot.agent.nodes.business_tools import business_tools
 from career_copilot.agent.nodes.direct_answer import direct_answer
 from career_copilot.agent.nodes.execute_action import execute_action
+from career_copilot.agent.nodes.interview_proposal import interview_proposal
 from career_copilot.agent.nodes.knowledge_tool import knowledge_tool
 from career_copilot.agent.nodes.load_history import load_history
 from career_copilot.agent.nodes.navigation_action import navigation_action
@@ -38,6 +39,7 @@ INTENT_BRANCHES: dict[Any, str] = {
     Intent.KNOWLEDGE_QA.value: "knowledge_tool",
     Intent.NAVIGATION.value: "navigation_action",
     Intent.RESUME_OPTIMIZATION.value: "resume_optimization",
+    Intent.INTERVIEW_CREATE.value: "interview_proposal",
     Intent.COMPLEX_GOAL.value: "goal_execution",
     Intent.ATTACHMENT_RECEIVED.value: "attachment_flow",
     ACTION_INTENT: "execute_action",
@@ -75,6 +77,7 @@ def build_graph(deps: GraphDeps, checkpointer: Any = None) -> Any:
     graph.add_node("attachment_flow", partial(attachment_flow, deps=deps))
     graph.add_node("execute_action", partial(execute_action, deps=deps))
     graph.add_node("resume_optimization", partial(resume_optimization, deps=deps))
+    graph.add_node("interview_proposal", partial(interview_proposal, deps=deps))
     graph.add_node("goal_execution", partial(goal_execution, deps=deps))
 
     # 收尾

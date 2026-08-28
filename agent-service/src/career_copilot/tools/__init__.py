@@ -35,6 +35,21 @@ TOOLS: list[ToolSpec] = [
         description="基于 RAG 知识库回答问题",
         parameters={"question": "str", "knowledge_base_ids": "list[int] (可选)"},
     ),
+    ToolSpec(
+        name="list_skills",
+        description="获取可用的模拟面试技能方向列表（含分类与优先级）",
+        parameters={},
+    ),
+    ToolSpec(
+        name="create_interview",
+        description="创建模拟面试会话（需用户确认后执行）",
+        parameters={
+            "skillId": "str",
+            "difficulty": "str",
+            "questionCount": "int (可选)",
+            "resumeId": "int (可选)",
+        },
+    ),
 ]
 
 
@@ -88,6 +103,34 @@ async def summarize_interviews(history: list[dict[str, Any]], limit: int = 5) ->
         for s in history[:limit]
     ]
     return "最近模拟面试：\n" + "\n".join(rows)
+
+
+def summarize_skills(skills: list[dict[str, Any]], limit: int = 8) -> str:
+    """把技能方向列表裁剪为适合放入 Prompt 的摘要（id + 展示名 + 分类）。"""
+    if not skills:
+        return "（没有可用的面试方向）"
+    rows = []
+    for skill in skills[:limit]:
+        name = skill.get("name") or skill.get("id")
+        categories = [
+            f"{cat.get('key')}({cat.get('priority')})"
+            for cat in (skill.get("categories") or [])
+            if cat.get("key")
+        ][:6]
+        rows.append(
+            f"- {skill.get('id')} {name}"
+            + (f" 分类: {', '.join(categories)}" if categories else "")
+        )
+    return "可选面试方向：\n" + "\n".join(rows)
+
+
+def summarize_resume_for_interview(resume: dict[str, Any], max_chars: int = 1200) -> str:
+    """把 get_resume 返回的完整简历文本裁剪为面试推荐所需摘要（Token 纪律）。"""
+    filename = resume.get("filename") or f"简历 #{resume.get('id')}"
+    text = (resume.get("resumeText") or "").strip()
+    if len(text) > max_chars:
+        text = text[:max_chars] + "\n…（已截断）"
+    return f"[简历：{filename}]\n{text}" if text else f"[简历：{filename}]（无解析文本）"
 
 
 async def resolve_knowledge_base_ids(client: BackendClient) -> list[int]:

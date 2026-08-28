@@ -853,3 +853,215 @@ async def test_graph_checkpoint_persists_working_state():
 
     assert len(result2.get("history") or []) >= 1, "history 应跨轮次恢复"
     assert result2.get("history")[0]["content"] == "我目标 Java 后端"
+
+
+# ===== P1-4 面试发起 Agent 化 =====
+
+
+class FakeProposalModel:
+    """模拟面试推荐模型的结构化 JSON 输出（不进 Graph 的 answerer 文本流）。"""
+
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+
+    async def ainvoke(self, messages: list) -> "FakeProposalResult":
+        import json
+
+        return FakeProposalResult(json.dumps(self._payload))
+
+
+class FakeProposalResult:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+def _proposal_deps(backend_transport, proposal_payload: dict) -> GraphDeps:
+    """带提案模型的 deps：answerer._model 返回预设 JSON 推荐配置。"""
+    from career_copilot.agent.nodes.interview_proposal import _derive_proposal
+    from career_copilot.agent.nodes.interview_proposal import interview_proposal  # noqa: F401
+
+    class ProposalAnswerer:
+        def __init__(self) -> None:
+            self._model = FakeProposalModel(proposal_payload)
+
+        async def answer_stream(self, message, context=None, history=None):
+            for char in "fake answer":
+                yield char
+
+        async def summarize_history(self, history_text: str) -> str:
+            return ""
+
+    router = FakeIntentRouter(IntentClassification(intent=Intent.INTERVIEW_CREATE))
+    backend = BackendClient(
+        base_url="http://test", transport=httpx.MockTransport(backend_transport)
+    )
+    return GraphDeps(
+        intent_router=router, answerer=ProposalAnswerer(), backend=backend
+    )
+
+
+def _proposal_transport():
+    def handler(request: httpx.Request) -> httpx.Response:
+        tool = request.url.path.rsplit("/", 1)[-1]
+        data = {
+            "list_skills": [
+                {
+                    "id": "java-backend",
+                    "name": "Java 后端",
+                    "categories": [
+                        {"key": "JVM", "label": "JVM", "priority": "CORE"},
+                        {"key": "REDIS", "label": "Redis", "priority": "CORE"},
+                        {"key": "PROJECT", "label": "项目经历", "priority": "ALWAYS_ONE"},
+                    ],
+                },
+                {"id": "frontend", "name": "前端", "categories": []},
+            ],
+            "get_resume": {
+                "id": 1,
+                "filename": "resume.pdf",
+                "resumeText": "技能：Java、Redis、Spring",
+                "analyzeStatus": "COMPLETED",
+            },
+            "create_interview": {
+                "sessionId": "abc123",
+                "totalQuestions": 8,
+                "status": "CREATED",
+            },
+        }.get(tool, [])
+        return httpx.Response(
+            200, json={"code": 200, "data": data, "message": "success"}
+        )
+
+    return handler
+
+
+async def test_graph_interview_create_produces_proposal():
+    """INTERVIEW_CREATE 意图 → 面试提案块（含推荐配置与确认动作）。"""
+    transport = _proposal_transport()
+    deps = _proposal_deps(
+        transport,
+        {
+            "direction": "java-backend",
+            "difficulty": "mid",
+            "focus": ["JVM", "PROJECT"],
+            "summary": "简历项目经历突出，适合深挖 JVM",
+        },
+    )
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None,
+        message="来一场模拟面试",
+        attachments=[],
+        action=None,
+    )
+    result = await graph.ainvoke(state)
+
+    plan = result["plan"]
+    types = [block.type for block in plan.blocks]
+    assert "interview_proposal" in types
+
+    proposal = next(b for b in plan.blocks if b.type == "interview_proposal")
+    assert proposal.direction == "java-backend"
+    assert proposal.direction_name == "Java 后端"
+    assert proposal.difficulty == "mid"
+    assert proposal.difficulty_name == "中级"
+    assert set(proposal.focus) == {"JVM", "PROJECT"}
+
+    # 提案块应带可确认的创建动作（由前端原样回传）
+    choice = next(b for b in plan.blocks if b.type == "choice")
+    assert any(opt.action == "START_INTERVIEW" for opt in choice.options)
+
+
+async def test_graph_interview_create_proposal_fallback_without_resume():
+    """无简历时推荐流程不阻断：回落默认配置并产出提案。"""
+
+    def no_resume_handler(request: httpx.Request) -> httpx.Response:
+        tool = request.url.path.rsplit("/", 1)[-1]
+        if tool == "get_resume":
+            return httpx.Response(
+                200, json={"code": 1006, "data": None, "message": "简历不存在"}
+            )
+        data = {
+            "list_skills": [
+                {
+                    "id": "java-backend",
+                    "name": "Java 后端",
+                    "categories": [{"key": "JVM", "priority": "CORE"}],
+                },
+            ],
+        }.get(tool, [])
+        return httpx.Response(200, json={"code": 200, "data": data, "message": "success"})
+
+    deps = _proposal_deps(
+        no_resume_handler,
+        {
+            "direction": "java-backend",
+            "difficulty": "mid",
+            "focus": [],
+            "summary": "按 Java 后端推荐",
+        },
+    )
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None,
+        message="我要准备 Java 后端面试",
+        attachments=[],
+        action=None,
+    )
+    result = await graph.ainvoke(state)
+
+    proposal = next(b for b in result["plan"].blocks if b.type == "interview_proposal")
+    assert proposal.direction == "java-backend"
+    assert proposal.resume_id is None
+
+
+async def test_graph_create_interview_action_navigates_to_session():
+    """CREATE_INTERVIEW action（用户确认后）→ 创建成功 → NavigationBlock 跳转面试页。"""
+    transport = _proposal_transport()
+    deps = _proposal_deps(transport, {})
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None,
+        message="",
+        attachments=[],
+        action={
+            "type": "ACTION_SELECTED",
+            "action": "CREATE_INTERVIEW",
+            "payload": {
+                "direction": "java-backend",
+                "difficulty": "mid",
+                "focus": ["JVM"],
+                "questionCount": 8,
+                "resumeId": 1,
+            },
+        },
+    )
+    result = await graph.ainvoke(state)
+
+    plan = result["plan"]
+    nav = next((b for b in plan.blocks if b.type == "navigation"), None)
+    assert nav is not None, "创建成功应产出 NavigationBlock"
+    assert nav.route == "INTERVIEW_SESSION"
+    assert nav.params["sessionId"] == "abc123"
+
+
+async def test_graph_create_interview_action_requires_direction():
+    """CREATE_INTERVIEW 缺 direction 时应拒绝创建并提示（不调后端写接口）。"""
+    transport = _proposal_transport()
+    deps = _proposal_deps(transport, {})
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None,
+        message="",
+        attachments=[],
+        action={
+            "type": "ACTION_SELECTED",
+            "action": "CREATE_INTERVIEW",
+            "payload": {"difficulty": "mid"},
+        },
+    )
+    result = await graph.ainvoke(state)
+
+    text = "".join([c async for c in result["plan"].text])
+    assert "缺少面试方向配置" in text
+    assert result["plan"].blocks == []

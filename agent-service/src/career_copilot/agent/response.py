@@ -8,6 +8,7 @@ from typing import Any
 from career_copilot.schemas.message import (
     ActionBlock,
     CopilotResponse,
+    InterviewProposalBlock,
     InterviewSummaryBlock,
     KnowledgeCitationsBlock,
     ResumeSummaryBlock,
@@ -71,3 +72,32 @@ def interview_summary_block(interviews: list[dict[str, Any]]) -> InterviewSummar
 def citations_block(citations: list[dict[str, Any]]) -> KnowledgeCitationsBlock:
     """知识引用块：RAG 回答的来源说明。"""
     return KnowledgeCitationsBlock(citations=citations)
+
+
+def interview_proposal_block(
+    *,
+    direction: str,
+    direction_name: str,
+    difficulty: str,
+    difficulty_name: str,
+    focus: list[str],
+    question_count: int = 8,
+    resume_id: int | None = None,
+    summary: str = "",
+) -> InterviewProposalBlock:
+    """面试提案确认块：Agent 推荐的面试配置 + [按推荐开始] / [调整配置]。
+
+    direction/difficulty 使用 Java 侧枚举（skillId / junior·mid·senior），
+    前端据此把「按推荐开始」回传为 CREATE_INTERVIEW action。
+    """
+    return InterviewProposalBlock(
+        direction=direction,
+        direction_name=direction_name,
+        difficulty=difficulty,
+        difficulty_name=difficulty_name,
+        mode="TEXT",
+        focus=focus,
+        question_count=question_count,
+        resume_id=resume_id,
+        summary=summary,
+    )

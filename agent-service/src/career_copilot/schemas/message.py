@@ -58,6 +58,20 @@ class ActionBlock(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict, description="路由参数")
 
 
+class NavigationBlock(BaseModel):
+    """导航跳转块：Agent 建议进入某个业务页（如创建成功的面试会话页）。
+
+    与 ActionBlock 的区别：ActionBlock 由用户点击后才跳转；
+    NavigationBlock 是 Agent 完成确定性写操作后（如面试创建成功）主动给出的
+    导航入口，仍由前端白名单校验路由与参数，禁止任意 URL。
+    """
+
+    type: Literal["navigation"] = "navigation"
+    route: str = Field(description="白名单路由 key（如 INTERVIEW_SESSION），由前端映射")
+    label: str = Field(description="按钮文案")
+    params: dict[str, Any] = Field(default_factory=dict, description="路由参数")
+
+
 class ResumeSummaryBlock(BaseModel):
     """简历摘要卡片：展示简历列表与最新分析分数。"""
 
@@ -103,13 +117,34 @@ class ChoiceBlock(BaseModel):
     options: list[ChoiceOption] = Field(default_factory=list, description="可选动作")
 
 
+class InterviewProposalBlock(BaseModel):
+    """面试提案确认块：Agent 推荐的面试配置 + [按推荐开始] / [调整配置]。
+
+    direction 使用 Java 面试方向 skillId（如 java-backend），difficulty 使用
+    Java 难度枚举（junior/mid/senior）。focus 为候选重点分类 key（如 JVM/Redis）。
+    """
+
+    type: Literal["interview_proposal"] = "interview_proposal"
+    direction: str = Field(description="面试方向 skillId（与 list_skills 对齐）")
+    direction_name: str = Field(description="面试方向展示名（如 Java 后端）")
+    difficulty: str = Field(description="难度枚举（junior/mid/senior）")
+    difficulty_name: str = Field(description="难度展示名（如 校招）")
+    mode: Literal["TEXT", "VOICE"] = Field(default="TEXT", description="面试模式（一期仅文字）")
+    focus: list[str] = Field(default_factory=list, description="重点考察方向（分类 key）")
+    question_count: int = Field(default=8, description="题目数量")
+    resume_id: int | None = Field(default=None, description="基于的简历（可选）")
+    summary: str = Field(default="", description="推荐理由（一句话）")
+
+
 MessageBlock = Annotated[
     TextBlock
     | ActionBlock
+    | NavigationBlock
     | ChoiceBlock
     | ResumeSummaryBlock
     | InterviewSummaryBlock
-    | KnowledgeCitationsBlock,
+    | KnowledgeCitationsBlock
+    | InterviewProposalBlock,
     Field(discriminator="type"),
 ]
 

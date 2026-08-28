@@ -101,6 +101,40 @@ class BackendClient:
         data = await self.call_tool("get_interview_history")
         return data if isinstance(data, list) else []
 
+    async def list_skills(self) -> list[dict[str, Any]]:
+        """可用的模拟面试技能方向列表（含分类）。"""
+        data = await self.call_tool("list_skills")
+        return data if isinstance(data, list) else []
+
+    async def create_interview(
+        self,
+        skill_id: str,
+        difficulty: str,
+        question_count: int | None = None,
+        resume_id: int | None = None,
+        resume_text: str | None = None,
+        force_create: bool = False,
+    ) -> dict[str, Any]:
+        """创建模拟面试会话（CONFIRM_WRITE，用户确认后才由 Agent 调用）。
+
+        复用 Java Interview Engine 现有创建链路（含 requestId 幂等与未完成会话复用），
+        返回 InterviewSessionDTO，sessionId 供前端跳转面试页。
+        """
+        arguments: dict[str, Any] = {
+            "skillId": skill_id,
+            "difficulty": difficulty,
+        }
+        if question_count is not None:
+            arguments["questionCount"] = question_count
+        if resume_id is not None:
+            arguments["resumeId"] = resume_id
+        if resume_text is not None:
+            arguments["resumeText"] = resume_text
+        if force_create:
+            arguments["forceCreate"] = True
+        data = await self.call_tool("create_interview", arguments)
+        return data if isinstance(data, dict) else {}
+
     async def list_knowledge_bases(self) -> list[dict[str, Any]]:
         """知识库列表，用于 KNOWLEDGE_QA 时挑选检索目标。"""
         data = await self.call_tool("list_knowledge_bases")

@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     # 简历内容注入上限（Agent 内容级分析 / 简历优化，Token 纪律）
     resume_context_max_chars: int = 8000
 
+    # 面试发起（P1-4）：Agent 推荐的默认题目数量（与前端创建面试默认一致）
+    interview_default_question_count: int = 8
+
     # 新上传简历的异步分析就绪窗口：分析未完成时有限次轮询
     # 总等待 ≈ attempts × delay（默认约 48s），期间通过 tool_progress 事件向前端反馈
     analysis_wait_attempts: int = 12

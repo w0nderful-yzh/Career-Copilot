@@ -40,6 +40,17 @@ export const ACTION_ROUTE_MAP: Record<string, ActionRouteTarget> = {
     },
   },
   INTERVIEW_CREATE: { label: '开始模拟面试', buildPath: staticPath(ROUTES.interviewHub) },
+  INTERVIEW_SESSION: {
+    label: '进入面试',
+    buildPath: (params) => {
+      // sessionId 必须是 16 位十六进制面试会话 ID（Java 生成格式），拒绝任意字符串
+      const sessionId = params?.sessionId;
+      if (typeof sessionId !== 'string' || !/^[0-9a-f]{16}$/i.test(sessionId)) {
+        return null;
+      }
+      return ROUTES.interviewSession(sessionId);
+    },
+  },
   INTERVIEW_HISTORY: { label: '面试记录', buildPath: staticPath(ROUTES.interviewHistory) },
   KNOWLEDGE_BASE: { label: '知识库管理', buildPath: staticPath(ROUTES.knowledgeBase) },
   KNOWLEDGE_CHAT: { label: '问答助手', buildPath: staticPath(ROUTES.knowledgeChat) },

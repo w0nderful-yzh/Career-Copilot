@@ -4,10 +4,12 @@
 export type AgentBlockType =
   | 'text'
   | 'action'
+  | 'navigation'
   | 'choice'
   | 'resume_summary'
   | 'interview_summary'
-  | 'knowledge_citations';
+  | 'knowledge_citations'
+  | 'interview_proposal';
 
 export interface TextBlock {
   type: 'text';
@@ -19,6 +21,28 @@ export interface ActionBlock {
   route: string;
   label: string;
   params?: Record<string, unknown>;
+}
+
+/** Agent 完成确定性写操作（如面试创建成功）后给出的导航入口，由白名单映射 */
+export interface NavigationBlock {
+  type: 'navigation';
+  route: string;
+  label: string;
+  params?: Record<string, unknown>;
+}
+
+/** 面试提案确认块（P1-4）：Agent 推荐配置 + [按推荐开始] / [调整配置] */
+export interface InterviewProposalBlock {
+  type: 'interview_proposal';
+  direction: string;
+  direction_name: string;
+  difficulty: string;
+  difficulty_name: string;
+  mode: 'TEXT' | 'VOICE';
+  focus: string[];
+  question_count: number;
+  resume_id?: number | null;
+  summary: string;
 }
 
 export interface ChoiceOption {
@@ -74,10 +98,12 @@ export interface KnowledgeCitationsBlock {
 export type AgentBlock =
   | TextBlock
   | ActionBlock
+  | NavigationBlock
   | ChoiceBlock
   | ResumeSummaryBlock
   | InterviewSummaryBlock
-  | KnowledgeCitationsBlock;
+  | KnowledgeCitationsBlock
+  | InterviewProposalBlock;
 
 export type MessageStatus = 'streaming' | 'done' | 'error';
 

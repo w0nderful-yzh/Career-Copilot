@@ -8,7 +8,9 @@ import interview.guide.modules.interview.model.ResumeAnalysisResponse;
 import interview.guide.modules.resume.model.ResumeEntity;
 import interview.guide.modules.resume.repository.ResumeRepository;
 import interview.guide.modules.resume.service.ResumeGradingService;
+import interview.guide.modules.resume.service.ResumeParseStructuredService;
 import interview.guide.modules.resume.service.ResumePersistenceService;
+import interview.guide.modules.resume.service.ResumeVersionService;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.stream.StreamMessageId;
 import org.springframework.stereotype.Component;
@@ -26,17 +28,23 @@ public class AnalyzeStreamConsumer extends AbstractStreamConsumer<AnalyzeStreamC
     private final ResumeGradingService gradingService;
     private final ResumePersistenceService persistenceService;
     private final ResumeRepository resumeRepository;
+    private final ResumeParseStructuredService structuredParseService;
+    private final ResumeVersionService versionService;
 
     public AnalyzeStreamConsumer(
         RedisService redisService,
         ResumeGradingService gradingService,
         ResumePersistenceService persistenceService,
-        ResumeRepository resumeRepository
+        ResumeRepository resumeRepository,
+        ResumeParseStructuredService structuredParseService,
+        ResumeVersionService versionService
     ) {
         super(redisService);
         this.gradingService = gradingService;
         this.persistenceService = persistenceService;
         this.resumeRepository = resumeRepository;
+        this.structuredParseService = structuredParseService;
+        this.versionService = versionService;
     }
 
     record AnalyzePayload(Long resumeId, String content) {}
@@ -109,6 +117,15 @@ public class AnalyzeStreamConsumer extends AbstractStreamConsumer<AnalyzeStreamC
             return;
         }
         persistenceService.saveAnalysis(resume, analysis);
+
+        // 评分分析成功后创建结构化导入版本 V1（简历优化地基）。
+        // 解析失败不影响已保存的评分结果；重分析会再次触发本链路。
+        try {
+            var parseResult = structuredParseService.parse(payload.content());
+            versionService.createImportVersion(resumeId, parseResult);
+        } catch (Exception e) {
+            log.error("简历结构化版本创建失败（不影响评分结果）: resumeId={}", resumeId, e);
+        }
     }
 
     @Override

@@ -21,13 +21,17 @@ import interview.guide.modules.knowledgebase.service.KnowledgeBaseQueryService;
 import interview.guide.modules.profile.service.SkillProfileQueryService;
 import interview.guide.modules.resume.model.ResumeContentDTO;
 import interview.guide.modules.resume.model.ResumeEntity;
+import interview.guide.modules.resume.model.ResumeVersionDTO;
+import interview.guide.modules.resume.model.ResumeVersionEntity;
 import interview.guide.modules.resume.service.ResumeHistoryService;
 import interview.guide.modules.resume.service.ResumePersistenceService;
+import interview.guide.modules.resume.service.ResumeVersionService;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import tools.jackson.databind.ObjectMapper;
 
 /**
  * Agent Tool 分派服务。
@@ -47,6 +51,8 @@ public class AgentToolService {
   private static final Map<AgentToolName, String> INPUT_SCHEMAS = Map.ofEntries(
       Map.entry(AgentToolName.GET_RESUME_LIST, "{}"),
       Map.entry(AgentToolName.GET_SKILL_PROFILE, "{}"),
+      Map.entry(AgentToolName.GET_RESUME_VERSION,
+          "{\"resumeId\": Long, \"version\": Integer, optional}"),
       Map.entry(AgentToolName.GET_RESUME_ANALYSIS, "{\"resumeId\": Long}"),
       Map.entry(AgentToolName.GET_RESUME,
           "{\"resumeId\": Long, \"maxChars\": Integer, optional}"),
@@ -70,6 +76,8 @@ public class AgentToolService {
   private final KnowledgeBaseQueryService knowledgeBaseQueryService;
   private final InterviewSkillService interviewSkillService;
   private final SkillProfileQueryService skillProfileQueryService;
+  private final ResumeVersionService resumeVersionService;
+  private final ObjectMapper objectMapper;
 
   /** 返回全部 Tool 的元信息，供 Agent Runtime 做 Tool Discovery */
   public List<ToolInfoDTO> listTools() {
@@ -96,6 +104,7 @@ public class AgentToolService {
     return switch (tool) {
       case GET_RESUME_LIST -> executeGetResumeList();
       case GET_SKILL_PROFILE -> executeGetSkillProfile();
+      case GET_RESUME_VERSION -> executeGetResumeVersion(arguments);
       case GET_RESUME_ANALYSIS -> executeGetResumeAnalysis(arguments);
       case GET_RESUME -> executeGetResume(arguments);
       case GET_INTERVIEW_HISTORY -> executeGetInterviewHistory(arguments);
@@ -119,6 +128,20 @@ public class AgentToolService {
     return new ToolResponse(
         AgentToolName.GET_SKILL_PROFILE.getName(),
         skillProfileQueryService.getProfileWithEvidence());
+  }
+
+  /**
+   * 简历结构化版本：优化子图取数入口。
+   * 默认最新 ACTIVE 版本；带 version 时精确定位。
+   */
+  private ToolResponse executeGetResumeVersion(Map<String, Object> arguments) {
+    Long resumeId = requireLong(arguments, "resumeId");
+    ResumeVersionEntity version = arguments.containsKey("version")
+        ? resumeVersionService.getByResumeVersion(resumeId, requireInt(arguments, "version"))
+        : resumeVersionService.getActiveVersion(resumeId);
+    return new ToolResponse(
+        AgentToolName.GET_RESUME_VERSION.getName(),
+        ResumeVersionDTO.from(version, objectMapper));
   }
 
   /** 简历最新分析结果：取最近一次分析，分析未完成或不存在时按业务错误返回 */

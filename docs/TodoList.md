@@ -112,11 +112,13 @@
 > 目标：Resume（+可选 JD +画像）→ JSON-first Patch → Diff + Preview PDF → 确认 → 新版本 → 导出 PDF。不做整份重写，不覆盖原简历，不做 DOCX。
 > 详细需求：`Career-Copilot-Resume-Optimization-Requirement.md`；方案设计：`career_copilot_resume_optimization_design.md`（JSON/版本/Typst）+ `career_copilot_resume_optimization_interaction_design.md`（Preview/自评审/Clarification）
 
-- [ ] **P2-0 Java 简历结构化地基**（一切的前置：Preview 质量上限 = 解析质量）
+- [x] **P2-0 Java 简历结构化地基**（一切的前置：Preview 质量上限 = 解析质量）
   - `resume_versions` 表（id/resumeId/version/sourceVersionId/optimizationType/targetJobId/contentJson/source/sourceCreatedAt）
   - ResumeParse：现有 Tika raw_text → LLM 结构化解析（StructuredOutputInvoker + prompts/*.st）→ Resume JSON（basicInfo/education/experience/projects/skills + **customSections 兜底**，解析 prompt 明确要求非标准段完整保留，防静默丢内容）
   - 解析失败/字段缺失标 NEED_USER_INFO，不猜测；解析结果需用户确认（确认端点 + 状态流转）
   - `get_resume_version` READ Tool（Python 子图取数路径）
+  - 已落地：`V20260830` 迁移（含 confirmation_status 状态机 PENDING_CONFIRMATION/ACTIVE/NEED_USER_INFO）；`ResumeContentJson` schema（record 树）；`ResumeParseStructuredService`（不猜测原则 + 缺失字段汇总，姓名缺失=NEED_USER_INFO）；`ResumeVersionService`（V1 幂等创建/确认流转/ACTIVE 取数）；触发挂 AnalyzeStreamConsumer（评分分析成功后，解析失败不影响评分）；端点：versions 列表/详情/confirm（可携修正内容）；`get_resume_version` READ Tool（默认最新 ACTIVE，可按版本号定位）
+  - 已验证：13 个新单测 + 全量 `:app:test` 通过；真实链路 reanalyze 触发分析→解析→V1 落库（真实 LLM）
 - [ ] **P2-1 Python 优化子图**（替换现 `stub.resume_optimization` 占位）
   - 流程：resolve_resume（复用 §26）→ determine_mode（GENERAL/TARGET_DIRECTION/JD_TARGETED）→ load_resume_version → load_jd/load_profile（桩位可空：JD 待 P2-5、画像已在 P3 就绪）→ context_check（信息不足才 Clarification，ChoiceBlock 确定性问询，只问影响方向的问题）→ generate_patch（JSON-path 结构化输出）→ validate_patch（代码校验）→ 提案落库 → ResumeOptimizationBlock + WAITING_USER
   - ResumePatch schema：`{id, type: REPLACE|ADD|DELETE|REORDER, path: "projects[0].bullets[0]", oldValue, newValue, reason, status}`；REORDER schema 保留、校验器一期直接拒绝

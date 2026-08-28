@@ -22,6 +22,10 @@ import interview.guide.modules.profile.dto.SkillProfileResponse;
 import interview.guide.modules.profile.service.SkillProfileQueryService;
 import interview.guide.modules.resume.model.ResumeContentDTO;
 import interview.guide.modules.resume.model.ResumeEntity;
+import interview.guide.modules.resume.model.ResumeVersionEntity;
+import interview.guide.modules.resume.service.ResumeVersionService;
+import tools.jackson.databind.ObjectMapper;
+import interview.guide.modules.resume.model.ResumeEntity;
 import interview.guide.modules.resume.service.ResumeHistoryService;
 import interview.guide.modules.resume.service.ResumePersistenceService;
 import java.util.List;
@@ -33,6 +37,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -65,6 +70,11 @@ class AgentToolServiceTest {
   private InterviewSkillService interviewSkillService;
   @Mock
   private SkillProfileQueryService skillProfileQueryService;
+  @Mock
+  private ResumeVersionService resumeVersionService;
+
+  @Spy
+  private final ObjectMapper objectMapper = new ObjectMapper();
 
   @InjectMocks
   private AgentToolService agentToolService;
@@ -78,14 +88,15 @@ class AgentToolServiceTest {
     void listToolsReturnsAllToolsWithPermissions() {
       List<ToolInfoDTO> tools = agentToolService.listTools();
 
-      assertThat(tools).hasSize(10);
+      assertThat(tools).hasSize(11);
       // 只读 Tool 仍全部为 READ；写 Tool（create_interview）为 CONFIRM_WRITE
       assertThat(tools)
           .extracting(ToolInfoDTO::permission)
           .containsOnly(AgentToolPermission.READ, AgentToolPermission.CONFIRM_WRITE);
       assertThat(tools)
           .extracting(ToolInfoDTO::name)
-          .contains("get_resume_list", "get_skill_profile", "search_knowledge", "create_interview");
+          .contains("get_resume_list", "get_skill_profile", "get_resume_version",
+              "search_knowledge", "create_interview");
       assertThat(tools)
           .allSatisfy(tool -> {
             assertThat(tool.description()).isNotBlank();
@@ -292,6 +303,39 @@ class AgentToolServiceTest {
 
       assertThat(response.data()).isSameAs(expected);
       verify(skillProfileQueryService).getProfileWithEvidence();
+    }
+  }
+
+  @Nested
+  @DisplayName("简历版本 Tool")
+  class ResumeVersionTools {
+
+    @Test
+    @DisplayName("get_resume_version 默认返回最新 ACTIVE 版本")
+    void getResumeVersionDefaultsToActive() {
+      ResumeVersionEntity version = new ResumeVersionEntity();
+      version.setId(5L);
+      version.setResumeId(102L);
+      version.setVersion(1);
+      version.setContentJson("{\"basicInfo\":{\"name\":\"张三\"}}");
+      when(resumeVersionService.getActiveVersion(102L)).thenReturn(version);
+
+      ToolResponse response = agentToolService.execute(
+          "get_resume_version", Map.of("resumeId", 102));
+
+      assertThat(response.tool()).isEqualTo("get_resume_version");
+      interview.guide.modules.resume.model.ResumeVersionDTO dto =
+          (interview.guide.modules.resume.model.ResumeVersionDTO) response.data();
+      assertThat(dto.version()).isEqualTo(1);
+      assertThat(dto.content().basicInfo().name()).isEqualTo("张三");
+    }
+
+    @Test
+    @DisplayName("get_resume_version 缺少 resumeId 抛出参数错误")
+    void getResumeVersionMissingArgumentFails() {
+      assertThatThrownBy(() -> agentToolService.execute("get_resume_version", Map.of()))
+          .isInstanceOf(BusinessException.class)
+          .hasFieldOrPropertyWithValue("code", ErrorCode.AGENT_TOOL_ARGUMENT_INVALID.getCode());
     }
   }
 

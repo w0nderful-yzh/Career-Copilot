@@ -20,6 +20,9 @@ public interface SkillEvidenceRepository extends JpaRepository<SkillEvidenceEnti
   /** 聚合指定技能的全部证据 */
   List<SkillEvidenceEntity> findByUserIdAndSkill(String userId, String skill);
 
+  /** 指定技能的证据明细（追溯展示用，时间倒序） */
+  List<SkillEvidenceEntity> findByUserIdAndSkillOrderByOccurredAtDesc(String userId, String skill);
+
   /** 聚合全部技能涉及的证据（重聚合时按 skill 分组） */
   List<SkillEvidenceEntity> findByUserId(String userId);
 

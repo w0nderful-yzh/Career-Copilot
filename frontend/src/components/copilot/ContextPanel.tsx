@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import {
   BarChart3,
   CheckCircle2,
@@ -7,16 +8,12 @@ import {
   Target,
 } from 'lucide-react';
 import type { CopilotMessage } from '../../types/copilot';
+import {
+  skillProfileApi,
+  type SkillProfileSkill,
+} from '../../api/agentChat';
 
-// P1 视觉预览：示例画像与任务只用于界面占位，不会发送给 Agent 或持久化。
-// P1-3 / P3 接入真实 Conversation Context 与 Skill Profile 后替换这些常量。
-const PREVIEW_SKILLS = [
-  { name: 'Java', score: 82, color: 'bg-emerald-500' },
-  { name: 'Spring', score: 78, color: 'bg-emerald-500' },
-  { name: 'Redis', score: 68, color: 'bg-lime-500' },
-  { name: 'JVM', score: 54, color: 'bg-orange-500' },
-] as const;
-
+// P1 视觉预览：任务示例只用于界面占位；能力画像已接入真实 Evidence 数据（P3-2）。
 const PREVIEW_TASKS = [
   { label: '复习 JVM GC', done: true },
   { label: '梳理消息可靠性', done: false },
@@ -37,6 +34,80 @@ function SectionTitle({ icon: Icon, children }: { icon: typeof Target; children:
       <Icon className="h-3.5 w-3.5" />
       {children}
     </div>
+  );
+}
+
+/** 分数 → 条形颜色（与 SkillProfileBlock 渲染一致） */
+function skillBarColor(score: number): string {
+  if (score >= 80) return 'bg-emerald-500';
+  if (score >= 60) return 'bg-lime-500';
+  return 'bg-orange-500';
+}
+
+type ProfileState =
+  | { status: 'loading' }
+  | { status: 'error' }
+  | { status: 'empty' }
+  | { status: 'ready'; skills: SkillProfileSkill[] };
+
+function ProfileSection() {
+  const [state, setState] = useState<ProfileState>({ status: 'loading' });
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const profile = await skillProfileApi.get();
+        if (cancelled) return;
+        const skills = profile.skills ?? [];
+        setState(skills.length > 0 ? { status: 'ready', skills } : { status: 'empty' });
+      } catch {
+        if (!cancelled) setState({ status: 'error' });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return (
+    <section className="mb-6">
+      <SectionTitle icon={BarChart3}>能力画像</SectionTitle>
+      <div className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+        {state.status === 'loading' && (
+          <p className="text-xs text-slate-400">加载画像数据…</p>
+        )}
+        {state.status === 'error' && (
+          <p className="text-xs text-amber-600 dark:text-amber-400">画像加载失败，请稍后重试</p>
+        )}
+        {state.status === 'empty' && (
+          <p className="text-xs leading-5 text-slate-400 dark:text-slate-500">
+            暂无画像数据。完成一场模拟面试后，这里会展示各技能的可追溯评分。
+          </p>
+        )}
+        {state.status === 'ready' &&
+          state.skills.map((skill) => (
+            <div
+              key={skill.skill}
+              className="grid grid-cols-[5rem_1fr_2rem] items-center gap-2"
+              title={`来自 ${skill.evidenceCount} 条面试证据`}
+            >
+              <span className="truncate text-xs font-semibold text-slate-600 dark:text-slate-300">
+                {skill.skill}
+              </span>
+              <div className="h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-700">
+                <div
+                  className={`h-full rounded-full ${skillBarColor(skill.score)}`}
+                  style={{ width: `${Math.min(Math.max(skill.score, 0), 100)}%` }}
+                />
+              </div>
+              <span className="text-right text-xs font-bold tabular-nums text-slate-600 dark:text-slate-300">
+                {skill.score}
+              </span>
+            </div>
+          ))}
+      </div>
+    </section>
   );
 }
 
@@ -93,25 +164,7 @@ export default function ContextPanel({ messages }: { messages: CopilotMessage[] 
         </div>
       </section>
 
-      <section className="mb-6">
-        <SectionTitle icon={BarChart3}>能力画像 · 示例</SectionTitle>
-        <div className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-800">
-          {PREVIEW_SKILLS.map((skill) => (
-            <div key={skill.name} className="grid grid-cols-[3.5rem_1fr_2rem] items-center gap-2">
-              <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">{skill.name}</span>
-              <div className="h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-700">
-                <div className={`h-full rounded-full ${skill.color}`} style={{ width: `${skill.score}%` }} />
-              </div>
-              <span className="text-right text-xs font-bold tabular-nums text-slate-600 dark:text-slate-300">
-                {skill.score}
-              </span>
-            </div>
-          ))}
-          <p className="pt-1 text-[11px] leading-4 text-amber-600 dark:text-amber-400">
-            当前为视觉示例，P3 将替换为可追溯 Evidence 数据。
-          </p>
-        </div>
-      </section>
+      <ProfileSection />
 
       <section>
         <SectionTitle icon={CheckCircle2}>今日任务 · 示例</SectionTitle>

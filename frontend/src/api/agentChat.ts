@@ -96,6 +96,37 @@ export const conversationApi = {
     request.delete<void>(`${conversationBase}/${conversationId}`),
 };
 
+// ===== 技能画像（Java Profile 模块，P3-2） =====
+
+export interface SkillProfileSkill {
+  skill: string;
+  score: number;
+  evidenceCount: number;
+  updatedAt?: string | null;
+  evidences?: Array<{
+    sourceType: 'RESUME' | 'INTERVIEW_SESSION' | 'INTERVIEW_TURN';
+    sourceId: string;
+    score: number;
+    occurredAt?: string | null;
+  }>;
+}
+
+export interface SkillProfileResponse {
+  skills: SkillProfileSkill[];
+}
+
+export const skillProfileApi = {
+  /** 全部技能画像 + 证据明细（侧栏面板用；无数据时 skills 为空数组）。
+   * Java Tool 端点返回 Result<ToolResponse> 双层信封，需解出内层业务数据 */
+  get: async (): Promise<SkillProfileResponse> => {
+    const envelope = await request.post<{ tool: string; data: SkillProfileResponse }>(
+      '/api/agent/tools/get_skill_profile',
+      {},
+    );
+    return envelope?.data ?? { skills: [] };
+  },
+};
+
 // ===== 简历附件上传（复用 Java 简历库上传，文件不经 Agent） =====
 
 export const resumeUploadApi = {

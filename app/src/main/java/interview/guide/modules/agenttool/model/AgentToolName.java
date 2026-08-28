@@ -15,6 +15,10 @@ public enum AgentToolName {
       "get_resume_list",
       "获取简历列表，包含最新分析分数与面试次数",
       AgentToolPermission.READ),
+  GET_SKILL_PROFILE(
+      "get_skill_profile",
+      "获取用户技能画像（各技能聚合分与可追溯证据：来自哪些面试、得了多少分）",
+      AgentToolPermission.READ),
   GET_RESUME_ANALYSIS(
       "get_resume_analysis",
       "获取指定简历的最新分析结果（各项评分、优势与改进建议）",

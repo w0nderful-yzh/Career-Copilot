@@ -4,6 +4,7 @@ import {
   ArrowRight,
   BookOpen,
   BriefcaseBusiness,
+  ChevronDown,
   FileSearch,
   FileStack,
   MessagesSquare,
@@ -22,6 +23,7 @@ import type {
   KnowledgeCitationsBlock,
   NavigationBlock,
   ResumeSummaryBlock,
+  SkillProfileBlock,
 } from '../../types/copilot';
 import { resolveActionRoute } from '../../constants/routes';
 
@@ -284,6 +286,115 @@ function KnowledgeCitationsBlockView({ block }: { block: KnowledgeCitationsBlock
   );
 }
 
+/** 分数 → 条形颜色（≥80 绿 / ≥60 黄绿 / <60 橙） */
+function skillBarColor(score: number): string {
+  if (score >= 80) return 'bg-emerald-500';
+  if (score >= 60) return 'bg-lime-500';
+  return 'bg-orange-500';
+}
+
+/** 证据来源的可读描述：面试轮次 → 「面试 s1:2 · 55 分」 */
+function evidenceLabel(sourceType: string | null | undefined): string {
+  switch (sourceType) {
+    case 'INTERVIEW_TURN':
+      return '模拟面试答题';
+    case 'INTERVIEW_SESSION':
+      return '面试总评';
+    case 'RESUME':
+      return '简历分析';
+    default:
+      return '评分来源';
+  }
+}
+
+function formatOccurredAt(occurredAt: string | null | undefined): string {
+  if (!occurredAt) return '';
+  const date = new Date(occurredAt);
+  return Number.isNaN(date.getTime()) ? '' : ` · ${date.toLocaleDateString('zh-CN')}`;
+}
+
+/** 单个技能行：分数条 + 可展开的证据明细（可追溯验收：任一分数能点出 Evidence 来源） */
+function SkillProfileRow({
+  skill,
+}: {
+  skill: SkillProfileBlock['skills'][number];
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const score = skill.score ?? 0;
+  const evidences = skill.evidences ?? [];
+  const hasEvidence = evidences.length > 0;
+
+  return (
+    <div className="rounded-lg bg-slate-50 px-3 py-2.5 dark:bg-slate-700/50">
+      <button
+        type="button"
+        disabled={!hasEvidence}
+        onClick={() => setExpanded((prev) => !prev)}
+        className={`grid w-full grid-cols-[5rem_1fr_4.5rem] items-center gap-2 text-left ${
+          hasEvidence ? 'cursor-pointer' : 'cursor-default'
+        }`}
+      >
+        <span className="truncate text-sm font-semibold text-slate-700 dark:text-slate-200">
+          {skill.skill ?? '未知技能'}
+        </span>
+        <span className="h-1.5 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-600">
+          <span
+            className={`block h-full rounded-full ${skillBarColor(score)}`}
+            style={{ width: `${Math.min(Math.max(score, 0), 100)}%` }}
+          />
+        </span>
+        <span className="text-right text-xs font-bold tabular-nums text-slate-600 dark:text-slate-300">
+          {score} 分
+          {hasEvidence && (
+            <ChevronDown
+              className={`ml-1 inline h-3 w-3 text-slate-400 transition-transform ${
+                expanded ? 'rotate-180' : ''
+              }`}
+            />
+          )}
+        </span>
+      </button>
+      {expanded && (
+        <ul className="mt-2 space-y-1 border-t border-slate-200 pt-2 dark:border-slate-600">
+          {evidences.map((evidence, index) => (
+            <li
+              key={evidence.sourceId ?? index}
+              className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400"
+            >
+              <span className="min-w-0 truncate">
+                {evidenceLabel(evidence.sourceType)}
+                {evidence.sourceId ? `（${evidence.sourceId}）` : ''}
+                {formatOccurredAt(evidence.occurredAt)}
+              </span>
+              <span className="ml-2 shrink-0 font-semibold tabular-nums">
+                {evidence.score ?? '-'} 分
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function SkillProfileBlockView({ block }: { block: SkillProfileBlock }) {
+  if (block.skills.length === 0) return null;
+  return (
+    <div className="mt-3 space-y-2 rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-800">
+      <div className="flex items-center gap-2 text-xs font-semibold text-slate-500 dark:text-slate-400">
+        <Target className="h-3.5 w-3.5" />
+        能力画像
+        <span className="font-normal text-slate-400 dark:text-slate-500">
+          （分数 = 面试证据均值，点击查看来源）
+        </span>
+      </div>
+      {block.skills.map((skill) => (
+        <SkillProfileRow key={skill.skill ?? 'unknown'} skill={skill} />
+      ))}
+    </div>
+  );
+}
+
 export default function BlockRenderer({
   block,
   actionDisabled = false,
@@ -323,6 +434,8 @@ export default function BlockRenderer({
       return <InterviewSummaryBlockView block={block} />;
     case 'knowledge_citations':
       return <KnowledgeCitationsBlockView block={block} />;
+    case 'skill_profile':
+      return <SkillProfileBlockView block={block} />;
     default:
       return null; // 未知类型：受控忽略
   }

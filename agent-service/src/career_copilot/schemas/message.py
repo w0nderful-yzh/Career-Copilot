@@ -99,6 +99,31 @@ class KnowledgeCitationsBlock(BaseModel):
     )
 
 
+class SkillEvidenceItem(BaseModel):
+    """单条技能证据：一次可追溯的评分来源（如某场面试的某道题）。"""
+
+    sourceType: Literal["RESUME", "INTERVIEW_SESSION", "INTERVIEW_TURN"] = Field(
+        description="证据来源类型"
+    )
+    sourceId: str = Field(description="来源标识（面试轮次为 sessionId:questionIndex）")
+    score: int = Field(description="该证据的评分 (0-100)")
+    occurredAt: str | None = Field(default=None, description="证据发生时间")
+
+
+class SkillProfileBlock(BaseModel):
+    """技能画像卡片：Evidence-driven 聚合分 + 证据明细。
+
+    score 由 Java Profile Aggregator 按证据均值计算，LLM 不得改写数值，
+    只负责在自然语言中解读强弱项。
+    """
+
+    type: Literal["skill_profile"] = "skill_profile"
+    skills: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="技能列表：skill/score/evidenceCount/evidences（已裁剪字段）",
+    )
+
+
 class ChoiceOption(BaseModel):
     """选择块中的单个选项：点击后回传 ActionSelected。"""
 
@@ -144,6 +169,7 @@ MessageBlock = Annotated[
     | ResumeSummaryBlock
     | InterviewSummaryBlock
     | KnowledgeCitationsBlock
+    | SkillProfileBlock
     | InterviewProposalBlock,
     Field(discriminator="type"),
 ]

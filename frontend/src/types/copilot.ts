@@ -9,6 +9,7 @@ export type AgentBlockType =
   | 'resume_summary'
   | 'interview_summary'
   | 'knowledge_citations'
+  | 'skill_profile'
   | 'interview_proposal';
 
 export interface TextBlock {
@@ -95,6 +96,25 @@ export interface KnowledgeCitationsBlock {
   }>;
 }
 
+/** 技能证据：一次可追溯的评分来源（如某场面试的某道题） */
+export interface SkillEvidence {
+  sourceType?: 'RESUME' | 'INTERVIEW_SESSION' | 'INTERVIEW_TURN' | null;
+  sourceId?: string | null;
+  score?: number | null;
+  occurredAt?: string | null;
+}
+
+/** 技能画像块（P3-2）：Evidence-driven 聚合分 + 证据明细，数值由 Java 聚合器产出 */
+export interface SkillProfileBlock {
+  type: 'skill_profile';
+  skills: Array<{
+    skill?: string | null;
+    score?: number | null;
+    evidenceCount?: number | null;
+    evidences?: SkillEvidence[] | null;
+  }>;
+}
+
 export type AgentBlock =
   | TextBlock
   | ActionBlock
@@ -103,6 +123,7 @@ export type AgentBlock =
   | ResumeSummaryBlock
   | InterviewSummaryBlock
   | KnowledgeCitationsBlock
+  | SkillProfileBlock
   | InterviewProposalBlock;
 
 export type MessageStatus = 'streaming' | 'done' | 'error';

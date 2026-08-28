@@ -1,7 +1,7 @@
 """business_tools：业务数据查询意图，按固定 Intent → Tool 映射执行读操作。
 
 第一版不做无限 Tool Loop：每个意图最多调用固定 Tool 集合，产出摘要块 + 回答。
-PROFILE_QUERY / PREPARATION_QUERY 的 Tool（Java 侧）尚未开通，返回友好占位。
+PREPARATION_QUERY 的 Tool（Java 侧）尚未开通，返回友好占位。
 """
 
 import asyncio
@@ -33,11 +33,11 @@ async def business_tools(state: CareerAgentState, deps: GraphDeps) -> dict[str, 
     if intent == Intent.INTERVIEW_REVIEW.value:
         return await _plan_interview_review(state, backend, deps)
 
-    # PROFILE_QUERY / PREPARATION_QUERY：工具未开通，友好占位（避免空回复）
+    # PREPARATION_QUERY：工具未开通，友好占位（避免空回复）
     return {
         "plan": StreamPlan(
             text=static_text(
-                "能力画像与学习计划功能正在建设中，暂时无法查看。"
+                "学习计划功能正在建设中，暂时无法查看。"
                 "你可以先查看简历或模拟面试记录。"
             )
         )

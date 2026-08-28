@@ -92,6 +92,30 @@ def backend_transport():
                 "suggestions": [],
             },
             "get_interview_history": [{"sessionId": "s1", "skillId": "java-backend"}],
+            "get_skill_profile": {
+                "skills": [
+                    {
+                        "skill": "MySQL",
+                        "score": 83,
+                        "evidenceCount": 2,
+                        "evidences": [
+                            {"sourceType": "INTERVIEW_TURN", "sourceId": "s1:0", "score": 88,
+                             "occurredAt": "2026-08-28T12:00:00"},
+                            {"sourceType": "INTERVIEW_TURN", "sourceId": "s1:1", "score": 78,
+                             "occurredAt": "2026-08-28T12:00:00"},
+                        ],
+                    },
+                    {
+                        "skill": "JVM",
+                        "score": 55,
+                        "evidenceCount": 1,
+                        "evidences": [
+                            {"sourceType": "INTERVIEW_TURN", "sourceId": "s1:2", "score": 55,
+                             "occurredAt": "2026-08-28T12:00:00"},
+                        ],
+                    },
+                ]
+            },
             "list_knowledge_bases": [{"id": 1, "name": "Java 知识库"}],
             "search_knowledge": {
                 "answer": "JVM 是 Java 虚拟机。",
@@ -1065,3 +1089,63 @@ async def test_graph_create_interview_action_requires_direction():
     text = "".join([c async for c in result["plan"].text])
     assert "缺少面试方向配置" in text
     assert result["plan"].blocks == []
+
+# ===== profile_query（P3-2 能力画像） =====
+
+
+async def test_graph_profile_query_produces_skill_profile_block(backend_transport):
+    """PROFILE_QUERY → get_skill_profile → SkillProfileBlock + 证据驱动的回答。"""
+    deps, router = make_deps(
+        IntentClassification(intent=Intent.PROFILE_QUERY), backend_transport
+    )
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None,
+        message="我的 JVM 水平怎么样？",
+        attachments=[],
+        action=None,
+    )
+    result = await graph.ainvoke(state)
+
+    plan = result["plan"]
+    block = next((b for b in plan.blocks if b.type == "skill_profile"), None)
+    assert block is not None, "画像查询应产出 SkillProfileBlock"
+    skills = {s["skill"]: s for s in block.skills}
+    assert set(skills) == {"MySQL", "JVM"}
+    # 数值来自 Java 聚合器，块内原样透传（LLM 不改写）
+    assert skills["JVM"]["score"] == 55
+    assert skills["JVM"]["evidenceCount"] == 1
+    assert skills["JVM"]["evidences"][0]["sourceId"] == "s1:2"
+
+    text = "".join([c async for c in plan.text])
+    assert text, "画像查询应有流式回答"
+
+
+async def test_graph_profile_query_empty_guides_to_interview(backend_transport):
+    """无画像数据时如实说明并引导面试，不产出空画像块。"""
+    def empty_profile_transport(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.startswith("/api/agent/conversations"):
+            return httpx.Response(200, json={"code": 200, "data": None, "message": "success"})
+        tool = path.rsplit("/", 1)[-1]
+        data = {"get_skill_profile": {"skills": []}}.get(tool, [])
+        return httpx.Response(200, json={"code": 200, "data": data, "message": "success"})
+
+    deps, _ = make_deps(
+        IntentClassification(intent=Intent.PROFILE_QUERY), empty_profile_transport
+    )
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None,
+        message="我水平怎么样",
+        attachments=[],
+        action=None,
+    )
+    result = await graph.ainvoke(state)
+
+    plan = result["plan"]
+    assert not [b for b in plan.blocks if b.type == "skill_profile"]
+    actions = [b for b in plan.blocks if b.type == "action"]
+    assert actions and actions[0].route == "INTERVIEW_CREATE"
+    text = "".join([c async for c in plan.text])
+    assert "画像" in text and "面试" in text

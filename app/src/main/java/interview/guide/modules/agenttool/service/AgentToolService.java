@@ -18,6 +18,7 @@ import interview.guide.modules.knowledgebase.model.QueryRequest;
 import interview.guide.modules.knowledgebase.model.QueryResponse;
 import interview.guide.modules.knowledgebase.service.KnowledgeBaseListService;
 import interview.guide.modules.knowledgebase.service.KnowledgeBaseQueryService;
+import interview.guide.modules.profile.service.SkillProfileQueryService;
 import interview.guide.modules.resume.model.ResumeContentDTO;
 import interview.guide.modules.resume.model.ResumeEntity;
 import interview.guide.modules.resume.service.ResumeHistoryService;
@@ -45,6 +46,7 @@ public class AgentToolService {
   /** 每个 Tool 的输入参数 schema 描述，用于 Tool Discovery 时帮助 LLM 生成正确参数 */
   private static final Map<AgentToolName, String> INPUT_SCHEMAS = Map.ofEntries(
       Map.entry(AgentToolName.GET_RESUME_LIST, "{}"),
+      Map.entry(AgentToolName.GET_SKILL_PROFILE, "{}"),
       Map.entry(AgentToolName.GET_RESUME_ANALYSIS, "{\"resumeId\": Long}"),
       Map.entry(AgentToolName.GET_RESUME,
           "{\"resumeId\": Long, \"maxChars\": Integer, optional}"),
@@ -67,6 +69,7 @@ public class AgentToolService {
   private final KnowledgeBaseListService knowledgeBaseListService;
   private final KnowledgeBaseQueryService knowledgeBaseQueryService;
   private final InterviewSkillService interviewSkillService;
+  private final SkillProfileQueryService skillProfileQueryService;
 
   /** 返回全部 Tool 的元信息，供 Agent Runtime 做 Tool Discovery */
   public List<ToolInfoDTO> listTools() {
@@ -92,6 +95,7 @@ public class AgentToolService {
     log.info("Agent Tool execute: tool={}", toolName);
     return switch (tool) {
       case GET_RESUME_LIST -> executeGetResumeList();
+      case GET_SKILL_PROFILE -> executeGetSkillProfile();
       case GET_RESUME_ANALYSIS -> executeGetResumeAnalysis(arguments);
       case GET_RESUME -> executeGetResume(arguments);
       case GET_INTERVIEW_HISTORY -> executeGetInterviewHistory(arguments);
@@ -108,6 +112,13 @@ public class AgentToolService {
     return new ToolResponse(
         AgentToolName.GET_RESUME_LIST.getName(),
         resumeHistoryService.getAllResumes());
+  }
+
+  /** 技能画像：聚合分 + 证据明细，供 Agent 做「我 XX 水平怎么样」类回答 */
+  private ToolResponse executeGetSkillProfile() {
+    return new ToolResponse(
+        AgentToolName.GET_SKILL_PROFILE.getName(),
+        skillProfileQueryService.getProfileWithEvidence());
   }
 
   /** 简历最新分析结果：取最近一次分析，分析未完成或不存在时按业务错误返回 */

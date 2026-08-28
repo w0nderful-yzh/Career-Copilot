@@ -12,6 +12,7 @@ from career_copilot.schemas.message import (
     InterviewSummaryBlock,
     KnowledgeCitationsBlock,
     ResumeSummaryBlock,
+    SkillProfileBlock,
     TextBlock,
 )
 
@@ -72,6 +73,30 @@ def interview_summary_block(interviews: list[dict[str, Any]]) -> InterviewSummar
 def citations_block(citations: list[dict[str, Any]]) -> KnowledgeCitationsBlock:
     """知识引用块：RAG 回答的来源说明。"""
     return KnowledgeCitationsBlock(citations=citations)
+
+
+def skill_profile_block(profile: dict[str, Any], skill_limit: int = 6) -> SkillProfileBlock:
+    """技能画像块：聚合分 + 每技能证据明细（裁剪到最近 3 条，Token 纪律）。"""
+    skills = []
+    for skill in (profile.get("skills") or [])[:skill_limit]:
+        evidences = [
+            {
+                "sourceType": e.get("sourceType"),
+                "sourceId": e.get("sourceId"),
+                "score": e.get("score"),
+                "occurredAt": e.get("occurredAt"),
+            }
+            for e in (skill.get("evidences") or [])[:3]
+        ]
+        skills.append(
+            {
+                "skill": skill.get("skill"),
+                "score": skill.get("score"),
+                "evidenceCount": skill.get("evidenceCount"),
+                "evidences": evidences,
+            }
+        )
+    return SkillProfileBlock(skills=skills)
 
 
 def interview_proposal_block(

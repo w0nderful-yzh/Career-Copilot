@@ -18,6 +18,8 @@ import interview.guide.modules.knowledgebase.model.QueryRequest;
 import interview.guide.modules.knowledgebase.model.QueryResponse;
 import interview.guide.modules.knowledgebase.service.KnowledgeBaseListService;
 import interview.guide.modules.knowledgebase.service.KnowledgeBaseQueryService;
+import interview.guide.modules.profile.dto.SkillProfileResponse;
+import interview.guide.modules.profile.service.SkillProfileQueryService;
 import interview.guide.modules.resume.model.ResumeContentDTO;
 import interview.guide.modules.resume.model.ResumeEntity;
 import interview.guide.modules.resume.service.ResumeHistoryService;
@@ -61,6 +63,8 @@ class AgentToolServiceTest {
   private KnowledgeBaseQueryService knowledgeBaseQueryService;
   @Mock
   private InterviewSkillService interviewSkillService;
+  @Mock
+  private SkillProfileQueryService skillProfileQueryService;
 
   @InjectMocks
   private AgentToolService agentToolService;
@@ -74,14 +78,14 @@ class AgentToolServiceTest {
     void listToolsReturnsAllToolsWithPermissions() {
       List<ToolInfoDTO> tools = agentToolService.listTools();
 
-      assertThat(tools).hasSize(9);
+      assertThat(tools).hasSize(10);
       // 只读 Tool 仍全部为 READ；写 Tool（create_interview）为 CONFIRM_WRITE
       assertThat(tools)
           .extracting(ToolInfoDTO::permission)
           .containsOnly(AgentToolPermission.READ, AgentToolPermission.CONFIRM_WRITE);
       assertThat(tools)
           .extracting(ToolInfoDTO::name)
-          .contains("get_resume_list", "search_knowledge", "create_interview");
+          .contains("get_resume_list", "get_skill_profile", "search_knowledge", "create_interview");
       assertThat(tools)
           .allSatisfy(tool -> {
             assertThat(tool.description()).isNotBlank();
@@ -271,6 +275,23 @@ class AgentToolServiceTest {
       agentToolService.execute("list_knowledge_bases", Map.of());
 
       verify(knowledgeBaseListService).listKnowledgeBases();
+    }
+  }
+
+  @Nested
+  @DisplayName("画像 Tool")
+  class ProfileTools {
+
+    @Test
+    @DisplayName("get_skill_profile 返回画像与证据明细")
+    void getSkillProfileDelegates() {
+      SkillProfileResponse expected = new SkillProfileResponse(List.of());
+      when(skillProfileQueryService.getProfileWithEvidence()).thenReturn(expected);
+
+      ToolResponse response = agentToolService.execute("get_skill_profile", Map.of());
+
+      assertThat(response.data()).isSameAs(expected);
+      verify(skillProfileQueryService).getProfileWithEvidence();
     }
   }
 

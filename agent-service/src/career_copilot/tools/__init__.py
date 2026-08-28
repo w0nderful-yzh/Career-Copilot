@@ -31,6 +31,11 @@ TOOLS: list[ToolSpec] = [
         parameters={"resume_id": "int (可选)"},
     ),
     ToolSpec(
+        name="get_skill_profile",
+        description="获取用户技能画像（聚合分 + 可追溯证据）",
+        parameters={},
+    ),
+    ToolSpec(
         name="search_knowledge",
         description="基于 RAG 知识库回答问题",
         parameters={"question": "str", "knowledge_base_ids": "list[int] (可选)"},
@@ -122,6 +127,28 @@ def summarize_skills(skills: list[dict[str, Any]], limit: int = 8) -> str:
             + (f" 分类: {', '.join(categories)}" if categories else "")
         )
     return "可选面试方向：\n" + "\n".join(rows)
+
+
+def summarize_skill_profile(profile: dict[str, Any], limit: int = 8) -> str:
+    """把技能画像裁剪为 Prompt 摘要：聚合分 + 证据来源（支撑可追溯解读）。
+
+    证据只保留最近 3 条（sessionId:题号 + 分数），避免完整明细塞入上下文。
+    """
+    skills = profile.get("skills") or []
+    if not skills:
+        return "（暂无技能画像数据）"
+    lines = ["用户技能画像（分数=面试证据均值，可追溯）："]
+    for skill in skills[:limit]:
+        evidences = [
+            f"{e.get('sourceId')}={e.get('score')}分"
+            for e in (skill.get("evidences") or [])[:3]
+        ]
+        evidence_txt = f"（证据: {', '.join(evidences)}）" if evidences else ""
+        lines.append(
+            f"- {skill.get('skill')}: {skill.get('score')}分 "
+            f"[{skill.get('evidenceCount')} 条证据]{evidence_txt}"
+        )
+    return "\n".join(lines)
 
 
 def summarize_resume_for_interview(resume: dict[str, Any], max_chars: int = 1200) -> str:

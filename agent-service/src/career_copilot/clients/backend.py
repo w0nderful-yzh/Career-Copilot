@@ -101,6 +101,14 @@ class BackendClient:
         data = await self.call_tool("get_interview_history")
         return data if isinstance(data, list) else []
 
+    async def get_skill_profile(self) -> dict[str, Any]:
+        """用户技能画像：各技能聚合分 + 可追溯证据（来自哪些面试、每题得分）。
+
+        无任何画像数据时返回 {"skills": []}，由上层引导用户先参加面试。
+        """
+        data = await self.call_tool("get_skill_profile")
+        return data if isinstance(data, dict) else {"skills": []}
+
     async def list_skills(self) -> list[dict[str, Any]]:
         """可用的模拟面试技能方向列表（含分类）。"""
         data = await self.call_tool("list_skills")

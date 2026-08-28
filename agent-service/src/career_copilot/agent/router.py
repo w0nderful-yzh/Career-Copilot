@@ -15,7 +15,7 @@ class Intent(StrEnum):
     """Agent 支持的最小意图集合，路由输出必须是有限、稳定的枚举。
 
     ATTACHMENT_RECEIVED / COMPLEX_GOAL 由确定性规则或预留分支产生，
-    不进入 LLM 分类输出；PROFILE_QUERY / PREPARATION_QUERY 为预留意图。
+    不进入 LLM 分类输出；PREPARATION_QUERY 为预留意图。
     """
 
     GENERAL_CHAT = "GENERAL_CHAT"  # 普通闲聊/无业务数据需求的回答
@@ -24,7 +24,7 @@ class Intent(StrEnum):
     INTERVIEW_REVIEW = "INTERVIEW_REVIEW"  # 面试表现回顾
     INTERVIEW_CREATE = "INTERVIEW_CREATE"  # 发起模拟面试（Agent 推荐配置 + 确认）
     KNOWLEDGE_QA = "KNOWLEDGE_QA"  # 技术知识问答（需要 RAG）
-    PROFILE_QUERY = "PROFILE_QUERY"  # 能力画像查询（工具未开通，预留）
+    PROFILE_QUERY = "PROFILE_QUERY"  # 能力画像查询（get_skill_profile，P3 已开通）
     PREPARATION_QUERY = "PREPARATION_QUERY"  # 学习计划/复习进度查询（预留）
     ATTACHMENT_RECEIVED = "ATTACHMENT_RECEIVED"  # 收到附件（确定性，非 LLM 输出）
     NAVIGATION = "NAVIGATION"  # 建议跳转到业务页面

@@ -8,6 +8,7 @@
 from typing import Any
 
 from career_copilot.agent.deps import GraphDeps
+from career_copilot.agent.events import emit_tool_completed, emit_tool_started
 from career_copilot.agent.state import CareerAgentState
 from career_copilot.config import settings
 from career_copilot.tools import format_history
@@ -23,9 +24,11 @@ async def load_history(state: CareerAgentState, deps: GraphDeps) -> dict[str, An
         return {"history": [], "history_summary": None}
 
     try:
+        emit_tool_started("load_history")
         context = await deps.backend.get_conversation_context(
             conversation_id_int, limit=settings.summary_trigger_messages
         )
+        emit_tool_completed("load_history")
     except Exception:
         # 历史拉取失败不阻断对话：回退空历史（Java 不可达时 Graph 仍可用）
         return {"history": [], "history_summary": None}
@@ -33,6 +36,8 @@ async def load_history(state: CareerAgentState, deps: GraphDeps) -> dict[str, An
     messages = context.get("messages") or []
     summary = context.get("summary")
     total_count = int(context.get("totalCount") or 0)
+    # 会话绑定的活动简历（Conversation Memory，无附件轮次恢复目标用）
+    bound_resume_id = context.get("activeResumeId")
 
     # 注入窗口内的最近消息（单条截断，Token 纪律）
     max_chars = settings.history_max_message_chars
@@ -57,4 +62,8 @@ async def load_history(state: CareerAgentState, deps: GraphDeps) -> dict[str, An
             # 摘要失败不阻断对话：本轮仅注入最近消息
             summary = None
 
-    return {"history": history, "history_summary": summary}
+    return {
+        "history": history,
+        "history_summary": summary,
+        "bound_resume_id": int(bound_resume_id) if bound_resume_id is not None else None,
+    }

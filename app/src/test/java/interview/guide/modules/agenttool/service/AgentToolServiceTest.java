@@ -6,10 +6,13 @@ import interview.guide.common.model.AsyncTaskStatus;
 import interview.guide.modules.agenttool.dto.ToolInfoDTO;
 import interview.guide.modules.agenttool.dto.ToolResponse;
 import interview.guide.modules.agenttool.model.AgentToolPermission;
+import interview.guide.modules.interview.model.CreateInterviewRequest;
 import interview.guide.modules.interview.model.InterviewDetailDTO;
+import interview.guide.modules.interview.model.InterviewSessionDTO;
 import interview.guide.modules.interview.model.ResumeAnalysisResponse;
 import interview.guide.modules.interview.service.InterviewHistoryService;
 import interview.guide.modules.interview.service.InterviewPersistenceService;
+import interview.guide.modules.interview.service.InterviewSessionService;
 import interview.guide.modules.interview.skill.InterviewSkillService;
 import interview.guide.modules.knowledgebase.model.QueryRequest;
 import interview.guide.modules.knowledgebase.model.QueryResponse;
@@ -51,6 +54,8 @@ class AgentToolServiceTest {
   @Mock
   private InterviewHistoryService interviewHistoryService;
   @Mock
+  private InterviewSessionService interviewSessionService;
+  @Mock
   private KnowledgeBaseListService knowledgeBaseListService;
   @Mock
   private KnowledgeBaseQueryService knowledgeBaseQueryService;
@@ -65,22 +70,34 @@ class AgentToolServiceTest {
   class ToolRegistry {
 
     @Test
-    @DisplayName("listTools 返回全部 Tool 且均为 READ 权限")
-    void listToolsReturnsAllReadOnlyTools() {
+    @DisplayName("listTools 返回全部 Tool，读写权限按注册表划分")
+    void listToolsReturnsAllToolsWithPermissions() {
       List<ToolInfoDTO> tools = agentToolService.listTools();
 
-      assertThat(tools).hasSize(8);
+      assertThat(tools).hasSize(9);
+      // 只读 Tool 仍全部为 READ；写 Tool（create_interview）为 CONFIRM_WRITE
       assertThat(tools)
           .extracting(ToolInfoDTO::permission)
-          .containsOnly(AgentToolPermission.READ);
+          .containsOnly(AgentToolPermission.READ, AgentToolPermission.CONFIRM_WRITE);
       assertThat(tools)
           .extracting(ToolInfoDTO::name)
-          .contains("get_resume_list", "search_knowledge");
+          .contains("get_resume_list", "search_knowledge", "create_interview");
       assertThat(tools)
           .allSatisfy(tool -> {
             assertThat(tool.description()).isNotBlank();
             assertThat(tool.inputSchema()).isNotBlank();
           });
+    }
+
+    @Test
+    @DisplayName("create_interview 标记为 CONFIRM_WRITE")
+    void createInterviewRequiresConfirmation() {
+      List<ToolInfoDTO> tools = agentToolService.listTools();
+      assertThat(tools)
+          .filteredOn(tool -> tool.name().equals("create_interview"))
+          .singleElement()
+          .extracting(ToolInfoDTO::permission)
+          .isEqualTo(AgentToolPermission.CONFIRM_WRITE);
     }
 
     @Test
@@ -254,6 +271,37 @@ class AgentToolServiceTest {
       agentToolService.execute("list_knowledge_bases", Map.of());
 
       verify(knowledgeBaseListService).listKnowledgeBases();
+    }
+  }
+
+  @Nested
+  @DisplayName("面试创建 Tool")
+  class CreateInterviewTools {
+
+    @Test
+    @DisplayName("create_interview 转发到 InterviewSessionService 并返回会话")
+    void createInterviewDelegates() {
+      InterviewSessionDTO expected = mock(InterviewSessionDTO.class);
+      when(interviewSessionService.createSession(any()))
+          .thenReturn(expected);
+
+      ToolResponse response = agentToolService.execute(
+          "create_interview",
+          Map.of("skillId", "java-backend", "difficulty", "mid", "questionCount", 8));
+
+      assertThat(response.data()).isSameAs(expected);
+      verify(interviewSessionService).createSession(
+          new CreateInterviewRequest(
+              null, 8, null, false, null, "java-backend", "mid", null, null, null));
+    }
+
+    @Test
+    @DisplayName("create_interview 缺少 skillId 抛出参数错误")
+    void createInterviewMissingSkillFails() {
+      assertThatThrownBy(() -> agentToolService.execute(
+          "create_interview", Map.of("difficulty", "mid")))
+          .isInstanceOf(BusinessException.class)
+          .hasFieldOrPropertyWithValue("code", ErrorCode.AGENT_TOOL_ARGUMENT_INVALID.getCode());
     }
   }
 }

@@ -42,7 +42,11 @@ public enum AgentToolName {
   LIST_SKILLS(
       "list_skills",
       "获取可用的模拟面试技能方向列表",
-      AgentToolPermission.READ);
+      AgentToolPermission.READ),
+  CREATE_INTERVIEW(
+      "create_interview",
+      "创建模拟面试会话（mode/direction/difficulty/focus，需用户确认后执行）",
+      AgentToolPermission.CONFIRM_WRITE);
 
   private final String name;
   private final String description;

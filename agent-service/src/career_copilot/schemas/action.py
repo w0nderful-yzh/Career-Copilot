@@ -15,7 +15,8 @@ class AgentAction(StrEnum):
 
     ANALYZE_RESUME = "ANALYZE_RESUME"  # 分析简历
     OPTIMIZE_RESUME = "OPTIMIZE_RESUME"  # 优化简历（子图，预留）
-    START_INTERVIEW = "START_INTERVIEW"  # 模拟面试
+    START_INTERVIEW = "START_INTERVIEW"  # 模拟面试（面试提案：推荐/调整）
+    CREATE_INTERVIEW = "CREATE_INTERVIEW"  # 按推荐配置创建面试（CONFIRM_WRITE）
     JOB_MATCH = "JOB_MATCH"  # 岗位匹配（预留）
 
 

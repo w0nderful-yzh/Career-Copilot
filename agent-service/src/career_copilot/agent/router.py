@@ -22,6 +22,7 @@ class Intent(StrEnum):
     RESUME_QUERY = "RESUME_QUERY"  # 简历相关查询（列表/分析结果）
     RESUME_OPTIMIZATION = "RESUME_OPTIMIZATION"  # 简历优化（子图，预留）
     INTERVIEW_REVIEW = "INTERVIEW_REVIEW"  # 面试表现回顾
+    INTERVIEW_CREATE = "INTERVIEW_CREATE"  # 发起模拟面试（Agent 推荐配置 + 确认）
     KNOWLEDGE_QA = "KNOWLEDGE_QA"  # 技术知识问答（需要 RAG）
     PROFILE_QUERY = "PROFILE_QUERY"  # 能力画像查询（工具未开通，预留）
     PREPARATION_QUERY = "PREPARATION_QUERY"  # 学习计划/复习进度查询（预留）
@@ -37,6 +38,7 @@ class ActionRoute(StrEnum):
     RESUME_LIBRARY = "RESUME_LIBRARY"
     RESUME_DETAIL = "RESUME_DETAIL"
     INTERVIEW_CREATE = "INTERVIEW_CREATE"
+    INTERVIEW_SESSION = "INTERVIEW_SESSION"
     INTERVIEW_HISTORY = "INTERVIEW_HISTORY"
     KNOWLEDGE_BASE = "KNOWLEDGE_BASE"
     KNOWLEDGE_CHAT = "KNOWLEDGE_CHAT"
@@ -62,10 +64,11 @@ INTENT_SYSTEM_PROMPT = """你是 Career Copilot 的意图识别器。
 - RESUME_QUERY：询问简历、简历分析、简历上传相关
 - RESUME_OPTIMIZATION：请求优化简历（如"帮我优化简历""按这份 JD 改简历"）
 - INTERVIEW_REVIEW：询问模拟面试历史、面试表现、面试回顾
+- INTERVIEW_CREATE：请求发起/开始一场模拟面试（如"来场 JVM 面试""模拟面试"），Agent 推荐配置后创建
 - KNOWLEDGE_QA：询问技术知识概念（如 JVM、Redis、算法），需要知识库回答
 - PROFILE_QUERY：询问能力画像、技能水平、擅长/薄弱技能
 - PREPARATION_QUERY：询问学习计划、复习进度、今天该学什么
-- NAVIGATION：用户想直接开始某项操作（如开始面试、上传简历），适合跳转页面
+- NAVIGATION：用户想跳转到某个业务页面（如查看面试记录、进入设置）
 
 如果意图是 NAVIGATION，必须同时从以下白名单路由中选择一个：
 - RESUME_UPLOAD：上传简历

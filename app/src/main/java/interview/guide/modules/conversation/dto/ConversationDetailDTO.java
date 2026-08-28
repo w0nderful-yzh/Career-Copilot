@@ -10,4 +10,5 @@ public record ConversationDetailDTO(
     Boolean isPinned,
     List<AgentMessageDTO> messages,
     LocalDateTime createdAt,
-    LocalDateTime updatedAt) {}
+    LocalDateTime updatedAt,
+    Long activeResumeId) {}

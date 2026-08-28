@@ -41,7 +41,7 @@ export default function Composer({ streaming, onSend, onCancel, disabled }: Comp
   };
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-4 pb-4">
+    <div className="mx-auto w-full max-w-4xl px-5 pb-4 lg:px-8">
       <div
         onDragOver={(event) => {
           event.preventDefault();
@@ -53,7 +53,7 @@ export default function Composer({ streaming, onSend, onCancel, disabled }: Comp
           setDragging(false);
           handleFile(event.dataTransfer.files?.[0]);
         }}
-        className={`rounded-2xl border p-2 shadow-sm transition ${
+        className={`rounded-2xl border p-2.5 shadow-[0_12px_35px_rgba(15,23,42,0.08)] transition dark:shadow-none ${
           dragging
             ? 'border-primary-400 bg-primary-50/50 dark:bg-primary-900/20'
             : 'border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800'
@@ -105,7 +105,7 @@ export default function Composer({ streaming, onSend, onCancel, disabled }: Comp
             rows={1}
             placeholder={streaming ? 'Copilot 正在思考…' : '输入你的目标或问题…'}
             disabled={disabled}
-            className="max-h-32 min-h-[2.5rem] flex-1 resize-none bg-transparent px-2 py-1.5 text-sm text-slate-800 outline-none placeholder:text-slate-400 dark:text-white dark:placeholder:text-slate-500"
+            className="max-h-32 min-h-[2.5rem] flex-1 resize-none bg-transparent px-2 py-1.5 text-sm leading-6 text-slate-800 outline-none placeholder:text-slate-400 dark:text-white dark:placeholder:text-slate-500"
           />
           {streaming ? (
             <button
@@ -120,7 +120,7 @@ export default function Composer({ streaming, onSend, onCancel, disabled }: Comp
               onClick={submit}
               disabled={!value.trim() && !attachment}
               title="发送"
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary-600 text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-primary-500 dark:hover:bg-primary-600"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-950 text-white shadow-md transition hover:-translate-y-0.5 hover:bg-primary-600 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-white dark:text-slate-950 dark:hover:bg-primary-400"
             >
               <Send className="h-4 w-4" />
             </button>

@@ -6,6 +6,7 @@ RAG（Chunk / Embedding / pgvector / 检索）全部由 Java 管理，Python 只
 from typing import Any
 
 from career_copilot.agent.deps import GraphDeps
+from career_copilot.agent.events import emit_tool_completed, emit_tool_started
 from career_copilot.agent.plan import StreamPlan, static_text
 from career_copilot.agent.response import citations_block
 from career_copilot.agent.state import CareerAgentState
@@ -22,7 +23,9 @@ async def knowledge_tool(state: CareerAgentState, deps: GraphDeps) -> dict[str, 
         return {"plan": StreamPlan(text=static_text("知识库为空，暂时无法检索资料。"))}
 
     try:
+        emit_tool_started("knowledge_search")
         result = await backend.search_knowledge(message, knowledge_base_ids)
+        emit_tool_completed("knowledge_search")
     except BusinessToolError:
         return {"plan": StreamPlan(text=static_text("知识库查询失败，请稍后重试。"))}
 

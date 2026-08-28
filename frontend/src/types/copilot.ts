@@ -4,9 +4,12 @@
 export type AgentBlockType =
   | 'text'
   | 'action'
+  | 'navigation'
+  | 'choice'
   | 'resume_summary'
   | 'interview_summary'
-  | 'knowledge_citations';
+  | 'knowledge_citations'
+  | 'interview_proposal';
 
 export interface TextBlock {
   type: 'text';
@@ -18,6 +21,46 @@ export interface ActionBlock {
   route: string;
   label: string;
   params?: Record<string, unknown>;
+}
+
+/** Agent 完成确定性写操作（如面试创建成功）后给出的导航入口，由白名单映射 */
+export interface NavigationBlock {
+  type: 'navigation';
+  route: string;
+  label: string;
+  params?: Record<string, unknown>;
+}
+
+/** 面试提案确认块（P1-4）：Agent 推荐配置 + [按推荐开始] / [调整配置] */
+export interface InterviewProposalBlock {
+  type: 'interview_proposal';
+  direction: string;
+  direction_name: string;
+  difficulty: string;
+  difficulty_name: string;
+  mode: 'TEXT' | 'VOICE';
+  focus: string[];
+  question_count: number;
+  resume_id?: number | null;
+  summary: string;
+}
+
+export interface ChoiceOption {
+  action: string;
+  label: string;
+  payload?: Record<string, unknown>;
+}
+
+export interface ChoiceBlock {
+  type: 'choice';
+  title?: string | null;
+  options: ChoiceOption[];
+}
+
+export interface ActionSelected {
+  type: 'ACTION_SELECTED';
+  action: string;
+  payload?: Record<string, unknown>;
 }
 
 export interface ResumeSummaryBlock {
@@ -55,11 +98,21 @@ export interface KnowledgeCitationsBlock {
 export type AgentBlock =
   | TextBlock
   | ActionBlock
+  | NavigationBlock
+  | ChoiceBlock
   | ResumeSummaryBlock
   | InterviewSummaryBlock
-  | KnowledgeCitationsBlock;
+  | KnowledgeCitationsBlock
+  | InterviewProposalBlock;
 
 export type MessageStatus = 'streaming' | 'done' | 'error';
+
+/** P1-2 工具执行轨迹步骤（tool_started / tool_completed 驱动） */
+export interface ToolTraceStep {
+  label: string;
+  /** started 后未收到 completed 时为 true */
+  pending: boolean;
+}
 
 export interface CopilotMessage {
   id: string;
@@ -68,6 +121,8 @@ export interface CopilotMessage {
   blocks: AgentBlock[];
   status: MessageStatus;
   error?: string;
+  /** 工具执行轨迹：依次累积，流式结束后整行保留（体现 Agent 实际执行步骤） */
+  toolTrace?: ToolTraceStep[];
 }
 
 // Copilot 对话会话（Java System of Record）
@@ -110,16 +165,9 @@ export type StreamEvent =
   | { type: 'block'; payload: Record<string, unknown> }
   | { type: 'message_delta'; payload: { content: string } }
   | { type: 'error'; payload: { message: string } }
-  | { type: 'done'; payload: Record<string, unknown> };
-
-// Action 白名单：路由 key → 前端真实路径
-// 未知路由不渲染按钮，禁止任意跳转
-export const ACTION_ROUTE_MAP: Record<string, { path: string; label: string }> = {
-  RESUME_UPLOAD: { path: '/upload', label: '上传简历' },
-  RESUME_LIBRARY: { path: '/history', label: '简历库' },
-  INTERVIEW_CREATE: { path: '/interview-hub', label: '开始模拟面试' },
-  INTERVIEW_HISTORY: { path: '/interviews', label: '面试记录' },
-  KNOWLEDGE_BASE: { path: '/knowledgebase', label: '知识库管理' },
-  KNOWLEDGE_CHAT: { path: '/knowledgebase/chat', label: '问答助手' },
-  SETTINGS: { path: '/settings', label: '设置' },
-};
+  | { type: 'done'; payload: Record<string, unknown> }
+  // P1-2：Graph 执行期轻量进度事件
+  | { type: 'tool_started'; payload: { tool: string; label?: string } }
+  | { type: 'tool_progress'; payload: { tool: string; label: string } }
+  | { type: 'tool_completed'; payload: { tool: string } }
+  | { type: 'run_status'; payload: { status: string } };

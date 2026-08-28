@@ -339,6 +339,70 @@ def test_chat_stream_general_chat(backend_transport):
     assert not any(e["type"] == "error" for e in events)
 
 
+def test_chat_stream_emits_tool_and_run_status_events(backend_transport):
+    """P1-2：RESUME_QUERY 应产出 run_status 与 tool_started/completed 事件序列。"""
+    client = setup_overrides(
+        IntentClassification(intent=Intent.RESUME_QUERY), backend_transport
+    )
+    with client.stream(
+        "POST",
+        "/api/chat/stream",
+        json={"message": "我的简历怎么样", "conversation_id": 7},
+    ) as response:
+        events = _parse_sse("".join(response.iter_text()))
+
+    types = [e["type"] for e in events]
+    # run_status：RUNNING 开场、COMPLETED 收尾（done 之前）
+    assert types[0] == "run_status"
+    assert events[0]["payload"]["status"] == "RUNNING"
+    assert types[-2:] == ["run_status", "done"]
+    assert events[-2]["payload"]["status"] == "COMPLETED"
+
+    # 定向简历查询（无附件但库中唯一 → 自动锁定）应埋点 resume_insight
+    started = [e for e in events if e["type"] == "tool_started"]
+    completed = [e for e in events if e["type"] == "tool_completed"]
+    tools_started = [e["payload"]["tool"] for e in started]
+    assert "resume_insight" in tools_started
+    # load_history 在携带 conversation_id 时也应出现
+    assert "load_history" in tools_started
+    # started 与 completed 成对出现且顺序正确
+    assert [e["payload"]["tool"] for e in completed] == tools_started
+    # label 面向用户中文
+    insight = next(e for e in started if e["payload"]["tool"] == "resume_insight")
+    assert insight["payload"]["label"]
+
+    # 内容产出回归：block + 文本增量仍在
+    assert any(e["type"] == "block" for e in events)
+    deltas = "".join(
+        e["payload"]["content"] for e in events if e["type"] == "message_delta"
+    )
+    assert deltas == "fake answer"
+
+
+def test_chat_stream_attachment_emits_waiting_user(backend_transport):
+    """仅附件产生 ChoiceBlock 时应广播 WAITING_USER 状态。"""
+    client = setup_overrides(
+        IntentClassification(intent=Intent.GENERAL_CHAT), backend_transport
+    )
+    with client.stream(
+        "POST",
+        "/api/chat/stream",
+        json={
+            "message": "",
+            "attachments": [
+                {"kind": "resume", "resume_id": 9, "filename": "resume.pdf"}
+            ],
+        },
+    ) as response:
+        events = _parse_sse("".join(response.iter_text()))
+
+    statuses = [
+        e["payload"]["status"] for e in events if e["type"] == "run_status"
+    ]
+    assert statuses[0] == "RUNNING"
+    assert "WAITING_USER" in statuses
+
+
 def test_chat_stream_resume_query_emits_block(backend_transport):
     """RESUME_QUERY 流式：先 block（resume_summary）后文本增量。"""
     client = setup_overrides(
@@ -572,10 +636,14 @@ def test_chat_stream_with_action_routes_execute_action(backend_transport):
     assert events[-1]["type"] == "done"
     assert not any(e["type"] == "error" for e in events)
     blocks = [e["payload"] for e in events if e["type"] == "block"]
-    action_blocks = [b for b in blocks if b["type"] == "action"]
-    assert action_blocks, "应产出 action 块"
-    assert action_blocks[0]["route"] == "RESUME_DETAIL"
-    assert action_blocks[0]["params"]["resumeId"] == 9
+    # Copilot 内真实分析：产出 resume_summary 内容卡片而非跳转导航
+    summary_blocks = [b for b in blocks if b["type"] == "resume_summary"]
+    assert summary_blocks, "应产出 resume_summary 分析卡片"
+    assert summary_blocks[0]["resumes"][0]["id"] == 9
+    deltas = "".join(
+        e["payload"]["content"] for e in events if e["type"] == "message_delta"
+    )
+    assert deltas == "fake answer"
 
 
 def test_chat_stream_text_with_attachment_uses_llm_intent(backend_transport):

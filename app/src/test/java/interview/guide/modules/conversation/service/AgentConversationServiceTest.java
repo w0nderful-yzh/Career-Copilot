@@ -227,5 +227,34 @@ class AgentConversationServiceTest {
       assertThat(conversation.getSummary()).isEqualTo("新摘要");
       verify(conversationRepository).save(conversation);
     }
+
+    @Test
+    @DisplayName("绑定会话活动简历")
+    void bindsActiveResume() {
+      AgentConversationEntity conversation = new AgentConversationEntity();
+      conversation.setId(23L);
+      when(conversationRepository.findByIdAndUserId(23L, "default"))
+          .thenReturn(Optional.of(conversation));
+
+      conversationService.bindActiveResume(23L, 9L);
+
+      assertThat(conversation.getActiveResumeId()).isEqualTo(9L);
+      verify(conversationRepository).save(conversation);
+    }
+
+    @Test
+    @DisplayName("resumeId 为 null 时解绑活动简历")
+    void unbindsActiveResumeWithNull() {
+      AgentConversationEntity conversation = new AgentConversationEntity();
+      conversation.setId(24L);
+      conversation.setActiveResumeId(9L);
+      when(conversationRepository.findByIdAndUserId(24L, "default"))
+          .thenReturn(Optional.of(conversation));
+
+      conversationService.bindActiveResume(24L, null);
+
+      assertThat(conversation.getActiveResumeId()).isNull();
+      verify(conversationRepository).save(conversation);
+    }
   }
 }

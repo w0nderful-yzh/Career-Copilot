@@ -91,6 +91,23 @@ public class AgentConversationController {
     return Result.success();
   }
 
+  /** Conversation Memory：绑定活动 JD（P2-5，对称 active-resume；jobId 为 null 表示解绑） */
+  @PutMapping("/{conversationId}/active-job")
+  @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 30)
+  public Result<Void> bindActiveJob(
+      @PathVariable Long conversationId,
+      @RequestBody Map<String, Object> body) {
+    Object value = body.get("jobId");
+    Long jobId = null;
+    if (value instanceof Number number) {
+      jobId = number.longValue();
+    } else if (value instanceof String text && !text.isBlank()) {
+      jobId = Long.parseLong(text);
+    }
+    conversationService.bindActiveJob(conversationId, jobId);
+    return Result.success();
+  }
+
   @PutMapping("/{conversationId}/title")
   @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 10)
   public Result<Void> renameConversation(

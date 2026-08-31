@@ -91,7 +91,7 @@ class AgentToolServiceTest {
     void listToolsReturnsAllToolsWithPermissions() {
       List<ToolInfoDTO> tools = agentToolService.listTools();
 
-      assertThat(tools).hasSize(12);
+      assertThat(tools).hasSize(13);
       // 只读 Tool 仍全部为 READ；写 Tool（create_interview / apply_resume_patches）为 CONFIRM_WRITE
       assertThat(tools)
           .extracting(ToolInfoDTO::permission)

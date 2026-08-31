@@ -61,6 +61,13 @@ _PROFILE_STRENGTH_HINT = """
 {profile_summary}
 写技能相关描述时，分数偏低（<60）的技能避免「精通/深入掌握」级表述，保持如实水平。"""
 
+# JD 定向优化约束（P2-5：目标岗位 → 优先突出匹配点）
+_JD_TARGETED_HINT = """
+# 目标岗位 JD（定向优化坐标系）
+{job_content}
+优化时优先突出与上述 JD 匹配的经历与技能，把 JD 要求的关键词自然融入相关描述
+（只允许重组原文已有信息，禁止编造新经历或新技能来凑匹配度）。"""
+
 # 简历结构说明（LLM 需要知道 JSON 结构才能给出合法 path）
 _RESUME_STRUCTURE_HINT = """
 # 简历结构化内容（path 以此为坐标系）
@@ -110,6 +117,24 @@ async def resume_optimization(
         profile_summary = ""
     emit_tool_completed("profile_query")
 
+    # 2.5 JD 上下文（P2-5）：会话绑定或 action 回传的 active_job_id 存在时
+    # 注入 JD 全文（截断），点亮 JD_TARGETED 定向优化；失败不阻断（回落通用优化）
+    jd_context = ""
+    raw_job_id = state.get("active_job_id")
+    if raw_job_id is not None:
+        emit_tool_started("job_query")
+        try:
+            job = await deps.backend.get_job(int(raw_job_id))
+            jd_text = (job.get("contentText") or "")[: settings.jd_context_max_chars]
+            if jd_text:
+                jd_context = (
+                    f"目标岗位：{job.get('title') or '未命名岗位'}"
+                    f"（{job.get('company') or '公司未知'}）\n{jd_text}"
+                )
+        except BusinessToolError:
+            jd_context = ""
+        emit_tool_completed("job_query")
+
     # 3. LLM 生成 Patch 提案（结构化输出）
     emit_tool_started("generate_patch")
     content_json = json.dumps(version.get("content") or {}, ensure_ascii=False)
@@ -123,6 +148,7 @@ async def resume_optimization(
             message=state.get("message") or "",
             content_json=content_json,
             profile_summary=profile_summary,
+            jd_context=jd_context,
         )
     except Exception:
         # 模型输出解析失败：诚实回落「无建议」而非整轮报错
@@ -231,6 +257,7 @@ async def _generate_patches(
     message: str,
     content_json: str,
     profile_summary: str,
+    jd_context: str = "",
 ) -> ResumePatchProposal:
     """调用 Answerer 底层模型生成 Patch 提案（json 输出 + Pydantic 校验）。
 
@@ -243,6 +270,8 @@ async def _generate_patches(
         f"用户消息：{message}" if message else "用户没有附加要求，请做通用优化。",
         _RESUME_STRUCTURE_HINT.format(content_json=content_json),
     ]
+    if jd_context:
+        prompt_parts.append(_JD_TARGETED_HINT.format(job_content=jd_context))
     if profile_summary:
         prompt_parts.append(_PROFILE_STRENGTH_HINT.format(profile_summary=profile_summary))
     prompt_parts.append("请生成本轮优化建议。")

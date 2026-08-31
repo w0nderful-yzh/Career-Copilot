@@ -31,6 +31,10 @@ public enum AgentToolName {
       "get_resume",
       "获取指定简历的完整内容（解析文本）与元信息",
       AgentToolPermission.READ),
+  GET_JOB(
+      "get_job",
+      "获取指定 JD（岗位描述）的完整内容与元信息（jobId，简历优化 JD 定向模式 / JD 匹配取数用）",
+      AgentToolPermission.READ),
   GET_INTERVIEW_HISTORY(
       "get_interview_history",
       "获取模拟面试历史列表，可按 resumeId 过滤",

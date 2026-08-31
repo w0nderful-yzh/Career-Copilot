@@ -193,14 +193,19 @@ export interface ConversationDetail {
   messages: ConversationMessage[];
   createdAt: string;
   updatedAt: string;
+  activeResumeId?: number | null;
+  /** 会话绑定的活动 JD（P2-5 Conversation Memory） */
+  activeJobId?: number | null;
 }
 
 // 结构化资源引用（随消息附带，文件二进制不经 Agent，只传资源 id）
 export interface AttachmentRef {
-  kind: 'resume';
-  resumeId: number;
+  kind: 'resume' | 'job_description';
+  resumeId?: number;
+  /** JD 资源 id（kind=job_description 时必填，Java job_descriptions 主键） */
+  jobId?: number;
   filename?: string;
-  /** Java 判定内容重复、未新增记录时置 true（复用已有简历） */
+  /** Java 判定内容重复、未新增记录时置 true（复用已有简历；JD 不去重） */
   duplicate?: boolean;
 }
 

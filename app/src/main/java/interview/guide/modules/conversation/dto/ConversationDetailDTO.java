@@ -11,4 +11,5 @@ public record ConversationDetailDTO(
     List<AgentMessageDTO> messages,
     LocalDateTime createdAt,
     LocalDateTime updatedAt,
-    Long activeResumeId) {}
+    Long activeResumeId,
+    Long activeJobId) {}

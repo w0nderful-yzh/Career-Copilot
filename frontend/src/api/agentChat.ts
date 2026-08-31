@@ -136,3 +136,28 @@ export const resumeUploadApi = {
     return request.upload<UploadResponse>('/api/resumes/upload', formData);
   },
 };
+
+// ===== JD 附件上传（P2-5：独立于简历库，Tika 解析文本入库） =====
+
+export interface JobUploadResult {
+  id: number;
+  title: string;
+  company?: string | null;
+  contentLength?: number;
+}
+
+export const jobUploadApi = {
+  upload: (file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return request.upload<JobUploadResult>('/api/jobs/upload', formData);
+  },
+};
+
+// ===== JD 查询（P2-5：侧栏活跃资源显示绑定 JD 标题） =====
+
+export const jobApi = {
+  get: async (jobId: number): Promise<JobUploadResult & { contentText?: string }> => {
+    return request.get(`/api/jobs/${jobId}`);
+  },
+};

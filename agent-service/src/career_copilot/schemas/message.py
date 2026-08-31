@@ -14,12 +14,18 @@ from career_copilot.schemas.action import ActionSelected
 class AttachmentRef(BaseModel):
     """用户随消息附带的结构化资源引用（文件二进制不经 Agent，只传资源 id）。"""
 
-    kind: Literal["resume"] = "resume"
-    resume_id: int = Field(description="简历资源 id（Java resume 主键）")
+    kind: Literal["resume", "job_description"] = "resume"
+    resume_id: int | None = Field(
+        default=None, description="简历资源 id（Java resume 主键；kind=resume 时必填）"
+    )
+    job_id: int | None = Field(
+        default=None,
+        description="JD 资源 id（Java job_descriptions 主键；kind=job_description 时必填）",
+    )
     filename: str | None = Field(default=None, description="原始文件名")
     duplicate: bool = Field(
         default=False,
-        description="Java 判定为内容重复、未新增记录时置 true（复用已有简历）",
+        description="Java 判定为内容重复、未新增记录时置 true（复用已有简历；JD 不去重）",
     )
 
 

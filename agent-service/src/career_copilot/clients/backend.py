@@ -317,6 +317,24 @@ class BackendClient:
             raise BusinessToolError(500, f"后端服务不可达: {exc}", retryable=True) from exc
         self._unwrap_result(response)
 
+    async def bind_active_job(
+        self, conversation_id: int, job_id: int | None
+    ) -> None:
+        """绑定会话活动 JD（P2-5，对称 bind_active_job；jobId 为 None 表示解绑）。"""
+        try:
+            response = await self._client.put(
+                f"/api/agent/conversations/{conversation_id}/active-job",
+                json={"jobId": job_id},
+            )
+        except httpx.HTTPError as exc:
+            raise BusinessToolError(500, f"后端服务不可达: {exc}", retryable=True) from exc
+        self._unwrap_result(response)
+
+    async def get_job(self, job_id: int) -> dict[str, Any]:
+        """JD 完整内容与元信息（get_job READ Tool；JD_TARGETED / JD 匹配取数入口）。"""
+        data = await self.call_tool("get_job", {"jobId": job_id})
+        return data if isinstance(data, dict) else {}
+
     async def _post_plain(self, path: str, payload: dict[str, Any]) -> Any:
         """通用 POST：请求 Java 非 Tool 端点并解包 Result。"""
         try:

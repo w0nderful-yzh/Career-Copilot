@@ -79,7 +79,8 @@ public class AgentConversationService {
         messageDTOs,
         conversation.getCreatedAt(),
         conversation.getUpdatedAt(),
-        conversation.getActiveResumeId());
+        conversation.getActiveResumeId(),
+        conversation.getActiveJobId());
   }
 
   /**
@@ -95,6 +96,15 @@ public class AgentConversationService {
     conversationRepository.save(conversation);
     log.info("Conversation active resume bound: id={}, resumeId={}",
         conversationId, resumeId);
+  }
+
+  /** 绑定会话活动 JD（P2-5，对称 bindActiveResume；jobId 为 null 表示解绑） */
+  @Transactional
+  public void bindActiveJob(Long conversationId, Long jobId) {
+    AgentConversationEntity conversation = getConversationOrThrow(conversationId);
+    conversation.setActiveJobId(jobId);
+    conversationRepository.save(conversation);
+    log.info("Conversation active job bound: id={}, jobId={}", conversationId, jobId);
   }
 
   @Transactional
@@ -126,7 +136,8 @@ public class AgentConversationService {
         .toList();
     long totalCount = messageRepository.countByConversationId(conversationId);
 return new ConversationContextDTO(
-        messages, conversation.getSummary(), totalCount, conversation.getActiveResumeId());
+        messages, conversation.getSummary(), totalCount,
+        conversation.getActiveResumeId(), conversation.getActiveJobId());
   }
 
   @Transactional

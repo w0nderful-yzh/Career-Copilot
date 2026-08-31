@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   BarChart3,
+  BriefcaseBusiness,
   CheckCircle2,
   Circle,
   FileText,
@@ -9,11 +10,14 @@ import {
 } from 'lucide-react';
 import type { CopilotMessage } from '../../types/copilot';
 import {
+  jobApi,
   skillProfileApi,
   type SkillProfileSkill,
 } from '../../api/agentChat';
 
-// P1 视觉预览：任务示例只用于界面占位；能力画像已接入真实 Evidence 数据（P3-2）。
+// 侧栏「求职上下文」：能力画像为真实 Evidence 数据（P3-2），
+// 活跃资源展示会话附件/绑定的简历与 JD（P2-5）。
+// 今日任务为示例占位（Preparation 接入后替换）。
 const PREVIEW_TASKS = [
   { label: '复习 JVM GC', done: true },
   { label: '梳理消息可靠性', done: false },
@@ -23,6 +27,14 @@ const PREVIEW_TASKS = [
 function findLatestResume(messages: CopilotMessage[]): string | null {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const match = messages[index].content.match(/(?:\[简历附件：|上传了简历附件：)(.+?)(?:]|$)/);
+    if (match?.[1]) return match[1];
+  }
+  return null;
+}
+
+function findLatestJd(messages: CopilotMessage[]): string | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const match = messages[index].content.match(/(?:\[JD 附件：|上传了岗位 JD：)(.+?)(?:]|$)/);
     if (match?.[1]) return match[1];
   }
   return null;
@@ -49,6 +61,27 @@ type ProfileState =
   | { status: 'error' }
   | { status: 'empty' }
   | { status: 'ready'; skills: SkillProfileSkill[] };
+
+/** 会话绑定 JD 的标题（activeJobId 存在时拉详情；失败静默，回落附件文件名展示） */
+function useBoundJobTitle(activeJobId: number | null | undefined): string | null {
+  const [title, setTitle] = useState<string | null>(null);
+  useEffect(() => {
+    if (!activeJobId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const job = await jobApi.get(activeJobId);
+        if (!cancelled) setTitle(job.title);
+      } catch {
+        // 绑定 JD 可能已被删除：保持 null，面板回落显示附件名或空态
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeJobId]);
+  return title;
+}
 
 function ProfileSection() {
   const [state, setState] = useState<ProfileState>({ status: 'loading' });
@@ -111,8 +144,17 @@ function ProfileSection() {
   );
 }
 
-export default function ContextPanel({ messages }: { messages: CopilotMessage[] }) {
+export default function ContextPanel({
+  messages,
+  activeJobId,
+}: {
+  messages: CopilotMessage[];
+  activeJobId?: number | null;
+}) {
   const activeResume = findLatestResume(messages);
+  // JD 展示优先级：会话绑定（Conversation Memory，跨轮有效）> 本轮附件文件名
+  const boundJobTitle = useBoundJobTitle(activeJobId);
+  const activeJd = boundJobTitle ?? findLatestJd(messages);
 
   return (
     <aside className="hidden h-full w-80 shrink-0 flex-col overflow-y-auto border-l border-slate-200/80 bg-[#f8f9fc] px-5 py-5 dark:border-slate-700 dark:bg-slate-900/80 xl:flex">
@@ -158,8 +200,18 @@ export default function ContextPanel({ messages }: { messages: CopilotMessage[] 
               </p>
             </div>
           </div>
-          <div className="border-t border-slate-100 px-4 py-3 text-xs text-slate-400 dark:border-slate-700">
-            JD 资源将在 P2-1 接入
+          <div className="flex items-center gap-3 border-t border-slate-100 px-4 py-3.5 dark:border-slate-700">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-amber-50 text-amber-600 dark:bg-amber-950/50 dark:text-amber-300">
+              <BriefcaseBusiness className="h-4 w-4" />
+            </span>
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-slate-800 dark:text-slate-100">
+                {activeJd ?? '尚未选择 JD'}
+              </p>
+              <p className="mt-0.5 text-xs text-slate-400">
+                {activeJd ? '本会话的目标岗位 JD' : '拖入 JD 后自动绑定'}
+              </p>
+            </div>
           </div>
         </div>
       </section>

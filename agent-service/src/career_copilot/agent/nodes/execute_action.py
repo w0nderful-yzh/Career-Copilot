@@ -39,11 +39,14 @@ async def execute_action(state: CareerAgentState, deps: GraphDeps) -> dict[str, 
 
     if action_name == AgentAction.OPTIMIZE_RESUME.value:
         # 简历优化：走优化子图（生成 Patch 提案，待用户确认后应用）。
-        # payload.resumeId（ChoiceBlock 回传）优先，回退会话活动简历。
+        # payload.resumeId / payload.jobId（ChoiceBlock 回传）优先，回退会话活动资源。
         optimize_state: CareerAgentState = {**state}
         payload_resume_id = _as_int(payload.get("resumeId"))
         if payload_resume_id is not None:
             optimize_state["active_resume_id"] = payload_resume_id
+        payload_job_id = _as_int(payload.get("jobId"))
+        if payload_job_id is not None:
+            optimize_state["active_job_id"] = payload_job_id
         return await resume_optimization(optimize_state, deps)
 
     if action_name == AgentAction.START_INTERVIEW.value:

@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     # 简历内容注入上限（Agent 内容级分析 / 简历优化，Token 纪律）
     resume_context_max_chars: int = 8000
 
+    # JD 内容注入上限（P2-5 JD_TARGETED 定向优化，Token 纪律）
+    jd_context_max_chars: int = 4000
+
     # 面试发起（P1-4）：Agent 推荐的默认题目数量（与前端创建面试默认一致）
     interview_default_question_count: int = 8
 

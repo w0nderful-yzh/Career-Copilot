@@ -68,7 +68,8 @@ public class AgentToolService {
               + "optional, \"resumeId\": Long, optional, \"resumeText\": String, optional, "
               + "\"forceCreate\": Boolean, optional, \"requestId\": String, optional}"),
       Map.entry(AgentToolName.APPLY_RESUME_PATCHES,
-          "{\"proposalId\": Long, \"patchIds\": List[String], optional}"));
+          "{\"proposalId\": Long, \"patchIds\": List[String], optional}"),
+      Map.entry(AgentToolName.GET_JOB, "{\"jobId\": Long}"));
 
   private final ResumeHistoryService resumeHistoryService;
   private final ResumePersistenceService resumePersistenceService;
@@ -81,6 +82,7 @@ public class AgentToolService {
   private final SkillProfileQueryService skillProfileQueryService;
   private final ResumeVersionService resumeVersionService;
   private final ResumePatchApplyService resumePatchApplyService;
+  private final interview.guide.modules.job.service.JobDescriptionService jobDescriptionService;
   private final ObjectMapper objectMapper;
 
   /** 返回全部 Tool 的元信息，供 Agent Runtime 做 Tool Discovery */
@@ -111,6 +113,7 @@ public class AgentToolService {
       case GET_RESUME_VERSION -> executeGetResumeVersion(arguments);
       case GET_RESUME_ANALYSIS -> executeGetResumeAnalysis(arguments);
       case GET_RESUME -> executeGetResume(arguments);
+      case GET_JOB -> executeGetJob(arguments);
       case GET_INTERVIEW_HISTORY -> executeGetInterviewHistory(arguments);
       case GET_INTERVIEW_REPORT -> executeGetInterviewReport(arguments);
       case LIST_KNOWLEDGE_BASES -> executeListKnowledgeBases();
@@ -148,6 +151,23 @@ public class AgentToolService {
         AgentToolName.GET_RESUME_VERSION.getName(),
         ResumeVersionDTO.from(version, objectMapper));
   }
+
+  /**
+   * JD 完整内容：解析文本 + 元信息（P2-5）。
+   * 简历优化 JD_TARGETED 模式与 JD 匹配分析的取数入口。
+   */
+  private ToolResponse executeGetJob(Map<String, Object> arguments) {
+    Long jobId = requireLong(arguments, "jobId");
+    var job = jobDescriptionService.get(jobId);
+    return new ToolResponse(
+        AgentToolName.GET_JOB.getName(),
+        new JobDetailPayload(job.getId(), job.getTitle(), job.getCompany(),
+            job.getContentText(), job.getCreatedAt().toString()));
+  }
+
+  /** JD 取数响应结构（contentText 全文；截断由 Python Token 纪律处理） */
+  public record JobDetailPayload(
+      Long id, String title, String company, String contentText, String createdAt) {}
 
   /** 简历最新分析结果：取最近一次分析，分析未完成或不存在时按业务错误返回 */
   private ToolResponse executeGetResumeAnalysis(Map<String, Object> arguments) {

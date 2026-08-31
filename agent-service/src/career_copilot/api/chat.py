@@ -114,13 +114,20 @@ async def _ensure_llm_config_synced() -> None:
         await sync_agent_llm_config()
 
 
-def get_intent_router() -> IntentRouter:
-    """意图分类用低延迟模型 + temperature=0，保证分类稳定。"""
+async def get_intent_router() -> IntentRouter:
+    """意图分类用低延迟模型 + temperature=0，保证分类稳定。
+
+    async：构造前先确保配置已同步 —— 若作为同步 Depends，会在启动竞态下
+    定型于 .env 回落地址（Java 未就绪时同步失败），整轮请求打到死 URL。
+    测试经 dependency_overrides 整体替换本函数，不受影响。
+    """
+    await _ensure_llm_config_synced()
     return IntentRouter(_openai_model(settings.llm_intent_model, temperature=0.0))
 
 
-def get_answerer() -> Answerer:
-    """回答生成使用常规模型，允许一定自由度。"""
+async def get_answerer() -> Answerer:
+    """回答生成使用常规模型，允许一定自由度（async 语义同 get_intent_router）。"""
+    await _ensure_llm_config_synced()
     return Answerer(_openai_model(settings.llm_model, temperature=0.3))
 
 

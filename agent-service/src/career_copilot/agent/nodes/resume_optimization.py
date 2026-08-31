@@ -117,12 +117,26 @@ async def resume_optimization(
         resume_id, max_chars=settings.resume_context_max_chars
     )
     resume_text = resume_meta.get("resumeText") or ""
-    proposal = await _generate_patches(
-        deps,
-        message=state.get("message") or "",
-        content_json=content_json,
-        profile_summary=profile_summary,
-    )
+    try:
+        proposal = await _generate_patches(
+            deps,
+            message=state.get("message") or "",
+            content_json=content_json,
+            profile_summary=profile_summary,
+        )
+    except Exception:
+        # 模型输出解析失败：诚实回落「无建议」而非整轮报错
+        # （简历优化不能瞎编建议，宁可不给；docstring 约定即此行为）
+        logger.exception("优化提案生成失败，回落无建议回复: resumeId=%s", resume_id)
+        emit_tool_completed("generate_patch")
+        return {
+            "plan": StreamPlan(
+                text=static_text(
+                    "这次没能生成有价值的优化建议（模型输出异常），暂时不做修改。"
+                    "可以稍后再试，或告诉我想优化的具体方向（比如某个项目描述），我再仔细看。"
+                )
+            )
+        }
     emit_tool_completed("generate_patch")
 
     # 4. 代码校验（REORDER 拒绝 + 真实性双保险）

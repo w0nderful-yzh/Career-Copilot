@@ -10,6 +10,7 @@ export type AgentBlockType =
   | 'interview_summary'
   | 'knowledge_citations'
   | 'skill_profile'
+  | 'resume_optimization'
   | 'interview_proposal';
 
 export interface TextBlock {
@@ -115,6 +116,27 @@ export interface SkillProfileBlock {
   }>;
 }
 
+/** 单条简历优化建议（P2-1）：JSON-path 定位的 Diff */
+export interface ResumeOptimizationPatch {
+  id: string;
+  type: 'REPLACE' | 'ADD' | 'DELETE';
+  path: string;
+  oldValue?: string | null;
+  newValue?: string | null;
+  reason: string;
+}
+
+/** 简历优化提案块（P2-3）：Diff 卡片 + 勾选应用（用户确认后才执行写操作） */
+export interface ResumeOptimizationBlock {
+  type: 'resume_optimization';
+  proposalId: number;
+  resumeId: number;
+  versionId: number;
+  summary: string;
+  patches: ResumeOptimizationPatch[];
+  rejectedNote?: string | null;
+}
+
 export type AgentBlock =
   | TextBlock
   | ActionBlock
@@ -124,6 +146,7 @@ export type AgentBlock =
   | InterviewSummaryBlock
   | KnowledgeCitationsBlock
   | SkillProfileBlock
+  | ResumeOptimizationBlock
   | InterviewProposalBlock;
 
 export type MessageStatus = 'streaming' | 'done' | 'error';

@@ -46,16 +46,21 @@ public class ResumeVersionController {
   /**
    * 确认解析结果：状态 → ACTIVE。
    *
-   * @param correctedContent 用户补录/修正后的内容（可空；为空则仅确认原解析）
+   * <p>请求体可为 null（仅确认）或 {correctedContent: {...}}（补录修正后确认）。
+   * 注意不能用裸 ResumeContentJson 作 body：空 JSON 对象会被反序列化为
+   * 全 null 字段对象，与「未提供」无法区分，会误覆盖已解析内容。
    */
+  public record ConfirmVersionRequest(ResumeContentJson correctedContent) {}
+
   @PostMapping("/api/resume-versions/{versionId}/confirm")
   @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 20)
   @RateLimit(dimension = RateLimit.Dimension.IP, count = 20)
   public Result<ResumeVersionDTO> confirmVersion(
       @PathVariable Long versionId,
-      @RequestBody(required = false) ResumeContentJson correctedContent) {
+      @RequestBody(required = false) ConfirmVersionRequest request) {
+    ResumeContentJson corrected = request != null ? request.correctedContent() : null;
     ResumeVersionDTO confirmed =
-        ResumeVersionDTO.from(versionService.confirmVersion(versionId, correctedContent), objectMapper);
+        ResumeVersionDTO.from(versionService.confirmVersion(versionId, corrected), objectMapper);
     log.info("简历版本已确认: versionId={}, resumeId={}", versionId, confirmed.resumeId());
     return Result.success(confirmed);
   }

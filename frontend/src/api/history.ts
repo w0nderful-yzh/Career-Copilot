@@ -150,4 +150,89 @@ export const historyApi = {
   async reanalyze(id: number): Promise<void> {
     return request.post(`/api/resumes/${id}/reanalyze`);
   },
+
+  /**
+   * 获取简历的结构化版本列表（P2-0 解析确认 / P2-2 版本管理）
+   */
+  async getResumeVersions(resumeId: number): Promise<ResumeVersionItem[]> {
+    return request.get<ResumeVersionItem[]>(`/api/resumes/${resumeId}/versions`);
+  },
+
+  /**
+   * 确认解析结果（可携带补录修正后的结构化内容；请求体包装避免空对象歧义）
+   */
+  async confirmResumeVersion(
+    versionId: number,
+    correctedContent?: ResumeContentJson,
+  ): Promise<ResumeVersionItem> {
+    return request.post<ResumeVersionItem>(
+      `/api/resume-versions/${versionId}/confirm`,
+      { correctedContent: correctedContent ?? null },
+    );
+  },
 };
+
+// ===== 简历结构化版本（P2-0/P2-3） =====
+
+export interface ResumeContentJson {
+  basicInfo?: {
+    name?: string | null;
+    phone?: string | null;
+    email?: string | null;
+    location?: string | null;
+    jobIntention?: string | null;
+  } | null;
+  education?: ResumeEducationItem[] | null;
+  experience?: ResumeExperienceItem[] | null;
+  projects?: ResumeProjectItem[] | null;
+  skills?: ResumeSkillItem[] | null;
+  customSections?: ResumeCustomSection[] | null;
+}
+
+export interface ResumeEducationItem {
+  school?: string | null;
+  major?: string | null;
+  degree?: string | null;
+  startDate?: string | null;
+  endDate?: string | null;
+  description?: string | null;
+}
+
+export interface ResumeExperienceItem {
+  company?: string | null;
+  position?: string | null;
+  startDate?: string | null;
+  endDate?: string | null;
+  bullets?: string[] | null;
+}
+
+export interface ResumeProjectItem {
+  name?: string | null;
+  role?: string | null;
+  startDate?: string | null;
+  endDate?: string | null;
+  techStack?: string | null;
+  bullets?: string[] | null;
+}
+
+export interface ResumeSkillItem {
+  category?: string | null;
+  content?: string | null;
+}
+
+export interface ResumeCustomSection {
+  title?: string | null;
+  items?: string[] | null;
+}
+
+export interface ResumeVersionItem {
+  id: number;
+  resumeId: number;
+  version: number;
+  source: 'IMPORT' | 'USER_EDIT' | 'AI_OPTIMIZE';
+  confirmationStatus: 'PENDING_CONFIRMATION' | 'ACTIVE' | 'NEED_USER_INFO';
+  content: ResumeContentJson | null;
+  missingFields: string[];
+  sourceCreatedAt: string;
+  createdAt: string;
+}

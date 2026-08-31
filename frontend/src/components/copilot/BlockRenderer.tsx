@@ -4,12 +4,16 @@ import {
   ArrowRight,
   BookOpen,
   BriefcaseBusiness,
+  CheckSquare,
   ChevronDown,
   FileSearch,
   FileStack,
   MessagesSquare,
+  Minus,
+  Plus,
   SlidersHorizontal,
   Sparkles,
+  Square,
   Target,
   Users,
 } from 'lucide-react';
@@ -22,6 +26,8 @@ import type {
   InterviewSummaryBlock,
   KnowledgeCitationsBlock,
   NavigationBlock,
+  ResumeOptimizationBlock,
+  ResumeOptimizationPatch,
   ResumeSummaryBlock,
   SkillProfileBlock,
 } from '../../types/copilot';
@@ -395,6 +401,186 @@ function SkillProfileBlockView({ block }: { block: SkillProfileBlock }) {
   );
 }
 
+/** patch 类型展示标签 */
+const PATCH_TYPE_META: Record<ResumeOptimizationPatch['type'], { label: string; className: string }> = {
+  REPLACE: { label: '改写', className: 'bg-amber-50 text-amber-600 dark:bg-amber-900/40 dark:text-amber-300' },
+  ADD: { label: '新增', className: 'bg-emerald-50 text-emerald-600 dark:bg-emerald-900/40 dark:text-emerald-300' },
+  DELETE: { label: '删除', className: 'bg-red-50 text-red-600 dark:bg-red-900/40 dark:text-red-300' },
+};
+
+/** path → 可读位置描述 */
+function patchPathLabel(path: string): string {
+  const segmentNames: Record<string, string> = {
+    basicInfo: '基本信息',
+    education: '教育经历',
+    experience: '工作经历',
+    projects: '项目经历',
+    skills: '技能',
+    customSections: '其他段落',
+  };
+  const segment = path.split(/[.[]/, 1)[0];
+  return segmentNames[segment] ?? segment;
+}
+
+/** 简历优化提案块（P2-3）：Diff 卡片 + 勾选 + 应用（CONFIRM_WRITE 确认入口） */
+function ResumeOptimizationBlockView({
+  block,
+  actionDisabled,
+  onActionSelect,
+}: {
+  block: ResumeOptimizationBlock;
+  actionDisabled: boolean;
+  onActionSelect?: (option: ChoiceOption) => void;
+}) {
+  // 默认全选（Agent 给出的建议默认全部推荐）
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(
+    () => new Set(block.patches.map((patch) => patch.id)),
+  );
+  const [applied, setApplied] = useState(false);
+
+  const toggle = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const selectedCount = selectedIds.size;
+  const canApply = !actionDisabled && !applied && selectedCount > 0;
+
+  const handleApply = () => {
+    if (!canApply || !onActionSelect) return;
+    setApplied(true);
+    onActionSelect({
+      action: 'APPLY_RESUME_PATCHES',
+      label: '应用勾选修改',
+      payload: {
+        proposalId: block.proposalId,
+        patchIds: [...selectedIds],
+      },
+    });
+  };
+
+  return (
+    <div className="mt-4 overflow-hidden rounded-2xl border border-primary-200/70 bg-gradient-to-br from-primary-50/60 to-indigo-50/40 dark:border-primary-800/40 dark:from-primary-950/30 dark:to-indigo-950/20">
+      <div className="flex items-center justify-between px-4 pt-4">
+        <div className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white">
+          <Sparkles className="h-4 w-4 text-primary-600 dark:text-primary-400" />
+          简历优化建议
+          <span className="rounded-full bg-white/80 px-2 py-0.5 text-xs font-semibold text-primary-600 dark:bg-slate-800/80 dark:text-primary-300">
+            {block.patches.length} 条
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={() =>
+            setSelectedIds(
+              selectedCount === block.patches.length
+                ? new Set()
+                : new Set(block.patches.map((patch) => patch.id)),
+            )
+          }
+          disabled={applied}
+          className="text-xs font-medium text-primary-600 hover:underline disabled:opacity-50 dark:text-primary-300"
+        >
+          {selectedCount === block.patches.length ? '全不选' : '全选'}
+        </button>
+      </div>
+
+      {block.summary && (
+        <p className="mx-4 mt-2 rounded-xl bg-white/70 px-3 py-2 text-xs leading-5 text-slate-600 dark:bg-slate-800/70 dark:text-slate-300">
+          {block.summary}
+        </p>
+      )}
+      {block.rejectedNote && (
+        <p className="mx-4 mt-2 text-xs text-amber-600 dark:text-amber-400">
+          ⚠ {block.rejectedNote}（不合规建议已自动剔除）
+        </p>
+      )}
+
+      <div className="mt-3 space-y-2 px-4">
+        {block.patches.map((patch) => {
+          const selected = selectedIds.has(patch.id);
+          const typeMeta = PATCH_TYPE_META[patch.type] ?? PATCH_TYPE_META.REPLACE;
+          return (
+            <label
+              key={patch.id}
+              className={`block cursor-pointer rounded-xl border p-3 transition ${
+                selected
+                  ? 'border-primary-300 bg-white dark:border-primary-700 dark:bg-slate-800'
+                  : 'border-slate-200 bg-white/50 opacity-70 dark:border-slate-700 dark:bg-slate-800/50'
+              }`}
+            >
+              <div className="flex items-start gap-2.5">
+                <button
+                  type="button"
+                  role="checkbox"
+                  aria-checked={selected}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    if (!applied) toggle(patch.id);
+                  }}
+                  className="mt-0.5 shrink-0 text-primary-500 disabled:opacity-50"
+                  disabled={applied}
+                >
+                  {selected ? (
+                    <CheckSquare className="h-4.5 w-4.5" />
+                  ) : (
+                    <Square className="h-4.5 w-4.5 text-slate-300 dark:text-slate-600" />
+                  )}
+                </button>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className={`px-1.5 py-0.5 rounded text-[11px] font-bold ${typeMeta.className}`}>
+                      {typeMeta.label}
+                    </span>
+                    <span className="text-[11px] text-slate-400">{patchPathLabel(patch.path)}</span>
+                  </div>
+                  {patch.oldValue && (
+                    <p className="mt-2 flex gap-1.5 rounded-lg bg-red-50/80 px-2.5 py-1.5 text-xs leading-5 text-slate-600 dark:bg-red-950/30 dark:text-slate-300">
+                      <Minus className="mt-0.5 h-3 w-3 shrink-0 text-red-400" />
+                      <span className="line-through decoration-red-300/60">{patch.oldValue}</span>
+                    </p>
+                  )}
+                  {patch.newValue && (
+                    <p className="mt-1 flex gap-1.5 rounded-lg bg-emerald-50/80 px-2.5 py-1.5 text-xs leading-5 text-slate-700 dark:bg-emerald-950/30 dark:text-slate-200">
+                      <Plus className="mt-0.5 h-3 w-3 shrink-0 text-emerald-500" />
+                      <span>{patch.newValue}</span>
+                    </p>
+                  )}
+                  <p className="mt-1.5 text-[11px] text-slate-400">{patch.reason}</p>
+                </div>
+              </div>
+            </label>
+          );
+        })}
+      </div>
+
+      <div className="px-4 pb-4 pt-3">
+        <button
+          type="button"
+          disabled={!canApply || !onActionSelect}
+          onClick={handleApply}
+          className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-primary-500 to-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:-translate-y-0.5 hover:from-primary-600 hover:to-indigo-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-55"
+        >
+          <CheckSquare className="h-4 w-4" />
+          {applied
+            ? '已提交应用'
+            : `应用勾选修改（${selectedCount}/${block.patches.length}）`}
+        </button>
+        <p className="mt-2 text-[11px] text-slate-400">
+          应用后生成新版本，原版本保持不变
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export default function BlockRenderer({
   block,
   actionDisabled = false,
@@ -436,6 +622,14 @@ export default function BlockRenderer({
       return <KnowledgeCitationsBlockView block={block} />;
     case 'skill_profile':
       return <SkillProfileBlockView block={block} />;
+    case 'resume_optimization':
+      return (
+        <ResumeOptimizationBlockView
+          block={block}
+          actionDisabled={actionDisabled}
+          onActionSelect={onActionSelect}
+        />
+      );
     default:
       return null; // 未知类型：受控忽略
   }

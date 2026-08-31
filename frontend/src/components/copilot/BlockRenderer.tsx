@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ArrowRight,
@@ -31,6 +31,8 @@ import type {
   ResumeSummaryBlock,
   SkillProfileBlock,
 } from '../../types/copilot';
+import type { ResumeContentJson } from '../../api/history';
+import { historyApi } from '../../api/history';
 import { resolveActionRoute } from '../../constants/routes';
 
 // Copilot 受控 Block 渲染器：只渲染白名单类型，未知类型静默忽略。
@@ -438,6 +440,60 @@ function ResumeOptimizationBlockView({
   );
   const [applied, setApplied] = useState(false);
 
+  // ===== Preview PDF（P2-4 勾选即重渲）=====
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewState, setPreviewState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [previewError, setPreviewError] = useState('');
+  // 原版内容只拉一次；勾选变化防抖 600ms 后重渲
+  const contentRef = useRef<ResumeContentJson | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const previewUrlRef = useRef<string | null>(null);
+
+  const fetchContentAndRender = async (ids: Set<string>) => {
+    try {
+      setPreviewState('loading');
+      if (!contentRef.current) {
+        const version = await historyApi.getResumeVersionDetail(block.versionId);
+        if (!version.content) throw new Error('版本没有结构化内容');
+        contentRef.current = version.content;
+      }
+      const content = contentRef.current;
+      const selectedPatches = block.patches
+        .filter((patch) => ids.has(patch.id))
+        .map((patch) => ({
+          id: patch.id,
+          type: patch.type,
+          path: patch.path,
+          oldValue: patch.oldValue ?? null,
+          newValue: patch.newValue ?? null,
+          reason: patch.reason ?? null,
+        }));
+      const blob = await historyApi.previewResumePdf(content, selectedPatches);
+      if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+      const url = URL.createObjectURL(blob);
+      previewUrlRef.current = url;
+      setPreviewUrl(url);
+      setPreviewState('ready');
+    } catch (error) {
+      setPreviewState('error');
+      setPreviewError(error instanceof Error ? error.message : '预览生成失败');
+    }
+  };
+
+  const schedulePreview = (ids: Set<string>) => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => void fetchContentAndRender(ids), 600);
+  };
+
+  // 卸载时清理防抖计时器与 blob URL
+  useEffect(
+    () => () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+    },
+    [],
+  );
+
   const toggle = (id: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -446,6 +502,8 @@ function ResumeOptimizationBlockView({
       } else {
         next.add(id);
       }
+      // 应用后锁定不再重渲
+      if (!applied) schedulePreview(next);
       return next;
     });
   };
@@ -576,6 +634,47 @@ function ResumeOptimizationBlockView({
         <p className="mt-2 text-[11px] text-slate-400">
           应用后生成新版本，原版本保持不变
         </p>
+
+        {/* Preview PDF：勾选即重渲（防抖 600ms）；桌面渲染区，排版不满意时原上传件仍是退路 */}
+        <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-800/60">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+              实时预览（已勾选 {selectedCount} 条的效果）
+            </span>
+            <div className="flex items-center gap-2">
+              {previewState === 'loading' && (
+                <span className="text-[11px] text-primary-500">渲染中…</span>
+              )}
+              {previewState !== 'ready' && previewState !== 'loading' && (
+                <button
+                  type="button"
+                  onClick={() => void fetchContentAndRender(selectedIds)}
+                  className="text-[11px] font-medium text-primary-600 hover:underline dark:text-primary-300"
+                >
+                  {previewState === 'error' ? '重试预览' : '生成预览'}
+                </button>
+              )}
+            </div>
+          </div>
+          {previewState === 'error' && (
+            <p className="mt-2 text-[11px] text-red-500">预览失败：{previewError}</p>
+          )}
+          {previewUrl ? (
+            <iframe
+              key={previewUrl}
+              src={previewUrl}
+              title="简历优化预览"
+              className="mt-2 h-[480px] w-full rounded-lg border border-slate-100 dark:border-slate-700"
+            />
+          ) : (
+            previewState !== 'loading' && (
+              <p className="mt-2 text-[11px] text-slate-400">
+                点击「生成预览」查看勾选修改后的 PDF 效果（预览不会保存，应用后才生成新版本）。
+                排版不满意？原始上传件仍在你手里。
+              </p>
+            )
+          )}
+        </div>
       </div>
     </div>
   );

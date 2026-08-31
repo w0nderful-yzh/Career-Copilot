@@ -104,6 +104,30 @@ public class FileStorageService {
     private static final DateTimeFormatter DATE_PATH_FORMAT = DateTimeFormatter.ofPattern("yyyy/MM/dd");
 
     /**
+     * 上传内存字节（P2-4 简历 PDF 导出用）：现有 uploadFile 只收 MultipartFile，
+     * Typst 渲染产物是内存字节，单独提供入口。
+     *
+     * @return 生成的 fileKey
+     */
+    public String uploadBytes(byte[] content, String filename, String contentType, String prefix) {
+        String fileKey = generateFileKey(filename, prefix);
+        try {
+            PutObjectRequest putRequest = PutObjectRequest.builder()
+                    .bucket(storageConfig.getBucket())
+                    .key(fileKey)
+                    .contentType(contentType)
+                    .contentLength((long) content.length)
+                    .build();
+            s3Client.putObject(putRequest, RequestBody.fromBytes(content));
+            log.info("字节文件上传成功: {} -> {} ({} bytes)", filename, fileKey, content.length);
+            return fileKey;
+        } catch (S3Exception e) {
+            log.error("字节上传到RustFS失败: {} - {}", filename, e.getMessage(), e);
+            throw new BusinessException(ErrorCode.STORAGE_UPLOAD_FAILED, "文件存储失败: " + e.getMessage());
+        }
+    }
+
+    /**
      * 通用文件上传方法
      */
     private String uploadFile(MultipartFile file, String prefix) {

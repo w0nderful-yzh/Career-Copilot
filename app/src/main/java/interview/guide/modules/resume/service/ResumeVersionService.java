@@ -30,6 +30,9 @@ public class ResumeVersionService {
   private final ResumeVersionRepository versionRepository;
   private final ResumePersistenceService persistenceService;
   private final ObjectMapper objectMapper;
+  private final ResumePreviewService.TypstTemplateLoader templateLoader;
+  private final TypstCompiler typstCompiler;
+  private final interview.guide.infrastructure.file.FileStorageService fileStorageService;
 
   /**
    * 创建原始导入版本（V1）：评分分析成功后由异步链路调用。
@@ -126,6 +129,43 @@ public class ResumeVersionService {
             ErrorCode.RESUME_VERSION_NOT_FOUND,
             "简历版本不存在: resumeId=" + resumeId + ", version=" + version));
   }
+
+  /**
+   * 正式导出 PDF（P2-4）：版本 content_json → Typst 渲染 → RustFS。
+   *
+   * <p>手动导出（设计决策：不自动渲染，避免用户不导出时的浪费渲染）。
+   * 渲染与上传不在同一事务（外部 IO 不进 DB 事务）；导出产物幂等性无要求，
+   * 重复导出生成新 fileKey 并返回（不覆盖旧文件）。
+   */
+  public VersionPdfExport exportVersionPdf(Long versionId) {
+    ResumeVersionEntity version = getVersion(versionId);
+    if (version.getContentJson() == null || version.getContentJson().isBlank()) {
+      throw new BusinessException(ErrorCode.RESUME_VERSION_NOT_READY, "版本没有结构化内容，无法导出");
+    }
+
+    byte[] template = templateLoader.load("classic-zh");
+    byte[] pdf = typstCompiler.compileToPdf(template, version.getContentJson());
+
+    String filename = exportFilename(version);
+    String fileKey = fileStorageService.uploadBytes(
+        pdf, filename, "application/pdf", "resume-exports");
+    log.info("简历版本 PDF 已导出: versionId={}, fileKey={} ({} bytes)",
+        versionId, fileKey, pdf.length);
+    return new VersionPdfExport(fileKey, fileStorageService.getFileUrl(fileKey), filename,
+        pdf.length);
+  }
+
+  /** 导出文件名：简历名_v{版本号}.pdf（存储键走 generateFileKey 去重） */
+  private String exportFilename(ResumeVersionEntity version) {
+    ResumeEntity resume = persistenceService.findById(version.getResumeId())
+        .orElseThrow(() -> new BusinessException(ErrorCode.RESUME_NOT_FOUND));
+    String baseName = resume.getOriginalFilename() != null
+        ? resume.getOriginalFilename().replaceAll("\\.[^.]+$", "") : "resume";
+    return baseName + "_v" + version.getVersion() + ".pdf";
+  }
+
+  /** 版本 PDF 导出结果 */
+  public record VersionPdfExport(String fileKey, String url, String filename, long sizeBytes) {}
 
   private String serialize(Object value) {
     try {

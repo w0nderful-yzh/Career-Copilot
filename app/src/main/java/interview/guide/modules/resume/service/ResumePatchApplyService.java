@@ -64,26 +64,15 @@ public class ResumePatchApplyService {
 
     // 1. 读源版本内容
     ResumeVersionEntity sourceVersion = versionService.getVersion(proposal.getSourceVersionId());
-    JsonNode content;
-    try {
-      content = objectMapper.readTree(sourceVersion.getContentJson());
-    } catch (JacksonException e) {
-      log.error("源版本内容解析失败: versionId={}", sourceVersion.getId(), e);
-      throw new BusinessException(ErrorCode.RESUME_OPTIMIZATION_INVALID, "源版本内容损坏");
-    }
-    if (!(content instanceof ObjectNode root)) {
-      throw new BusinessException(ErrorCode.RESUME_OPTIMIZATION_INVALID, "源版本内容格式异常");
-    }
+    JsonNode content = readContentTree(sourceVersion);
 
     // 2. 逐条应用（oldValue 一致性校验失败 → 整体失败，不留半应用状态）
-    for (ResumePatchItem patch : selected) {
-      applySingle(root, patch);
-    }
+    applyPatchesToTree(content, selected);
 
     // 3. 提案状态流转 + 新版本落库（同事务，任一失败整体回滚）
     String newContentJson;
     try {
-      newContentJson = objectMapper.writeValueAsString(root);
+      newContentJson = objectMapper.writeValueAsString(content);
     } catch (JacksonException e) {
       log.error("序列化新版本内容失败", e);
       throw new BusinessException(ErrorCode.RESUME_OPTIMIZATION_INVALID, "保存新版本失败");
@@ -94,6 +83,37 @@ public class ResumePatchApplyService {
     log.info("优化提案已应用: proposalId={}, 新版本 resumeId={} v{}", proposalId,
         newVersion.getResumeId(), newVersion.getVersion());
     return newVersion;
+  }
+
+  /** 读源版本内容为 JSON 树（格式异常统一转业务错误） */
+  private JsonNode readContentTree(ResumeVersionEntity sourceVersion) {
+    JsonNode content;
+    try {
+      content = objectMapper.readTree(sourceVersion.getContentJson());
+    } catch (JacksonException e) {
+      log.error("源版本内容解析失败: versionId={}", sourceVersion.getId(), e);
+      throw new BusinessException(ErrorCode.RESUME_OPTIMIZATION_INVALID, "源版本内容损坏");
+    }
+    if (!(content instanceof ObjectNode root)) {
+      throw new BusinessException(ErrorCode.RESUME_OPTIMIZATION_INVALID, "源版本内容格式异常");
+    }
+    return content;
+  }
+
+  /**
+   * 把 Patch 应用到内容 JSON 树上（内存操作，不落库）。
+   * 正式应用（applyPatches）与 Preview（勾选即重渲）共用同一应用语义，
+   * 保证预览内容 = 应用后内容。
+   *
+   * @param patches 已筛选的 Patch 列表；oldValue 一致性校验失败抛 PATCH_CONFLICT
+   */
+  public void applyPatchesToTree(JsonNode content, List<ResumePatchItem> patches) {
+    if (!(content instanceof ObjectNode root)) {
+      throw new BusinessException(ErrorCode.RESUME_OPTIMIZATION_INVALID, "内容格式异常");
+    }
+    for (ResumePatchItem patch : patches) {
+      applySingle(root, patch);
+    }
   }
 
   private void applySingle(ObjectNode root, ResumePatchItem patch) {

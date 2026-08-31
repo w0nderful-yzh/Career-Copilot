@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   FileCheck2,
+  FileDown,
   GitBranch,
   Loader2,
   Sparkles,
@@ -140,9 +141,33 @@ function VersionCard({
   onConfirmed: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  // P2-4 正式导出（手动）：渲染 → RustFS → 浏览器下载
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const sourceMeta = SOURCE_META[version.source] ?? SOURCE_META.IMPORT;
   const SourceIcon = sourceMeta.icon;
   const content = version.content;
+
+  const handleExportPdf = async () => {
+    setExporting(true);
+    setExportError(null);
+    try {
+      const result = await historyApi.exportVersionPdf(version.id);
+      // RustFS bucket 非 public-read：经后端代理端点拿字节再触发浏览器下载
+      const blob = await historyApi.downloadExportedPdf(result.fileKey);
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = result.filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(link.href);
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : '导出失败，请稍后重试');
+    } finally {
+      setExporting(false);
+    }
+  };
 
   return (
     <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 overflow-hidden">
@@ -170,15 +195,36 @@ function VersionCard({
             </p>
           </div>
         </div>
-        {content && (
-          <button
-            onClick={() => setExpanded((prev) => !prev)}
-            className="text-xs text-primary-600 dark:text-primary-400 hover:underline shrink-0"
-          >
-            {expanded ? '收起内容' : '查看内容'}
-          </button>
-        )}
+        <div className="flex items-center gap-3 shrink-0">
+          {content && version.confirmationStatus === 'ACTIVE' && (
+            <button
+              onClick={handleExportPdf}
+              disabled={exporting}
+              className="flex items-center gap-1 text-xs text-primary-600 dark:text-primary-400 hover:underline disabled:opacity-50"
+              title="渲染当前版本为 PDF 并上传存储（手动导出）"
+            >
+              {exporting ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <FileDown className="w-3.5 h-3.5" />
+              )}
+              {exporting ? '导出中…' : '导出 PDF'}
+            </button>
+          )}
+          {content && (
+            <button
+              onClick={() => setExpanded((prev) => !prev)}
+              className="text-xs text-primary-600 dark:text-primary-400 hover:underline shrink-0"
+            >
+              {expanded ? '收起内容' : '查看内容'}
+            </button>
+          )}
+        </div>
       </div>
+
+      {exportError && (
+        <p className="mx-4 mb-2 text-xs text-red-500">{exportError}</p>
+      )}
 
       {needsConfirm && version.version === 1 && <ConfirmCard version={version} onConfirmed={onConfirmed} />}
 

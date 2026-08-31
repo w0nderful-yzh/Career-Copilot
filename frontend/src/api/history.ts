@@ -1,4 +1,4 @@
-import { request } from './request';
+import { request, resolveBlobDownload } from './request';
 
 export type AnalyzeStatus = 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
 export type EvaluateStatus = 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
@@ -169,6 +169,56 @@ export const historyApi = {
       `/api/resume-versions/${versionId}/confirm`,
       { correctedContent: correctedContent ?? null },
     );
+  },
+
+  /**
+   * 获取单个版本详情（结构化内容，Preview 渲染取数用）
+   */
+  async getResumeVersionDetail(versionId: number): Promise<ResumeVersionItem> {
+    return request.get<ResumeVersionItem>(`/api/resume-versions/${versionId}`);
+  },
+
+  /**
+   * Preview PDF（P2-4 勾选即重渲）：原版内容 + 已勾选 patch → PDF Blob。
+   * 后端内存合成后直返字节，不入库不落存储。
+   * 失败时后端 GlobalExceptionHandler 以 HTTP 200 + Result JSON 返回，
+   * resolveBlobDownload 负责识别并抛出错误信息。
+   */
+  async previewResumePdf(
+    contentJson: ResumeContentJson,
+    patches: Array<{
+      id: string;
+      type: string;
+      path: string;
+      oldValue: string | null;
+      newValue: string | null;
+      reason: string | null;
+    }>,
+    templateId?: string,
+  ): Promise<Blob> {
+    const response = await request.getInstance().post<Blob>(
+      '/internal/agent/resume/preview',
+      { contentJson: JSON.stringify(contentJson), patches, templateId: templateId ?? null },
+      { responseType: 'blob', skipResultTransform: true },
+    );
+    return resolveBlobDownload(response.data);
+  },
+
+  /**
+   * 正式导出版本 PDF（手动导出）：渲染 → RustFS 留档 → 返回 fileKey。
+   * RustFS bucket 非 public-read，浏览器下载走后端代理端点。
+   */
+  async exportVersionPdf(
+    versionId: number,
+  ): Promise<{ fileKey: string; url: string; filename: string; sizeBytes: number }> {
+    return request.post(`/api/resume-versions/${versionId}/export-pdf`, {});
+  },
+
+  /**
+   * 下载已导出的 PDF（后端流式代理，fileKey 限 resume-exports/ 前缀）
+   */
+  async downloadExportedPdf(fileKey: string): Promise<Blob> {
+    return request.download(`/api/resume-exports/download?fileKey=${encodeURIComponent(fileKey)}`);
   },
 };
 

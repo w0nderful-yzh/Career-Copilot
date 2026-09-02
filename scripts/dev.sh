@@ -63,7 +63,8 @@ stop_port() {
 
 wait_java() {
   for _ in $(seq 1 "$JAVA_READY_TIMEOUT"); do
-    if curl -sf -o /dev/null "http://127.0.0.1:$JAVA_PORT/api/agent/tools" 2>/dev/null; then
+    # -m 2：端口半开（进程僵死未释放监听）时 curl 可能长时间挂起，必须带超时
+    if curl -sf -m 2 -o /dev/null "http://127.0.0.1:$JAVA_PORT/api/agent/tools" 2>/dev/null; then
       return 0
     fi
     sleep 2
@@ -125,14 +126,15 @@ start_web() {
 
 cmd_start() {
   start_java
-  start_python
-  start_web
+  # 先等 Java 就绪再启动 Agent：Agent 启动时会从 Java 同步 Agent 模型配置，
+  # Java 未就绪会导致同步失败（虽有惰性重试兜底，但首次请求前多一次告警与重试）。
   log "等待 Java 就绪（最长 ${JAVA_READY_TIMEOUT}s）..."
-  if wait_java; then
-    log "三个服务已启动，访问 http://localhost:${WEB_PORT}（默认入口 /copilot）"
-  else
+  if ! wait_java; then
     error "Java 启动超时，查看日志: tail -f $JAVA_LOG"
   fi
+  start_python
+  start_web
+  log "三个服务已启动，访问 http://localhost:${WEB_PORT}（默认入口 /copilot）"
   cmd_status
 }
 

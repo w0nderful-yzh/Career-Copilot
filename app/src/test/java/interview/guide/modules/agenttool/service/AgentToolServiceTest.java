@@ -18,7 +18,14 @@ import interview.guide.modules.knowledgebase.model.QueryRequest;
 import interview.guide.modules.knowledgebase.model.QueryResponse;
 import interview.guide.modules.knowledgebase.service.KnowledgeBaseListService;
 import interview.guide.modules.knowledgebase.service.KnowledgeBaseQueryService;
+import interview.guide.modules.profile.dto.SkillProfileResponse;
+import interview.guide.modules.profile.service.SkillProfileQueryService;
 import interview.guide.modules.resume.model.ResumeContentDTO;
+import interview.guide.modules.resume.model.ResumeEntity;
+import interview.guide.modules.resume.model.ResumeVersionEntity;
+import interview.guide.modules.resume.service.ResumeVersionService;
+import interview.guide.modules.resume.service.ResumePatchApplyService;
+import tools.jackson.databind.ObjectMapper;
 import interview.guide.modules.resume.model.ResumeEntity;
 import interview.guide.modules.resume.service.ResumeHistoryService;
 import interview.guide.modules.resume.service.ResumePersistenceService;
@@ -31,6 +38,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -61,6 +69,15 @@ class AgentToolServiceTest {
   private KnowledgeBaseQueryService knowledgeBaseQueryService;
   @Mock
   private InterviewSkillService interviewSkillService;
+  @Mock
+  private SkillProfileQueryService skillProfileQueryService;
+  @Mock
+  private ResumeVersionService resumeVersionService;
+  @Mock
+  private ResumePatchApplyService resumePatchApplyService;
+
+  @Spy
+  private final ObjectMapper objectMapper = new ObjectMapper();
 
   @InjectMocks
   private AgentToolService agentToolService;
@@ -74,14 +91,15 @@ class AgentToolServiceTest {
     void listToolsReturnsAllToolsWithPermissions() {
       List<ToolInfoDTO> tools = agentToolService.listTools();
 
-      assertThat(tools).hasSize(9);
-      // 只读 Tool 仍全部为 READ；写 Tool（create_interview）为 CONFIRM_WRITE
+      assertThat(tools).hasSize(13);
+      // 只读 Tool 仍全部为 READ；写 Tool（create_interview / apply_resume_patches）为 CONFIRM_WRITE
       assertThat(tools)
           .extracting(ToolInfoDTO::permission)
           .containsOnly(AgentToolPermission.READ, AgentToolPermission.CONFIRM_WRITE);
       assertThat(tools)
           .extracting(ToolInfoDTO::name)
-          .contains("get_resume_list", "search_knowledge", "create_interview");
+          .contains("get_resume_list", "get_skill_profile", "get_resume_version",
+              "search_knowledge", "create_interview", "apply_resume_patches");
       assertThat(tools)
           .allSatisfy(tool -> {
             assertThat(tool.description()).isNotBlank();
@@ -271,6 +289,85 @@ class AgentToolServiceTest {
       agentToolService.execute("list_knowledge_bases", Map.of());
 
       verify(knowledgeBaseListService).listKnowledgeBases();
+    }
+  }
+
+  @Nested
+  @DisplayName("画像 Tool")
+  class ProfileTools {
+
+    @Test
+    @DisplayName("get_skill_profile 返回画像与证据明细")
+    void getSkillProfileDelegates() {
+      SkillProfileResponse expected = new SkillProfileResponse(List.of());
+      when(skillProfileQueryService.getProfileWithEvidence()).thenReturn(expected);
+
+      ToolResponse response = agentToolService.execute("get_skill_profile", Map.of());
+
+      assertThat(response.data()).isSameAs(expected);
+      verify(skillProfileQueryService).getProfileWithEvidence();
+    }
+  }
+
+  @Nested
+  @DisplayName("简历版本 Tool")
+  class ResumeVersionTools {
+
+    @Test
+    @DisplayName("get_resume_version 默认返回最新 ACTIVE 版本")
+    void getResumeVersionDefaultsToActive() {
+      ResumeVersionEntity version = new ResumeVersionEntity();
+      version.setId(5L);
+      version.setResumeId(102L);
+      version.setVersion(1);
+      version.setContentJson("{\"basicInfo\":{\"name\":\"张三\"}}");
+      when(resumeVersionService.getActiveVersion(102L)).thenReturn(version);
+
+      ToolResponse response = agentToolService.execute(
+          "get_resume_version", Map.of("resumeId", 102));
+
+      assertThat(response.tool()).isEqualTo("get_resume_version");
+      interview.guide.modules.resume.model.ResumeVersionDTO dto =
+          (interview.guide.modules.resume.model.ResumeVersionDTO) response.data();
+      assertThat(dto.version()).isEqualTo(1);
+      assertThat(dto.content().basicInfo().name()).isEqualTo("张三");
+    }
+
+    @Test
+    @DisplayName("get_resume_version 缺少 resumeId 抛出参数错误")
+    void getResumeVersionMissingArgumentFails() {
+      assertThatThrownBy(() -> agentToolService.execute("get_resume_version", Map.of()))
+          .isInstanceOf(BusinessException.class)
+          .hasFieldOrPropertyWithValue("code", ErrorCode.AGENT_TOOL_ARGUMENT_INVALID.getCode());
+    }
+
+    @Test
+    @DisplayName("apply_resume_patches 委托应用服务并返回新版本信息")
+    void applyResumePatchesDelegates() {
+      ResumeVersionEntity newVersion = new ResumeVersionEntity();
+      newVersion.setId(6L);
+      newVersion.setResumeId(1L);
+      newVersion.setVersion(2);
+      when(resumePatchApplyService.applyPatches(77L, List.of("patch_1")))
+          .thenReturn(newVersion);
+
+      ToolResponse response = agentToolService.execute(
+          "apply_resume_patches",
+          Map.of("proposalId", 77, "patchIds", List.of("patch_1")));
+
+      assertThat(response.tool()).isEqualTo("apply_resume_patches");
+      @SuppressWarnings("unchecked")
+      java.util.Map<String, Object> data = (java.util.Map<String, Object>) response.data();
+      assertThat(data.get("versionId")).isEqualTo(6L);
+      assertThat(data.get("version")).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("apply_resume_patches 缺少 proposalId 抛出参数错误")
+    void applyResumePatchesMissingProposalFails() {
+      assertThatThrownBy(() -> agentToolService.execute("apply_resume_patches", Map.of()))
+          .isInstanceOf(BusinessException.class)
+          .hasFieldOrPropertyWithValue("code", ErrorCode.AGENT_TOOL_ARGUMENT_INVALID.getCode());
     }
   }
 

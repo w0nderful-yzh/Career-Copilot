@@ -49,6 +49,10 @@ class CareerAgentState(TypedDict, total=False):
     history: list[dict[str, str]]  # 最近 N 轮 {role, content}
     history_summary: str | None  # 窗口之外早期轮次的滚动摘要
     bound_resume_id: int | None  # 会话绑定的活动简历（Conversation Memory）
+    bound_job_id: int | None  # 会话绑定的活动 JD（P2-5，Conversation Memory）
+
+    # 用户快照（P3-4）：新会话首轮注入的 top 技能 + 最近面试概要（跨会话背景感知）
+    user_snapshot: str | None
 
     # Routing
     intent: str | None

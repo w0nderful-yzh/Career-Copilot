@@ -40,6 +40,11 @@ export default defineConfig(({ mode }) => {
           target: apiProxyTarget,
           changeOrigin: true,
         },
+        // Java 内部接口（如简历 Preview PDF 渲染），非 /api 前缀，同样转发到业务后端
+        '/internal': {
+          target: apiProxyTarget,
+          changeOrigin: true,
+        },
       },
       // 忽略 @ricky0123/vad-web 的 sourcemap 警告
       sourcemapIgnoreList: (relativeSourcePath) => {

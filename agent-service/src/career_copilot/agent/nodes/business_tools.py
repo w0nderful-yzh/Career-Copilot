@@ -1,21 +1,27 @@
 """business_tools：业务数据查询意图，按固定 Intent → Tool 映射执行读操作。
 
 第一版不做无限 Tool Loop：每个意图最多调用固定 Tool 集合，产出摘要块 + 回答。
-PROFILE_QUERY / PREPARATION_QUERY 的 Tool（Java 侧）尚未开通，返回友好占位。
+PREPARATION_QUERY 的 Tool（Java 侧）尚未开通，返回友好占位。
 """
 
 import asyncio
 from typing import Any, cast
 
 from career_copilot.agent.deps import GraphDeps
-from career_copilot.agent.events import emit_tool_completed, emit_tool_progress, emit_tool_started
+from career_copilot.agent.events import (
+    emit_run_status,
+    emit_tool_completed,
+    emit_tool_progress,
+    emit_tool_started,
+)
 from career_copilot.agent.plan import StreamPlan, static_text
 from career_copilot.agent.response import interview_summary_block, resume_summary_block
 from career_copilot.agent.router import ActionRoute, Intent
-from career_copilot.agent.state import CareerAgentState
+from career_copilot.agent.state import CareerAgentState, RunStatus
 from career_copilot.clients.backend import BusinessToolError
 from career_copilot.config import settings
-from career_copilot.schemas.message import ActionBlock
+from career_copilot.schemas.action import AgentAction
+from career_copilot.schemas.message import ActionBlock, ChoiceBlock, ChoiceOption
 from career_copilot.tools import (
     format_history,
     format_resume_content,
@@ -33,11 +39,21 @@ async def business_tools(state: CareerAgentState, deps: GraphDeps) -> dict[str, 
     if intent == Intent.INTERVIEW_REVIEW.value:
         return await _plan_interview_review(state, backend, deps)
 
-    # PROFILE_QUERY / PREPARATION_QUERY：工具未开通，友好占位（避免空回复）
+    # PREPARATION_QUERY：Preparation Tool 未开通，用首轮注入的用户快照
+    # （top 技能 + 最近面试）做背景感知回答；无快照时如实占位
+    snapshot = state.get("user_snapshot")
+    if snapshot:
+        message = state.get("message") or ""
+        history = format_history(state.get("history") or [], state.get("history_summary"))
+        return {
+            "plan": StreamPlan(
+                text=deps.answerer.answer_stream(message, snapshot, history or None)
+            )
+        }
     return {
         "plan": StreamPlan(
             text=static_text(
-                "能力画像与学习计划功能正在建设中，暂时无法查看。"
+                "学习计划功能正在建设中，暂时无法查看。"
                 "你可以先查看简历或模拟面试记录。"
             )
         )
@@ -145,7 +161,9 @@ async def _plan_targeted_resume(
     """
     message = state.get("message") or ""
     history = format_history(
-        state.get("history") or [], state.get("history_summary")
+        state.get("history") or [],
+        state.get("history_summary"),
+        snapshot=state.get("user_snapshot"),
     )
     # 上游 _plan_resume_query 保证 active_resume_id 非空才进入本路径
     raw_resume_id = state["active_resume_id"]
@@ -183,12 +201,31 @@ async def _plan_targeted_resume(
                 "这份简历的上次自动分析失败了。你可以在简历库中对该简历点击"
                 "「重新分析」，完成后再来问我，我会帮你解读。"
             )
-        else:
-            hint = (
-                "这份简历还在后台分析中（稍等片刻即可完成）。"
-                "你可以先来一场模拟面试，或过一会儿再问我，我会直接给你解读结果。"
+            return {"plan": StreamPlan(text=static_text(hint))}
+
+        # 有界等待后仍未就绪：如实说明 + 提供确定性重试入口（不请求内干等）
+        emit_run_status(RunStatus.WAITING_USER.value)
+        return {
+            "plan": StreamPlan(
+                blocks=[
+                    ChoiceBlock(
+                        title="简历仍在分析中",
+                        options=[
+                            ChoiceOption(
+                                action=AgentAction.ANALYZE_RESUME.value,
+                                label="稍后获取分析结果",
+                                payload={"resumeId": resume_id},
+                            ),
+                        ],
+                    ),
+                ],
+                text=static_text(
+                    "这份简历的分析还在后台进行中（通常需要十几秒，本次等待 "
+                    f"{attempts} 次仍未完成）。你可以点击「稍后获取分析结果」"
+                    "稍后重试，或先进行其他操作。"
+                ),
             )
-        return {"plan": StreamPlan(text=static_text(hint))}
+        }
 
     context = await summarize_resume_analysis(analysis)
     # 内容感知：读取完整简历文本（失败不阻断，回落纯摘要）
@@ -263,7 +300,9 @@ async def _plan_interview_review(
     """面试回顾：先产出 interview_summary 块，再基于摘要流式回答。"""
     message = state.get("message") or ""
     history = format_history(
-        state.get("history") or [], state.get("history_summary")
+        state.get("history") or [],
+        state.get("history_summary"),
+        snapshot=state.get("user_snapshot"),
     )
     history_txt = history or None
     emit_tool_started("interview_review")

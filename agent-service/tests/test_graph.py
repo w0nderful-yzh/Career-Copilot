@@ -5,6 +5,8 @@
 以及 Graph 端到端路由。
 """
 
+import json
+
 import httpx
 import pytest
 
@@ -92,6 +94,30 @@ def backend_transport():
                 "suggestions": [],
             },
             "get_interview_history": [{"sessionId": "s1", "skillId": "java-backend"}],
+            "get_skill_profile": {
+                "skills": [
+                    {
+                        "skill": "MySQL",
+                        "score": 83,
+                        "evidenceCount": 2,
+                        "evidences": [
+                            {"sourceType": "INTERVIEW_TURN", "sourceId": "s1:0", "score": 88,
+                             "occurredAt": "2026-08-28T12:00:00"},
+                            {"sourceType": "INTERVIEW_TURN", "sourceId": "s1:1", "score": 78,
+                             "occurredAt": "2026-08-28T12:00:00"},
+                        ],
+                    },
+                    {
+                        "skill": "JVM",
+                        "score": 55,
+                        "evidenceCount": 1,
+                        "evidences": [
+                            {"sourceType": "INTERVIEW_TURN", "sourceId": "s1:2", "score": 55,
+                             "occurredAt": "2026-08-28T12:00:00"},
+                        ],
+                    },
+                ]
+            },
             "list_knowledge_bases": [{"id": 1, "name": "Java 知识库"}],
             "search_knowledge": {
                 "answer": "JVM 是 Java 虚拟机。",
@@ -673,6 +699,75 @@ async def test_graph_analysis_failed_fails_fast(monkeypatch):
     assert "重新分析" in text
 
 
+async def test_graph_analysis_timeout_returns_retry_choice(monkeypatch):
+    """有界等待仍未就绪时，应返回「稍后获取分析结果」ChoiceBlock 而非静默占位。"""
+    from career_copilot.agent.nodes import business_tools as bt
+
+    monkeypatch.setattr(bt.settings, "analysis_wait_attempts", 2)
+    monkeypatch.setattr(bt.settings, "analysis_wait_delay_seconds", 0.01)
+
+    def pending_handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/context"):
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "data": {"messages": [], "summary": None, "totalCount": 0},
+                    "message": "success",
+                },
+            )
+        tool = path.rsplit("/", 1)[-1]
+        if tool == "get_resume_analysis":
+            # 分析持续未就绪：恒返回业务错误 RESUME_ANALYSIS_NOT_FOUND
+            return httpx.Response(
+                200,
+                json={"code": 2008, "data": None, "message": "简历分析结果不存在"},
+            )
+        data = {
+            "get_resume": {
+                "id": 1,
+                "filename": "a.pdf",
+                "resumeText": "正文",
+                "analyzeStatus": "PROCESSING",
+            }
+        }.get(tool, [])
+        return httpx.Response(200, json={"code": 200, "data": data, "message": "success"})
+
+    deps = GraphDeps(
+        intent_router=FakeIntentRouter(IntentClassification(intent=Intent.RESUME_QUERY)),
+        answerer=FakeAnswerer(),
+        backend=BackendClient(base_url="http://t", transport=httpx.MockTransport(pending_handler)),
+    )
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None,
+        message="分析简历",
+        attachments=[{"kind": "resume", "resume_id": 1, "filename": "a.pdf"}],
+        action=None,
+    )
+
+    statuses: list[str] = []
+    plan_holder: list = []
+    async for mode, chunk in graph.astream(state, stream_mode=["custom", "values"]):
+        if mode == "custom":
+            if chunk["type"] == "run_status":
+                statuses.append(chunk["payload"]["status"])
+        else:
+            plan_holder.append(chunk)
+
+    plan = plan_holder[-1]["plan"]
+    # 未就绪分支应产出可重试的 ChoiceBlock（ANALYZE_RESUME 回传闭环）
+    choice = next((b for b in plan.blocks if b.type == "choice"), None)
+    assert choice is not None, "分析未就绪时应产出 ChoiceBlock 而非纯文本占位"
+    assert choice.options[0].action == "ANALYZE_RESUME"
+    assert choice.options[0].payload == {"resumeId": 1}
+    assert choice.options[0].label == "稍后获取分析结果"
+    text = "".join([c async for c in plan.text])
+    assert "分析" in text and "稍后" in text
+    assert "WAITING_USER" in statuses, "等待用户选择重试时应广播 WAITING_USER"
+
+
 # ===== 短期记忆：load_history / 滚动摘要 / checkpoint =====
 
 
@@ -877,7 +972,6 @@ class FakeProposalResult:
 
 def _proposal_deps(backend_transport, proposal_payload: dict) -> GraphDeps:
     """带提案模型的 deps：answerer._model 返回预设 JSON 推荐配置。"""
-    from career_copilot.agent.nodes.interview_proposal import _derive_proposal
     from career_copilot.agent.nodes.interview_proposal import interview_proposal  # noqa: F401
 
     class ProposalAnswerer:
@@ -1065,3 +1159,387 @@ async def test_graph_create_interview_action_requires_direction():
     text = "".join([c async for c in result["plan"].text])
     assert "缺少面试方向配置" in text
     assert result["plan"].blocks == []
+
+# ===== profile_query（P3-2 能力画像） =====
+
+
+async def test_graph_profile_query_produces_skill_profile_block(backend_transport):
+    """PROFILE_QUERY → get_skill_profile → SkillProfileBlock + 证据驱动的回答。"""
+    deps, router = make_deps(
+        IntentClassification(intent=Intent.PROFILE_QUERY), backend_transport
+    )
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None,
+        message="我的 JVM 水平怎么样？",
+        attachments=[],
+        action=None,
+    )
+    result = await graph.ainvoke(state)
+
+    plan = result["plan"]
+    block = next((b for b in plan.blocks if b.type == "skill_profile"), None)
+    assert block is not None, "画像查询应产出 SkillProfileBlock"
+    skills = {s["skill"]: s for s in block.skills}
+    assert set(skills) == {"MySQL", "JVM"}
+    # 数值来自 Java 聚合器，块内原样透传（LLM 不改写）
+    assert skills["JVM"]["score"] == 55
+    assert skills["JVM"]["evidenceCount"] == 1
+    assert skills["JVM"]["evidences"][0]["sourceId"] == "s1:2"
+
+    text = "".join([c async for c in plan.text])
+    assert text, "画像查询应有流式回答"
+
+
+async def test_graph_profile_query_empty_guides_to_interview(backend_transport):
+    """无画像数据时如实说明并引导面试，不产出空画像块。"""
+    def empty_profile_transport(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.startswith("/api/agent/conversations"):
+            return httpx.Response(200, json={"code": 200, "data": None, "message": "success"})
+        tool = path.rsplit("/", 1)[-1]
+        data = {"get_skill_profile": {"skills": []}}.get(tool, [])
+        return httpx.Response(200, json={"code": 200, "data": data, "message": "success"})
+
+    deps, _ = make_deps(
+        IntentClassification(intent=Intent.PROFILE_QUERY), empty_profile_transport
+    )
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None,
+        message="我水平怎么样",
+        attachments=[],
+        action=None,
+    )
+    result = await graph.ainvoke(state)
+
+    plan = result["plan"]
+    assert not [b for b in plan.blocks if b.type == "skill_profile"]
+    actions = [b for b in plan.blocks if b.type == "action"]
+    assert actions and actions[0].route == "INTERVIEW_CREATE"
+    text = "".join([c async for c in plan.text])
+    assert "画像" in text and "面试" in text
+
+
+# ===== load_snapshot（P3-4 用户快照） =====
+
+
+async def test_snapshot_injected_on_first_turn(backend_transport):
+    """新会话首轮（无历史）注入用户快照：top 技能 + 最近面试。"""
+    deps, _ = make_deps(
+        IntentClassification(intent=Intent.GENERAL_CHAT), backend_transport
+    )
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None,
+        message="帮我看看最近复习得怎么样",
+        attachments=[],
+        action=None,
+    )
+    result = await graph.ainvoke(state)
+
+    snapshot = result.get("user_snapshot")
+    assert snapshot, "首轮应注入快照"
+    assert "用户技能画像" in snapshot
+    assert "MySQL" in snapshot and "最近模拟面试" in snapshot
+
+
+async def test_snapshot_skipped_when_history_exists(backend_transport):
+    """已有历史的会话不重复注入快照（背景感知交给会话记忆）。"""
+    deps, _ = make_deps(
+        IntentClassification(intent=Intent.GENERAL_CHAT), backend_transport
+    )
+    from career_copilot.agent.nodes.load_snapshot import load_snapshot
+
+    # 模拟 load_history 之后的状态：会话已有历史 → 不拉快照
+    state: dict = {"history": [{"role": "USER", "content": "之前的问题"}]}
+    result = await load_snapshot(state, deps)
+
+    assert result == {"user_snapshot": None}
+
+
+async def test_snapshot_tolerates_backend_failures():
+    """画像与面试查询都失败时静默降级为空快照，不阻断对话。"""
+    def broken_transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"code": 500, "message": "boom"})
+
+    deps, _ = make_deps(IntentClassification(intent=Intent.GENERAL_CHAT), broken_transport)
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None,
+        message="你好",
+        attachments=[],
+        action=None,
+    )
+    result = await graph.ainvoke(state)
+
+    assert result.get("user_snapshot") is None
+    assert result.get("plan") is not None, "快照失败不应阻断后续流程"
+
+
+# ===== resume_optimization 子图（P2-1） =====
+
+
+def _optimization_transport(extra_tools: dict | None = None):
+    """优化子图 transport：resume_version / get_resume / profile / 提案创建。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/internal/agent/resume-optimization/proposals":
+            return httpx.Response(200, json={"code": 200, "data": 77, "message": "success"})
+        tool = path.rsplit("/", 1)[-1]
+        data = {
+            "get_resume_version": {
+                "id": 5,
+                "resumeId": 1,
+                "version": 1,
+                "confirmationStatus": "ACTIVE",
+                "content": {
+                    "basicInfo": {
+                        "name": "张三", "phone": "138",
+                        "email": "", "location": "", "jobIntention": "",
+                    },
+                    "education": [],
+                    "experience": [],
+                    "projects": [
+                        {"name": "Demo", "role": "", "startDate": "", "endDate": "",
+                         "techStack": "Spring Boot", "bullets": ["负责后端开发工作"]}
+                    ],
+                    "skills": [{"category": "", "content": "熟悉 Java"}],
+                    "customSections": [],
+                },
+            },
+            "get_resume": {
+                "id": 1,
+                "filename": "resume.pdf",
+                "resumeText": (
+                    "姓名：张三\n项目：Demo（Spring Boot）负责后端开发工作\n技能：熟悉 Java"
+                ),
+                "analyzeStatus": "COMPLETED",
+            },
+            "get_skill_profile": {"skills": []},
+        }
+        data.update(extra_tools or {})
+        return httpx.Response(
+            200, json={"code": 200, "data": data.get(tool, []), "message": "success"}
+        )
+
+    return handler
+
+
+class FakePatchModel:
+    """返回预设 Patch JSON 的模型（不触发真实 LLM）。"""
+
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+
+    async def ainvoke(self, messages):
+        from langchain_core.messages import AIMessage
+
+        return AIMessage(content=json.dumps(self._payload, ensure_ascii=False))
+
+
+def _optimization_deps(transport, patch_payload: dict) -> GraphDeps:
+    from career_copilot.agent.answerer import Answerer
+
+    class PatchAnswerer(Answerer):
+        def __init__(self) -> None:
+            super().__init__(FakePatchModel(patch_payload))
+
+    return GraphDeps(
+        intent_router=FakeIntentRouter(
+            IntentClassification(intent=Intent.GENERAL_CHAT)
+        ),
+        answerer=PatchAnswerer(),
+        backend=BackendClient(
+            base_url="http://test", transport=httpx.MockTransport(transport)
+        ),
+    )
+
+
+_VALID_PATCH_PAYLOAD = {
+    "summary": "精炼项目描述并规范技术名词",
+    "patches": [
+        {
+            "id": "patch_1",
+            "type": "REPLACE",
+            "path": "projects[0].bullets[0]",
+            "oldValue": "负责后端开发工作",
+            "newValue": "主导后端开发工作",
+            "reason": "动词开头突出职责",
+        },
+    ],
+}
+
+
+async def test_graph_optimize_resume_without_version_guides_confirmation(backend_transport):
+    """无 ACTIVE 结构化版本时如实引导先完成解析确认。"""
+    def no_version_transport(request: httpx.Request) -> httpx.Response:
+        # RESUME_VERSION_NOT_READY 业务错误：外层 code != 200（call_tool 抛 BusinessToolError）
+        return httpx.Response(
+            200,
+            json={
+                "code": 2009,
+                "message": "简历还没有已确认的结构化版本，请先在简历库完成解析确认",
+            },
+        )
+
+    deps = _optimization_deps(no_version_transport, _VALID_PATCH_PAYLOAD)
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None, message="优化简历", attachments=[],
+        action={"type": "ACTION_SELECTED", "action": "OPTIMIZE_RESUME",
+                "payload": {"resumeId": 1}},
+    )
+    result = await graph.ainvoke(state)
+
+    text = "".join([c async for c in result["plan"].text])
+    assert "解析确认" in text
+
+
+async def test_graph_optimize_resume_produces_proposal_block():
+    """有 ACTIVE 版本：生成提案 → 校验通过 → 落库 → ResumeOptimizationBlock。"""
+    deps = _optimization_deps(_optimization_transport(), _VALID_PATCH_PAYLOAD)
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None, message="优化简历", attachments=[],
+        action={"type": "ACTION_SELECTED", "action": "OPTIMIZE_RESUME",
+                "payload": {"resumeId": 1}},
+    )
+    result = await graph.ainvoke(state)
+
+    plan = result["plan"]
+    block = next(
+        (b for b in plan.blocks if b.type == "resume_optimization"), None
+    )
+    assert block is not None, "应产出优化提案块"
+    assert block.proposalId == 77
+    assert len(block.patches) == 1
+    assert block.patches[0].type == "REPLACE"
+    assert block.patches[0].oldValue == "负责后端开发工作"
+
+
+async def test_graph_optimize_resume_rejects_fabricated_numbers():
+    """真实性双保险：newValue 引入原文没有的数字被校验器剔除。"""
+    fabricated = {
+        "summary": "量化项目成果",
+        "patches": [
+            {
+                "id": "patch_bad",
+                "type": "REPLACE",
+                "path": "projects[0].bullets[0]",
+                "oldValue": "负责后端开发工作",
+                "newValue": "负责后端开发，QPS 提升 5 倍，响应时间从 2s 降至 200ms",
+                "reason": "编造量化数据",
+            },
+            {
+                "id": "patch_ok",
+                "type": "REPLACE",
+                "path": "projects[0].bullets[0]",
+                "oldValue": "负责后端开发工作",
+                "newValue": "主导后端开发工作",
+                "reason": "动词开头",
+            },
+        ],
+    }
+    deps = _optimization_deps(_optimization_transport(), fabricated)
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None, message="优化简历", attachments=[],
+        action={"type": "ACTION_SELECTED", "action": "OPTIMIZE_RESUME",
+                "payload": {"resumeId": 1}},
+    )
+    result = await graph.ainvoke(state)
+
+    block = next(
+        b for b in result["plan"].blocks if b.type == "resume_optimization"
+    )
+    # 编造数字的 patch 被剔除，只剩合规建议；剔除事实如实告知
+    assert [p.id for p in block.patches] == ["patch_ok"]
+    assert block.rejectedNote and "1" in block.rejectedNote
+
+
+async def test_patch_validator_rejects_reorder_and_bad_path():
+    """校验器单测：REORDER 拒绝、非法 path 拒绝、缺 oldValue 拒绝。"""
+    from career_copilot.agent.nodes.patch_validator import validate_patches
+    from career_copilot.schemas.resume_patch import ResumePatch
+
+    def rp(pid, ptype, path, old=None, new=None):
+        return ResumePatch(id=pid, type=ptype, path=path, oldValue=old, newValue=new, reason="r")
+
+    patches = [
+        rp("a", "REORDER", "skills"),
+        rp("b", "REPLACE", "unknown[0]", old="x", new="y"),
+        rp("c", "DELETE", "skills[0]"),
+        rp("d", "REPLACE", "skills[0].content", old="熟悉 Java", new="精通 Java 与 Spring 生态"),
+    ]
+    result = validate_patches(patches, "原文：熟悉 Java")
+
+    rejected_ids = {patches[i].id for i, _ in result.rejected}
+    # d 的 newValue 无新增数字（Java/Spring 原文已有）→ 数字校验放行
+    assert rejected_ids == {"a", "b", "c"}, "REORDER/非法path/缺oldValue 被拒，合规改写放行"
+
+    ok = validate_patches(
+        [ResumePatch(id="e", type="REPLACE", path="skills[0].content",
+                     oldValue="熟悉 Java", newValue="熟练掌握 Java", reason="r")],
+        "原文：熟悉 Java",
+    )
+    assert not ok.has_rejection
+
+
+# ===== APPLY_RESUME_PATCHES action（P2-1c） =====
+
+
+async def test_graph_apply_patches_action_navigates_to_detail():
+    """用户勾选确认 → APPLY_RESUME_PATCHES → 应用成功 → NavigationBlock 跳简历详情。"""
+    def apply_transport(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.startswith("/api/agent/conversations"):
+            return httpx.Response(200, json={"code": 200, "data": None, "message": "success"})
+        tool = path.rsplit("/", 1)[-1]
+        data = {
+            "apply_resume_patches": {
+                "proposalId": 77, "resumeId": 1, "versionId": 6, "version": 2,
+            },
+        }.get(tool, [])
+        return httpx.Response(200, json={"code": 200, "data": data, "message": "success"})
+
+    deps = make_deps(IntentClassification(intent=Intent.GENERAL_CHAT), apply_transport)[0]
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None, message="应用修改", attachments=[],
+        action={"type": "ACTION_SELECTED", "action": "APPLY_RESUME_PATCHES",
+                "payload": {"proposalId": 77, "patchIds": ["patch_1"]}},
+    )
+    result = await graph.ainvoke(state)
+
+    plan = result["plan"]
+    nav = next((b for b in plan.blocks if b.type == "navigation"), None)
+    assert nav is not None, "应用成功应产出 NavigationBlock"
+    assert nav.route == "RESUME_DETAIL"
+    assert nav.params["resumeId"] == 1
+    text = "".join([c async for c in plan.text])
+    assert "V2" in text
+
+
+async def test_graph_apply_patches_action_reports_conflict():
+    """内容漂移（PATCH_CONFLICT）时如实告知并引导重新生成。"""
+    def conflict_transport(request: httpx.Request) -> httpx.Response:
+        tool = request.url.path.rsplit("/", 1)[-1]
+        if tool == "apply_resume_patches":
+            return httpx.Response(200, json={
+                "code": 2013, "message": "简历内容已变化（projects[0].bullets[0] 与提案时不一致）",
+                "data": None, "success": False})
+        return httpx.Response(200, json={"code": 200, "data": [], "message": "success"})
+
+    deps = make_deps(IntentClassification(intent=Intent.GENERAL_CHAT), conflict_transport)[0]
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None, message="应用修改", attachments=[],
+        action={"type": "ACTION_SELECTED", "action": "APPLY_RESUME_PATCHES",
+                "payload": {"proposalId": 77}},
+    )
+    result = await graph.ainvoke(state)
+
+    text = "".join([c async for c in result["plan"].text])
+    assert "应用修改失败" in text
+    assert "内容已变化" in text

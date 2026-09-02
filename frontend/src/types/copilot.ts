@@ -9,6 +9,8 @@ export type AgentBlockType =
   | 'resume_summary'
   | 'interview_summary'
   | 'knowledge_citations'
+  | 'skill_profile'
+  | 'resume_optimization'
   | 'interview_proposal';
 
 export interface TextBlock {
@@ -95,6 +97,46 @@ export interface KnowledgeCitationsBlock {
   }>;
 }
 
+/** 技能证据：一次可追溯的评分来源（如某场面试的某道题） */
+export interface SkillEvidence {
+  sourceType?: 'RESUME' | 'INTERVIEW_SESSION' | 'INTERVIEW_TURN' | null;
+  sourceId?: string | null;
+  score?: number | null;
+  occurredAt?: string | null;
+}
+
+/** 技能画像块（P3-2）：Evidence-driven 聚合分 + 证据明细，数值由 Java 聚合器产出 */
+export interface SkillProfileBlock {
+  type: 'skill_profile';
+  skills: Array<{
+    skill?: string | null;
+    score?: number | null;
+    evidenceCount?: number | null;
+    evidences?: SkillEvidence[] | null;
+  }>;
+}
+
+/** 单条简历优化建议（P2-1）：JSON-path 定位的 Diff */
+export interface ResumeOptimizationPatch {
+  id: string;
+  type: 'REPLACE' | 'ADD' | 'DELETE';
+  path: string;
+  oldValue?: string | null;
+  newValue?: string | null;
+  reason: string;
+}
+
+/** 简历优化提案块（P2-3）：Diff 卡片 + 勾选应用（用户确认后才执行写操作） */
+export interface ResumeOptimizationBlock {
+  type: 'resume_optimization';
+  proposalId: number;
+  resumeId: number;
+  versionId: number;
+  summary: string;
+  patches: ResumeOptimizationPatch[];
+  rejectedNote?: string | null;
+}
+
 export type AgentBlock =
   | TextBlock
   | ActionBlock
@@ -103,6 +145,8 @@ export type AgentBlock =
   | ResumeSummaryBlock
   | InterviewSummaryBlock
   | KnowledgeCitationsBlock
+  | SkillProfileBlock
+  | ResumeOptimizationBlock
   | InterviewProposalBlock;
 
 export type MessageStatus = 'streaming' | 'done' | 'error';
@@ -149,14 +193,19 @@ export interface ConversationDetail {
   messages: ConversationMessage[];
   createdAt: string;
   updatedAt: string;
+  activeResumeId?: number | null;
+  /** 会话绑定的活动 JD（P2-5 Conversation Memory） */
+  activeJobId?: number | null;
 }
 
 // 结构化资源引用（随消息附带，文件二进制不经 Agent，只传资源 id）
 export interface AttachmentRef {
-  kind: 'resume';
-  resumeId: number;
+  kind: 'resume' | 'job_description';
+  resumeId?: number;
+  /** JD 资源 id（kind=job_description 时必填，Java job_descriptions 主键） */
+  jobId?: number;
   filename?: string;
-  /** Java 判定内容重复、未新增记录时置 true（复用已有简历） */
+  /** Java 判定内容重复、未新增记录时置 true（复用已有简历；JD 不去重） */
   duplicate?: boolean;
 }
 

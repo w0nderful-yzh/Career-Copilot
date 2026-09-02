@@ -1,0 +1,99 @@
+{
+  "basicInfo": {
+    "name": "杨子豪",
+    "phone": "(+86) 18257822524",
+    "email": "3353291703@qq.com",
+    "location": "",
+    "jobIntention": "Java 后端开发实习生"
+  },
+  "education": [
+    {
+      "school": "杭州电子科技大学",
+      "major": "计算机科学与技术",
+      "degree": "本科",
+      "startDate": "2024/09",
+      "endDate": "2028/07",
+      "description": "相关课程：Java 程序设计、数据结构与算法、数据库系统、计算机网络、操作系统、软件工程。"
+    }
+  ],
+  "experience": [],
+  "projects": [
+    {
+      "name": "CampusHub 校园社区与活动秒杀平台",
+      "role": "后端架构与核心开发",
+      "startDate": "2026/01",
+      "endDate": "2026/03",
+      "techStack": "Spring Boot、Spring Security、JWT、MyBatis-Plus、MySQL、Redis、RabbitMQ、Elasticsearch、Lua、WebSocket、Docker、Nginx",
+      "bullets": [
+        "项目描述：面向校园社区与限量活动场景的一体化后端项目，社区侧提供帖子互动、关注 Feed、全文检索和消息通知；活动侧将资格校验、库存预扣与报名落库拆分，降低瞬时高峰对 MySQL 的直接冲击。",
+        "认证与上下文：基于 Spring Security + JWT 完成认证授权，使用 Redis 保存登录态；通过 ThreadLocal 传递用户上下文，并在请求结束后清理，避免线程复用导致数据串扰。",
+        "全文检索与降级：使用 Elasticsearch 建立帖子索引，支持多字段检索、关键词高亮、分类筛选、热度 / 时间排序和分页；搜索不可用时降级为 MySQL LIKE 查询。",
+        "秒杀异步链路：使用 Lua 将库存、资格与一人一单校验合并为单次原子执行，校验后写入 RabbitMQ 异步落库；结合 Publisher Confirm、消费 ACK、失败重试和死信补偿，降低超卖与重复消费风险。",
+        "Feed 与消息：使用 Redis ZSet 实现关注 Feed、热榜与 maxScore + offset 滚动分页，处理同分值场景下的重复 / 漏读；通过 WebSocket 按用户私有队列推送互动消息。"
+      ]
+    },
+    {
+      "name": "CareerAI Agent 驱动求职训练平台",
+      "role": "Java 后端与 Agent 核心开发",
+      "startDate": "2026/04",
+      "endDate": "至今",
+      "techStack": "Java 21、Spring Boot、Spring AI、Gateway、OpenFeign、JPA、PostgreSQL、Redis、RabbitMQ、Python 3.12、FastAPI、LangChain、LangGraph、React",
+      "bullets": [
+        "项目描述：面向实习与校招场景的 Agent 驱动求职训练平台，围绕“简历-JD-准备规划”和“自适应模拟面试”形成闭环；采用 Java 业务底座 + Python Agent 决策层，使 Agent 能基于真实业务上下文规划并通过受控 Tool 执行任务。",
+        "Java / Python 边界：Python 通过 LangChain Structured Tools 调用简历、岗位匹配、准备计划和面试等业务能力，不直连业务库；Java 统一完成用户隔离、参数校验、事务控制和幂等写入，限制模型越权与重复执行。",
+        "规划与恢复：基于 LangGraph 编排“读取简历 / JD → 启动异步匹配 → 等待与恢复 → 分析证据 → 选择策略 → 创建计划”流程；RabbitMQ 执行匹配任务，Checkpoint 与稳定 Idempotency-Key 保障 Run 恢复和重复调用安全。",
+        "自适应面试：每轮结合简历、JD、当前回答、历史题目和长期画像，自主决定追问、换题、调整难度或结束；Java 校验题型、难度、父题和真实 JD 要求编号后生成最终题面，并通过 SSE 展示执行阶段。",
+        "长期能力画像：将有效回答沉淀为不可变能力观察，并投影为 CANDIDATE / STABLE / CONFLICT 状态，保存得分、置信度、趋势与证据片段；下一场自动复测薄弱、下降或冲突能力，并对稳定优势提升考察难度。"
+      ]
+    },
+    {
+      "name": "Special Chars Stress *Test_* Project $100 QPS",
+      "role": "owner_repair",
+      "startDate": "2025/01",
+      "endDate": "2025/06",
+      "techStack": "Java* Markdown_ LaTeX$ C# F#",
+      "bullets": [
+        "量化指标 *加粗* _下划线_ $美元$ 与 #井号 1000QPS 压测，验证特殊字符按字面渲染不报错。",
+        "路径转义 C:\\Users\\test 与通配符 *.log 处理；正则 ^[a-z]+$ 匹配规则说明。"
+      ]
+    }
+  ],
+  "skills": [
+    {
+      "category": "Java 与框架",
+      "content": "熟悉集合、异常、反射、JUC、线程池、ThreadLocal、CompletableFuture；熟悉 Spring Boot、Spring Cloud、Spring MVC、Spring Security、JPA / MyBatis-Plus，理解 IOC、AOP、事务与全局异常。"
+    },
+    {
+      "category": "数据与中间件",
+      "content": "熟悉 MySQL / PostgreSQL 表设计、索引、事务与 MVCC；熟悉 Redis 缓存、分布式锁、ZSet，RabbitMQ ACK / Confirm / 重试 / 死信，以及 Elasticsearch Mapping、Bool 查询与高亮。"
+    },
+    {
+      "category": "Agent 与 AI",
+      "content": "熟悉 Python、FastAPI、Pydantic、LangChain Structured Tools、LangGraph 状态机与 Checkpoint；掌握 Tool Calling、结构化输出、SSE / Token 流式响应与基础 RAG。"
+    },
+    {
+      "category": "工程能力",
+      "content": "熟悉 Git、Maven、uv、Docker、Linux、Nginx、JUnit / Pytest；了解 Gateway、OpenFeign、Nacos，能够进行接口联调、日志排查、测试验证与容器化部署。"
+    }
+  ],
+  "customSections": [
+    {
+      "title": "证书奖项",
+      "items": [
+        "CET-6｜LeetCode 100+"
+      ]
+    },
+    {
+      "title": "求职意向",
+      "items": [
+        "Java 后端开发实习生｜随时到岗｜可连续实习 6 个月以上"
+      ]
+    },
+    {
+      "title": "个人简介",
+      "items": [
+        "大二本科在读，具备 Java 后端与 Python Agent 协同开发经验。熟悉 Spring Boot、MySQL / PostgreSQL、Redis、RabbitMQ、Elasticsearch，能够完成认证、缓存、异步任务与检索链路；具备 LangChain / LangGraph 工程实践，能将模型决策编排为可恢复、可审计并由 Java 业务系统受控执行的流程。"
+      ]
+    }
+  ]
+}

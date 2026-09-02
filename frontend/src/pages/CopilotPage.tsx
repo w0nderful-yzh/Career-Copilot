@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
-import { conversationApi, resumeUploadApi, streamChat } from '../api/agentChat';
-import Composer from '../components/copilot/Composer';
+import { conversationApi, jobUploadApi, resumeUploadApi, streamChat } from '../api/agentChat';
+import Composer, { type AttachmentKind } from '../components/copilot/Composer';
 import ContextPanel from '../components/copilot/ContextPanel';
 import MessageList from '../components/copilot/MessageList';
 import type { CopilotOutletContext } from '../components/Layout';
@@ -58,6 +58,8 @@ export default function CopilotPage() {
 
   const [messages, setMessages] = useState<CopilotMessage[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  // 会话绑定的活动 JD（Conversation Memory，P2-5；侧栏活跃资源展示用）
+  const [boundJobId, setBoundJobId] = useState<number | null>(null);
   const [streaming, setStreaming] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   // 新建会话首次触发历史加载时跳过（保留刚追加的流式消息，避免被空历史覆盖）
@@ -90,6 +92,7 @@ export default function CopilotPage() {
         const detail = await conversationApi.getDetail(activeConversationId);
         if (cancelled) return;
         setMessages(toCopilotMessages(detail));
+        setBoundJobId(detail.activeJobId ?? null);
       } catch (err) {
         console.error('Failed to load conversation:', err);
       } finally {
@@ -282,57 +285,68 @@ export default function CopilotPage() {
   );
 
   const send = useCallback(
-    async (text: string, attachment?: File) => {
-      // 带附件时保留用户输入的文字，并把附件提示追加在其后（气泡与持久化历史保持一致）
-      const userContent = attachment
-        ? (text ? `${text}\n[简历附件：${attachment.name}]` : `上传了简历附件：${attachment.name}`)
-        : text;
-
+    async (text: string, attachment?: File, attachmentKind: AttachmentKind = 'resume') => {
       if (!attachment) {
-        await runTurn({ message: userContent, userContent });
+        await runTurn({ message: text, userContent: text });
         return;
       }
+
+      // 带附件时保留用户输入的文字，并把附件提示追加在其后（气泡与持久化历史保持一致）
+      const attachmentLabel = attachmentKind === 'job_description' ? 'JD 附件' : '简历附件';
+      const userContent = text
+        ? `${text}\n[${attachmentLabel}：${attachment.name}]`
+        : attachmentKind === 'job_description'
+          ? `上传了岗位 JD：${attachment.name}`
+          : `上传了简历附件：${attachment.name}`;
 
       // 乐观 UI：上传前先插入用户气泡与助手占位（活动行显示上传进度）
       const assistantId = nextId();
       setMessages((prev) => [
         ...prev,
         { id: nextId(), role: 'user', content: userContent, blocks: [], status: 'done' },
-        { id: assistantId, role: 'assistant', content: '', blocks: [], status: 'streaming', toolTrace: [{ label: '正在上传并解析简历…', pending: true }] },
+        { id: assistantId, role: 'assistant', content: '', blocks: [], status: 'streaming', toolTrace: [{ label: attachmentKind === 'job_description' ? '正在上传并解析 JD…' : '正在上传并解析简历…', pending: true }] },
       ]);
       setStreaming(true);
 
-      // 上传到 Java 简历库（文件不经 Agent，只传资源 id；分析异步进行）
+      // 上传到对应库（文件不经 Agent，只传资源 id）
       let attachments: AttachmentRef[] = [];
       try {
-        const result = await resumeUploadApi.uploadAndAnalyze(attachment);
-        const resumeId = result.storage?.resumeId;
-        if (!resumeId) {
-          throw new Error('上传成功但未返回简历 ID');
+        if (attachmentKind === 'job_description') {
+          const result = await jobUploadApi.upload(attachment);
+          attachments = [{ kind: 'job_description', jobId: result.id, filename: attachment.name }];
+        } else {
+          const result = await resumeUploadApi.uploadAndAnalyze(attachment);
+          const resumeId = result.storage?.resumeId;
+          if (!resumeId) {
+            throw new Error('上传成功但未返回简历 ID');
+          }
+          attachments = [{
+            kind: 'resume',
+            resumeId,
+            filename: attachment.name,
+            duplicate: result.duplicate ?? false,
+          }];
         }
-        attachments = [{
-          kind: 'resume',
-          resumeId,
-          filename: attachment.name,
-          duplicate: result.duplicate ?? false,
-        }];
       } catch (err) {
-        console.error('Failed to upload resume:', err);
+        console.error('Failed to upload attachment:', err);
         updateMessage(assistantId, (m) => ({
           ...m,
           status: 'error',
           error: err instanceof Error && err.message !== '请求失败'
-            ? `简历上传失败：${err.message}`
-            : '简历上传失败，请重试',
+            ? `附件上传失败：${err.message}`
+            : '附件上传失败，请重试',
           toolTrace: [],
         }));
         setStreaming(false);
         return;
       }
 
-      // 复用已插入的气泡继续本轮对话（SSE 分析在 Copilot 内完成）
+      // 复用已插入的气泡继续本轮对话（SSE 在 Copilot 内完成）
+      const fallbackMessage = attachmentKind === 'job_description'
+        ? '请帮我看看这份 JD'
+        : '请帮我分析这份简历';
       await runTurn({
-        message: text || '请帮我分析这份简历',
+        message: text || fallbackMessage,
         userContent,
         attachments,
         existingAssistantId: assistantId,
@@ -400,7 +414,7 @@ export default function CopilotPage() {
           <Composer streaming={streaming} onSend={send} onCancel={cancel} />
         </div>
       </section>
-      <ContextPanel messages={messages} />
+      <ContextPanel messages={messages} activeJobId={boundJobId} />
     </div>
   );
 }

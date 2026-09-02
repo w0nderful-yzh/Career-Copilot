@@ -13,6 +13,13 @@ from career_copilot.api.chat import router as chat_router
 from career_copilot.api.chat import sync_agent_llm_config
 from career_copilot.config import settings
 
+# 应用日志落盘：默认只输出到 stderr（uvicorn 接管 stdout），INFO 及以上
+# 使节点异常 / LLM 超时等栈可被日志直接排查（此前只有 uvicorn 访问日志）
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+
 logger = logging.getLogger(__name__)
 
 

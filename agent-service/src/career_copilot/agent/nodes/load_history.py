@@ -36,8 +36,9 @@ async def load_history(state: CareerAgentState, deps: GraphDeps) -> dict[str, An
     messages = context.get("messages") or []
     summary = context.get("summary")
     total_count = int(context.get("totalCount") or 0)
-    # 会话绑定的活动简历（Conversation Memory，无附件轮次恢复目标用）
+    # 会话绑定的活动简历/活动 JD（Conversation Memory，无附件轮次恢复目标用）
     bound_resume_id = context.get("activeResumeId")
+    bound_job_id = context.get("activeJobId")
 
     # 注入窗口内的最近消息（单条截断，Token 纪律）
     max_chars = settings.history_max_message_chars
@@ -66,4 +67,5 @@ async def load_history(state: CareerAgentState, deps: GraphDeps) -> dict[str, An
         "history": history,
         "history_summary": summary,
         "bound_resume_id": int(bound_resume_id) if bound_resume_id is not None else None,
+        "bound_job_id": int(bound_job_id) if bound_job_id is not None else None,
     }

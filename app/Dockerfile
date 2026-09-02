@@ -44,6 +44,15 @@ RUN ./gradlew :app:bootJar --no-daemon -x test
 FROM eclipse-temurin:25-jre
 WORKDIR /app
 
+# Typst 二进制（P2-4 简历 PDF 导出）：官方静态二进制，随镜像分发。
+# 构建参数可固定版本；网络受限环境可替换为镜像源地址。
+ARG TYPST_VERSION=0.15.1
+ADD https://github.com/typst/typst/releases/download/v${TYPST_VERSION}/typst-x86_64-unknown-linux-musl.tar.xz /tmp/typst.tar.xz
+RUN tar -xJf /tmp/typst.tar.xz -C /usr/local/bin --strip-components=1 --wildcards "*/typst" \
+    && chmod +x /usr/local/bin/typst \
+    && rm -f /tmp/typst.tar.xz \
+    && typst --version
+
 # 从第一阶段 (builder) 中复制生成的 JAR 文件到当前镜像
 # 只复制构建产物，不复制源代码和 Gradle 缓存，保持镜像干净
 COPY --from=builder /workspace/app/build/libs/*.jar app.jar

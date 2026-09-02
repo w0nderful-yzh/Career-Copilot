@@ -20,11 +20,14 @@ from career_copilot.agent.nodes.execute_action import execute_action
 from career_copilot.agent.nodes.interview_proposal import interview_proposal
 from career_copilot.agent.nodes.knowledge_tool import knowledge_tool
 from career_copilot.agent.nodes.load_history import load_history
+from career_copilot.agent.nodes.load_snapshot import load_snapshot
 from career_copilot.agent.nodes.navigation_action import navigation_action
 from career_copilot.agent.nodes.normalize_input import normalize_input
+from career_copilot.agent.nodes.profile_query import profile_query
 from career_copilot.agent.nodes.resolve_context import resolve_context
+from career_copilot.agent.nodes.resume_optimization import resume_optimization
 from career_copilot.agent.nodes.route_intent import ACTION_INTENT, route_intent
-from career_copilot.agent.nodes.stub import goal_execution, resume_optimization
+from career_copilot.agent.nodes.stub import goal_execution
 from career_copilot.agent.router import Intent
 from career_copilot.agent.state import CareerAgentState
 
@@ -34,7 +37,7 @@ INTENT_BRANCHES: dict[Any, str] = {
     Intent.GENERAL_CHAT.value: "direct_answer",
     Intent.RESUME_QUERY.value: "business_tools",
     Intent.INTERVIEW_REVIEW.value: "business_tools",
-    Intent.PROFILE_QUERY.value: "business_tools",
+    Intent.PROFILE_QUERY.value: "profile_query",
     Intent.PREPARATION_QUERY.value: "business_tools",
     Intent.KNOWLEDGE_QA.value: "knowledge_tool",
     Intent.NAVIGATION.value: "navigation_action",
@@ -66,12 +69,14 @@ def build_graph(deps: GraphDeps, checkpointer: Any = None) -> Any:
     # 前置管线（确定性）
     graph.add_node("normalize_input", normalize_input)
     graph.add_node("load_history", partial(load_history, deps=deps))
+    graph.add_node("load_snapshot", partial(load_snapshot, deps=deps))
     graph.add_node("resolve_context", resolve_context)
     graph.add_node("route_intent", partial(route_intent, deps=deps))
 
     # 意图分支
     graph.add_node("direct_answer", partial(direct_answer, deps=deps))
     graph.add_node("business_tools", partial(business_tools, deps=deps))
+    graph.add_node("profile_query", partial(profile_query, deps=deps))
     graph.add_node("knowledge_tool", partial(knowledge_tool, deps=deps))
     graph.add_node("navigation_action", partial(navigation_action, deps=deps))
     graph.add_node("attachment_flow", partial(attachment_flow, deps=deps))
@@ -85,7 +90,8 @@ def build_graph(deps: GraphDeps, checkpointer: Any = None) -> Any:
 
     graph.add_edge(START, "normalize_input")
     graph.add_edge("normalize_input", "load_history")
-    graph.add_edge("load_history", "resolve_context")
+    graph.add_edge("load_history", "load_snapshot")
+    graph.add_edge("load_snapshot", "resolve_context")
     graph.add_edge("resolve_context", "route_intent")
 
     graph.add_conditional_edges("route_intent", route_by_intent, INTENT_BRANCHES)

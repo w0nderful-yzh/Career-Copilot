@@ -10,7 +10,9 @@ from career_copilot.tools import format_history
 
 async def direct_answer(state: CareerAgentState, deps: GraphDeps) -> dict[str, Any]:
     history = format_history(
-        state.get("history") or [], state.get("history_summary")
+        state.get("history") or [],
+        state.get("history_summary"),
+        snapshot=state.get("user_snapshot"),
     )
     plan = StreamPlan(
         text=deps.answerer.answer_stream(

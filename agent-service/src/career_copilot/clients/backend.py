@@ -101,6 +101,66 @@ class BackendClient:
         data = await self.call_tool("get_interview_history")
         return data if isinstance(data, list) else []
 
+    async def get_skill_profile(self) -> dict[str, Any]:
+        """用户技能画像：各技能聚合分 + 可追溯证据（来自哪些面试、每题得分）。
+
+        无任何画像数据时返回 {"skills": []}，由上层引导用户先参加面试。
+        """
+        data = await self.call_tool("get_skill_profile")
+        return data if isinstance(data, dict) else {"skills": []}
+
+    async def get_resume_version(
+        self, resume_id: int, version: int | None = None
+    ) -> dict[str, Any]:
+        """简历结构化版本（简历优化取数入口）。
+
+        默认最新 ACTIVE 版本；简历无已确认版本时抛
+        BusinessToolError（RESUME_VERSION_NOT_READY）。
+        """
+        arguments: dict[str, Any] = {"resumeId": resume_id}
+        if version is not None:
+            arguments["version"] = version
+        data = await self.call_tool("get_resume_version", arguments)
+        return data if isinstance(data, dict) else {}
+
+    async def create_optimization_proposal(
+        self,
+        resume_id: int,
+        source_version_id: int,
+        optimization_type: str,
+        summary: str,
+        patches: list[dict[str, Any]],
+    ) -> int:
+        """创建优化提案（HITL：提案先落 Java 审计，返回提案 id）。
+
+        用户在前端确认后经 apply_resume_patches Tool 应用。
+        """
+        data = await self._post_plain(
+            "/internal/agent/resume-optimization/proposals",
+            {
+                "resumeId": resume_id,
+                "sourceVersionId": source_version_id,
+                "optimizationType": optimization_type,
+                "summary": summary,
+                "patches": patches,
+            },
+        )
+        return int(data)
+
+    async def apply_resume_patches(
+        self, proposal_id: int, patch_ids: list[str] | None = None
+    ) -> dict[str, Any]:
+        """应用用户确认的优化建议（CONFIRM_WRITE Tool）。
+
+        Java 侧逐条 JSON path 应用（oldValue 一致性校验）并生成新版本
+        （AI_OPTIMIZE，原版本不动）；内容漂移时抛 PATCH_CONFLICT。
+        """
+        arguments: dict[str, Any] = {"proposalId": proposal_id}
+        if patch_ids:
+            arguments["patchIds"] = patch_ids
+        data = await self.call_tool("apply_resume_patches", arguments)
+        return data if isinstance(data, dict) else {}
+
     async def list_skills(self) -> list[dict[str, Any]]:
         """可用的模拟面试技能方向列表（含分类）。"""
         data = await self.call_tool("list_skills")
@@ -256,6 +316,24 @@ class BackendClient:
         except httpx.HTTPError as exc:
             raise BusinessToolError(500, f"后端服务不可达: {exc}", retryable=True) from exc
         self._unwrap_result(response)
+
+    async def bind_active_job(
+        self, conversation_id: int, job_id: int | None
+    ) -> None:
+        """绑定会话活动 JD（P2-5，对称 bind_active_job；jobId 为 None 表示解绑）。"""
+        try:
+            response = await self._client.put(
+                f"/api/agent/conversations/{conversation_id}/active-job",
+                json={"jobId": job_id},
+            )
+        except httpx.HTTPError as exc:
+            raise BusinessToolError(500, f"后端服务不可达: {exc}", retryable=True) from exc
+        self._unwrap_result(response)
+
+    async def get_job(self, job_id: int) -> dict[str, Any]:
+        """JD 完整内容与元信息（get_job READ Tool；JD_TARGETED / JD 匹配取数入口）。"""
+        data = await self.call_tool("get_job", {"jobId": job_id})
+        return data if isinstance(data, dict) else {}
 
     async def _post_plain(self, path: str, payload: dict[str, Any]) -> Any:
         """通用 POST：请求 Java 非 Tool 端点并解包 Result。"""

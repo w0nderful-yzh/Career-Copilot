@@ -5,8 +5,9 @@ import {historyApi, InterviewDetail, ResumeDetail} from '../api/history';
 import AnalysisPanel from '../components/AnalysisPanel';
 import InterviewPanel from '../components/InterviewPanel';
 import InterviewDetailPanel from '../components/InterviewDetailPanel';
+import ResumeVersionPanel from '../components/ResumeVersionPanel';
 import {formatDateOnly} from '../utils/date';
-import {CheckSquare, ChevronLeft, Clock, Download, MessageSquare, Mic} from 'lucide-react';
+import {CheckSquare, ChevronLeft, Clock, Download, GitBranch, MessageSquare, Mic} from 'lucide-react';
 
 interface ResumeDetailPageProps {
   resumeId: number;
@@ -14,7 +15,7 @@ interface ResumeDetailPageProps {
   onStartInterview: (resumeId: number) => void;
 }
 
-type TabType = 'analysis' | 'interview';
+type TabType = 'analysis' | 'interview' | 'versions';
 type DetailViewType = 'list' | 'interviewDetail';
 
 export default function ResumeDetailPage({ resumeId, onBack, onStartInterview }: ResumeDetailPageProps) {
@@ -176,8 +177,8 @@ export default function ResumeDetailPage({ resumeId, onBack, onStartInterview }:
   };
 
   const handleTabChange = (tab: TabType) => {
-    const newPage = tab === 'analysis' ? 0 : 1;
-    setPage([newPage, newPage > page ? 1 : -1]);
+    const pageIndex = { analysis: 0, interview: 1, versions: 2 }[tab];
+    setPage([pageIndex, pageIndex > page ? 1 : -1]);
     setActiveTab(tab);
     setDetailView('list');
     setSelectedInterview(null);
@@ -223,6 +224,7 @@ export default function ResumeDetailPage({ resumeId, onBack, onStartInterview }:
   const tabs = [
     { id: 'analysis' as const, label: '简历分析', icon: CheckSquare },
     { id: 'interview' as const, label: '面试记录', icon: MessageSquare, count: resume.interviews?.length || 0 },
+    { id: 'versions' as const, label: '简历版本', icon: GitBranch },
   ];
 
   return (
@@ -340,6 +342,8 @@ export default function ResumeDetailPage({ resumeId, onBack, onStartInterview }:
                   onReanalyze={handleReanalyze}
                   reanalyzing={reanalyzing}
                 />
+              ) : activeTab === 'versions' ? (
+                <ResumeVersionPanel resumeId={resumeId} />
               ) : (
                   <InterviewPanel
                       interviews={resume.interviews || []}

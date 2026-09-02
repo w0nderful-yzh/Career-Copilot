@@ -19,13 +19,19 @@ logger = logging.getLogger(__name__)
 # 工具 key → 面向用户的中文描述（前端直接展示）
 TOOL_LABELS_ZH: dict[str, str] = {
     "load_history": "回忆对话上下文",
+    "user_snapshot": "了解你的近期表现",
     "resume_query": "查询简历库",
     "resume_insight": "读取简历分析",
     "interview_review": "读取面试记录",
+    "profile_query": "读取技能画像",
     "knowledge_search": "检索知识库",
     "interview_proposal": "推导面试推荐",
     "list_skills": "读取面试方向",
     "create_interview": "创建面试会话",
+    "resume_version": "读取简历结构化版本",
+    "generate_patch": "生成简历优化建议",
+    "save_proposal": "保存优化提案",
+    "apply_patches": "应用简历修改",
 }
 
 

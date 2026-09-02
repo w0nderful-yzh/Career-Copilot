@@ -14,12 +14,18 @@ from career_copilot.schemas.action import ActionSelected
 class AttachmentRef(BaseModel):
     """用户随消息附带的结构化资源引用（文件二进制不经 Agent，只传资源 id）。"""
 
-    kind: Literal["resume"] = "resume"
-    resume_id: int = Field(description="简历资源 id（Java resume 主键）")
+    kind: Literal["resume", "job_description"] = "resume"
+    resume_id: int | None = Field(
+        default=None, description="简历资源 id（Java resume 主键；kind=resume 时必填）"
+    )
+    job_id: int | None = Field(
+        default=None,
+        description="JD 资源 id（Java job_descriptions 主键；kind=job_description 时必填）",
+    )
     filename: str | None = Field(default=None, description="原始文件名")
     duplicate: bool = Field(
         default=False,
-        description="Java 判定为内容重复、未新增记录时置 true（复用已有简历）",
+        description="Java 判定为内容重复、未新增记录时置 true（复用已有简历；JD 不去重）",
     )
 
 
@@ -99,6 +105,62 @@ class KnowledgeCitationsBlock(BaseModel):
     )
 
 
+class SkillEvidenceItem(BaseModel):
+    """单条技能证据：一次可追溯的评分来源（如某场面试的某道题）。"""
+
+    sourceType: Literal["RESUME", "INTERVIEW_SESSION", "INTERVIEW_TURN"] = Field(
+        description="证据来源类型"
+    )
+    sourceId: str = Field(description="来源标识（面试轮次为 sessionId:questionIndex）")
+    score: int = Field(description="该证据的评分 (0-100)")
+    occurredAt: str | None = Field(default=None, description="证据发生时间")
+
+
+class SkillProfileBlock(BaseModel):
+    """技能画像卡片：Evidence-driven 聚合分 + 证据明细。
+
+    score 由 Java Profile Aggregator 按证据均值计算，LLM 不得改写数值，
+    只负责在自然语言中解读强弱项。
+    """
+
+    type: Literal["skill_profile"] = "skill_profile"
+    skills: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="技能列表：skill/score/evidenceCount/evidences（已裁剪字段）",
+    )
+
+
+class ResumeOptimizationPatch(BaseModel):
+    """单条简历优化建议（前端 Diff 卡片渲染）。"""
+
+    id: str = Field(description="patch id（勾选回传用）")
+    type: Literal["REPLACE", "ADD", "DELETE"] = Field(description="修改类型")
+    path: str = Field(description="JSON path")
+    oldValue: str | None = Field(default=None, description="原值")
+    newValue: str | None = Field(default=None, description="新值")
+    reason: str = Field(description="修改理由")
+
+
+class ResumeOptimizationBlock(BaseModel):
+    """简历优化提案块（P2-1）：Patch Diff 卡片 + 勾选应用（HITL 确认）。
+
+    用户勾选后前端回传 APPLY_RESUME_PATCHES action（只带 proposalId + patchIds），
+    由 apply_resume_patches CONFIRM_WRITE Tool 在 Java 侧应用并生成新版本。
+    """
+
+    type: Literal["resume_optimization"] = "resume_optimization"
+    proposalId: int = Field(description="提案 id（应用回传必带）")
+    resumeId: int = Field(description="目标简历 id")
+    versionId: int = Field(description="基于的版本 id")
+    summary: str = Field(default="", description="Agent 对本轮优化的总结")
+    patches: list[ResumeOptimizationPatch] = Field(
+        default_factory=list, description="修改建议列表（默认全部勾选）"
+    )
+    rejectedNote: str | None = Field(
+        default=None, description="被校验器剔除的建议说明（如实告知）"
+    )
+
+
 class ChoiceOption(BaseModel):
     """选择块中的单个选项：点击后回传 ActionSelected。"""
 
@@ -144,6 +206,8 @@ MessageBlock = Annotated[
     | ResumeSummaryBlock
     | InterviewSummaryBlock
     | KnowledgeCitationsBlock
+    | SkillProfileBlock
+    | ResumeOptimizationBlock
     | InterviewProposalBlock,
     Field(discriminator="type"),
 ]

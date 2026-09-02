@@ -18,7 +18,7 @@
 ./scripts/dev.sh logs [java|agent|web]
 ```
 
-⚠️ 已知问题：`restart` 在端口半开状态下 `wait_java` 的 curl 无超时会挂起；bash 会话被杀会连带杀掉后台子进程。建议修复脚本（curl 加 `-m`、启动用 `setsid`/`start_new_session` 脱离进程组）。
+⚠️ 已知问题：bash 会话被杀会连带杀掉后台子进程（建议启动用 `setsid`/`start_new_session` 脱离进程组）。`wait_java` 的 curl 无超时会挂起与「Agent 先于 Java 启动导致配置同步失败」两问题已修复（curl 加 `-m 2`；启动顺序改为 Java 就绪后再启动 Agent，2026-08-31）。
 
 ---
 
@@ -86,14 +86,21 @@
 > 目标：Evidence-driven Skill Profile，评分可追溯（Resume / Interview Session / Turn），并真正参与后续决策。
 > 数据现状就绪：简历分析（关键词/技能条目）与现有面试报告（categoryScores）已可聚合，P3 建成即有真实数据；画像必须在 P4 之前（自适应面试要消费画像定重点）。
 
-- [ ] **P3-1 Java SkillProfile + Evidence 存储**
+- [x] **P3-1 Java SkillProfile + Evidence 存储**
   - `skill_profiles`（skill / score / evidenceCount / updatedAt）与 `skill_evidence`（sourceType: RESUME/INTERVIEW_SESSION/INTERVIEW_TURN、sourceId、scoreContribution、timestamp）
   - Aggregator：简历分析关键词/技能条目 + 面试题评分为输入聚合出分；每次新 Evidence 触发增量更新
-- [ ] **P3-2 Profile 查询链路**
+  - 已落地：`modules/profile`（entity/repository/Aggregator/Extractor/Constants）+ `V20260829` 迁移；聚合 = 等权均值（可由 evidence 逐条还原），`(user_id, skill, source_type, source_id)` 唯一保证评估重放幂等；评估完成钩子（EvaluateStreamConsumer）+ 会话/简历删除级联清理已接；未作答题（「未考」）不计证据
+  - 一期证据输入只有面试逐题分（category=技能名）；RESUME 类型待 P2-0 结构化解析后接入，INTERVIEW_SESSION 为冗余证据暂不写入
+  - 已验证：13 个单测 + 真库集成测试（提取→聚合→级联全链路，.env 不可用时自动跳过）+ 全量 `:app:test` 通过
+- [x] **P3-2 Profile 查询链路**
   - `get_skill_profile` Agent Tool + `/internal/agent/profile/skills`
   - Graph：`load_profile` 节点（PROFILE_QUERY / 简历优化 / 面试创建前使用）；`SkillProfileBlock` 前端渲染
   - PROFILE_QUERY 占位分支替换为真实数据；Copilot 右侧画像面板从 P1-1 预览假数据切换为真实数据
-- [ ] **P3-4 用户快照**：新会话首轮注入 top 技能 + 最近面试概要（低成本跨会话感知，复用 get_skill_profile/get_interview_history）
+  - 已落地：Java `GET_SKILL_PROFILE` READ Tool（画像 + 证据明细一次取全，双层信封）；Python `profile_query` 节点（无数据时引导面试，SkillProfileBlock + `summarize_skill_profile` 上下文）；前端 `SkillProfileBlockView`（分数条 + 点击展开证据来源）+ 侧栏 `ProfileSection`（真实 API、loading/error/empty 态）
+  - 已实测（真实链路）：「我的技能水平怎么样」→ PROFILE_QUERY → 读取技能画像 → 画像卡（MySQL 83 绿条 / JVM 55 橙条）→ 点开 JVM 展开证据「模拟面试答题（sessionId:2）· 55 分」→ LLM 引用证据解读并如实说明样本量少；侧栏同步显示真实数据；空库时如实告知并引导面试
+- [x] **P3-4 用户快照**：新会话首轮注入 top 技能 + 最近面试概要（低成本跨会话感知，复用 get_skill_profile/get_interview_history）
+  - 已落地：`load_snapshot` 节点（仅首轮拉取，两 READ Tool 并行，失败静默降级）；快照经 `format_history(snapshot=...)` 注入 direct_answer / business_tools / profile_query 的回答上下文；PREPARATION_QUERY 占位分支升级为基于快照的真实回答（无快照时保持占位）
+  - 已实测（真实链路）：新会话「帮我看看最近复习得怎么样」→「了解你的近期表现」Tool 轨迹 → LLM 综合技能画像（MySQL 83 / JVM 55）+ 最近面试状态给出针对性复习建议，数值全部来自 Evidence；已有历史的会话不重复注入（Token 纪律）
 - [ ] P3-3 已拆分：「低分技能 → focus」并入 P4-3，「描述强度约束」并入 P2-1（没有这两个消费点，画像就没有意义）
 
 **验收**：能看到有数据来源的技能分列表；任一分数能点出其 Evidence 来源；「我 JVM 水平怎么样」返回真实 Evidence 驱动回答。
@@ -105,36 +112,51 @@
 > 目标：Resume（+可选 JD +画像）→ JSON-first Patch → Diff + Preview PDF → 确认 → 新版本 → 导出 PDF。不做整份重写，不覆盖原简历，不做 DOCX。
 > 详细需求：`Career-Copilot-Resume-Optimization-Requirement.md`；方案设计：`career_copilot_resume_optimization_design.md`（JSON/版本/Typst）+ `career_copilot_resume_optimization_interaction_design.md`（Preview/自评审/Clarification）
 
-- [ ] **P2-0 Java 简历结构化地基**（一切的前置：Preview 质量上限 = 解析质量）
+- [x] **P2-0 Java 简历结构化地基**（一切的前置：Preview 质量上限 = 解析质量）
   - `resume_versions` 表（id/resumeId/version/sourceVersionId/optimizationType/targetJobId/contentJson/source/sourceCreatedAt）
   - ResumeParse：现有 Tika raw_text → LLM 结构化解析（StructuredOutputInvoker + prompts/*.st）→ Resume JSON（basicInfo/education/experience/projects/skills + **customSections 兜底**，解析 prompt 明确要求非标准段完整保留，防静默丢内容）
   - 解析失败/字段缺失标 NEED_USER_INFO，不猜测；解析结果需用户确认（确认端点 + 状态流转）
   - `get_resume_version` READ Tool（Python 子图取数路径）
-- [ ] **P2-1 Python 优化子图**（替换现 `stub.resume_optimization` 占位）
+  - 已落地：`V20260830` 迁移（含 confirmation_status 状态机 PENDING_CONFIRMATION/ACTIVE/NEED_USER_INFO）；`ResumeContentJson` schema（record 树）；`ResumeParseStructuredService`（不猜测原则 + 缺失字段汇总，姓名缺失=NEED_USER_INFO）；`ResumeVersionService`（V1 幂等创建/确认流转/ACTIVE 取数）；触发挂 AnalyzeStreamConsumer（评分分析成功后，解析失败不影响评分）；端点：versions 列表/详情/confirm（可携修正内容）；`get_resume_version` READ Tool（默认最新 ACTIVE，可按版本号定位）
+  - 已验证：13 个新单测 + 全量 `:app:test` 通过；真实链路 reanalyze 触发分析→解析→V1 落库（真实 LLM）
+- [x] **P2-1 Python 优化子图**（替换现 `stub.resume_optimization` 占位）
   - 流程：resolve_resume（复用 §26）→ determine_mode（GENERAL/TARGET_DIRECTION/JD_TARGETED）→ load_resume_version → load_jd/load_profile（桩位可空：JD 待 P2-5、画像已在 P3 就绪）→ context_check（信息不足才 Clarification，ChoiceBlock 确定性问询，只问影响方向的问题）→ generate_patch（JSON-path 结构化输出）→ validate_patch（代码校验）→ 提案落库 → ResumeOptimizationBlock + WAITING_USER
   - ResumePatch schema：`{id, type: REPLACE|ADD|DELETE|REORDER, path: "projects[0].bullets[0]", oldValue, newValue, reason, status}`；REORDER schema 保留、校验器一期直接拒绝
   - **真实性双保险（原 P2-5 融入此处）**：Prompt 层禁止虚构清单（量化数字/QPS/经历/奖项不得新增）+ 代码校验器（newValue 引入原文没有的量化数字/技术栈 → 拒绝或标 NEED_USER_INFO），单测覆盖需求文档 Case 4
   - 自评审循环：`review_resume` 节点留位，循环次数走配置（默认最小/关闭）；真实性由代码校验器兜底，不依赖 LLM review；简历长度代码可算，review 只负责匹配度/表达/冗余
   - HITL：提案持久化到 Java（含全部 patch 与状态，审计追溯）+ ACTION_SELECTED 新回合应用（P1-1/P1-4 已验证的无状态模式），**不用 LangGraph interrupt**
   - **P3 接入点**：generate_patches 注入 Skill Profile 描述强度约束（JVM 低分 → 避免「深入掌握」）
-- [ ] **P2-2 Java Patch 应用 + 版本生成**（CONFIRM_WRITE）
+  - 已落地（含 P2-1a/c 的 Java 支撑）：`resume_optimization_proposals` 表（V20260831）+ ProposalService（创建/查询/PENDING→APPLIED·REJECTED 幂等流转）；Python `resume_optimization` 节点（resume_version → profile_query → generate_patch → patch_validator → save_proposal → ResumeOptimizationBlock + WAITING_USER）；`patch_validator`（REORDER 拒绝/path 白名单/oldValue 必填/newValue 新增数字拒绝——真实性代码兜底）；OPTIMIZE_RESUME action 接入子图；`apply_resume_patches` CONFIRM_WRITE Tool（第 12 个，JSON path 应用 + oldValue 一致性校验 + 新版本 AI_OPTIMIZE）+ APPLY_RESUME_PATCHES action → NavigationBlock；自评审循环未实现（一期默认最小，TodoList 决策如实记录——校验器已兜底真实性）
+  - 已实测（真实 LLM 链路）：「优化简历」→ 5 条建议落库（oldValue 精确摘录原文）→ apply patch_1 → V2 生成（改写生效、其余 bullet 未动）→ 提案 APPLIED；重复应用被拒（幂等保护）
+- [x] **P2-2 Java Patch 应用 + 版本生成**（CONFIRM_WRITE）
   - `apply_resume_patches` Agent Tool（挂现有 /api/agent/tools/ 统一入口，同 create_interview 模式）：按 proposalId 校验提案存在 → 逐条按 JSON path 应用（oldValue 一致性校验）→ 生成新版本（source=AI_OPTIMIZE），原版本不动
   - Patch 提案持久化（proposal + patches + 状态 PENDING/ACCEPTED/REJECTED/APPLIED）
   - APPLY_RESUME_PATCHES action（payload 只带 proposalId + patchIds）→ 应用成功 → NavigationBlock 跳版本详情
-- [ ] **P2-3 前端：解析确认 + Diff + Preview**
+  - 已落地（提前并入 P2-1a/c，依赖顺序：Python 子图需要提案落库）：`resume_optimization_proposals` 表 + ProposalService + apply_resume_patches Tool（JSON path 白名单 + oldValue 一致性，漂移→PATCH_CONFLICT）+ APPLY_RESUME_PATCHES action → NavigationBlock
+  - 与原计划的两处偏差：状态机三态 PENDING/APPLIED/REJECTED（无状态 HITL 下勾选发生在应用瞬间，不存在「已接受未应用」中间态，ACCEPTED 省略）；NavigationBlock 跳简历详情页（版本列表在其「简历版本」tab 内可见，不单开版本详情页）
+  - 已实测：apply patch_1 → V2 生成（AI_OPTIMIZE，未勾选 bullet 原样）→ 提案 APPLIED → 重复应用被拒（幂等）
+- [x] **P2-3 前端：解析确认 + Diff + Preview**
   - 解析结果确认/补录视图（解析错则全错，确认是必要门槛）
   - ResumeOptimizationBlock：Patch 卡片（oldValue/newValue/reason + [接受][忽略]）+ 全部操作 + [应用选中修改]（ACTION_SELECTED 回传）
   - **Preview PDF「勾选即重渲」**：勾选变化防抖调预览端点，`<iframe>` + blob URL 内嵌；桌面左 Diff 右预览分栏，移动端折叠；预览内容 = 已勾选 patch 的合成结果；附「排版不满意？原始上传件仍在你手里」退路说明
-- [ ] **P2-4 Typst 导出**（只做 PDF；渲染归 Java，Python/前端不参与排版）
+  - 已落地：`ResumeVersionPanel`（简历详情页第三个 tab：版本列表 + source/状态徽标 + 内容展开 + 解析确认卡片——missingFields 可读提示 + 确认按钮）；`ResumeOptimizationBlockView`（Diff 卡片：patch 类型徽标 + old 删除线/new 新增 Diff + reason + 勾选（默认全选/全不选切换）+ [应用勾选修改] → APPLY_RESUME_PATCHES action）；confirm 端点请求体包装修复（axios null body 触发 Content-Type 拒绝 + 空对象歧义误覆盖双重隐患）
+  - 已验证：build + 前端 6 单测 + 后端全量通过；浏览器验证解析确认全流程（渲染→确认→ACTIVE）；优化后端链路三次真实落库 + 应用生成 V2；**Diff 卡片视觉验证待 LLM 网关恢复后补做**（验证期间网关持续间歇故障：意图分类/结构化输出多处 APIConnectionError 与 JSON 解析失败，均为外部依赖问题；为此把 generate_patch 的模型解析失败从整轮 error 修正为诚实回落「无建议」回复）
+- [x] **P2-4 Typst 导出**（只做 PDF；渲染归 Java，Python/前端不参与排版）
   - Spike：本机装 Typst + 真实解析 JSON 调通 classic-zh 中文模板（typst watch 迭代）
   - `TypstCompiler` 薄组件（ProcessBuilder + 超时 + stderr 入日志不透传 + `--root` 限定临时目录）；单测 stub 化，真实编译走集成测试 + golden 测试（fixture JSON 含 `* _ $` 等字符 → %PDF 头 + 体积断言）
   - 正式导出：版本表 content_json → 渲染 → RustFS → [导出 PDF] 按钮（详情页手动导出，不自动渲染）；字体 Noto Sans CJK 随 resources 打包；Dockerfile 拷贝 typst 二进制（~40MB）
   - Preview 端点：`POST /internal/agent/resume/preview`（原版 JSON + 已选 patch + templateId → 内存 apply → 渲染 → PDF 字节直返，**不入库不落存储**；Preview ≠ 正式版本）
-- [ ] **P2-5 JD 接入**（点亮 JD_TARGETED + context_check 真实分支）
+  - 已落地：`typst/resume-classic-zh.typ` 模板（防御性 `.at(key, default:"")` 取值，缺字段静默留空不炸编译；原生 list 做 bullets 修 grid 行高塌陷；空段 `.len() > 0` 判断）+ `TypstCompiler`（临时目录 + `--root` 限定 + 10s 超时 + stderr 只进日志；两参重载自动走 `TypstFontExtractor` 解包字体）+ `TypstFontExtractor`（classpath 字体懒解包到临时目录，无打包字体回退系统字体）+ `ResumePreviewService`（`TypstTemplateLoader` 模板白名单防任意 classpath 读取；apply 与正式应用共用 `applyPatchesToTree` 保证「预览内容 = 应用后内容」）+ Preview/导出端点 + 前端「生成预览/勾选防抖 600ms 重渲 iframe」与版本卡 [导出 PDF] 按钮
+  - 字体决策：打包 Noto Sans CJK SC Regular 单字重（16MB），bold 由 typst synthetic embolden 合成（真实 Bold 多源下载均断链，视觉验证可接受）；模板字体回退链 `"Noto Sans CJK SC", "PingFang SC"`
+  - 下载代理：RustFS bucket 非 public-read（既有简历直链同样 403，非本次引入），`GET /api/resume-exports/download?fileKey=` 后端流式代理（fileKey 限 `resume-exports/` 前缀），RustFS 仍留档可追溯
+  - 已验证：golden 测试（特殊字符 `*Test_*` `$100 QPS` `C:\Users\test` `^[a-z]+$` 字面渲染 + %PDF 头）+ 9 个测试类全绿 + 本机编译 0.15-0.27s（勾选即重渲可行）+ 两页视觉验证（教育/项目/技能/自定义段渲染正常，空段不出现）+ Preview 端点实测（patch 应用后 24KB PDF）+ 导出实测（102880 字节 → RustFS → 代理下载回真 PDF，非法 fileKey 拒绝）
+- [x] **P2-5 JD 接入**（点亮 JD_TARGETED + context_check 真实分支）
   - JD 作为第二类附件（`AttachmentRef.kind="job_description"`），复用 Tika 解析并单独存储（不动简历库 hash/去重语义）
   - Java：JD 上传/查询端点 + `get_job` Tool；会话绑定 `active_job_id`（对称 P1-3）
   - Python attachment_flow 扩展 JOB_DESCRIPTION 分支（ChoiceBlock：「JD 匹配 / 生成准备建议」）
   - 前端 Composer 附件类型标记（简历/JD 切换 tag）
+  - 已落地：`job` 模块（job_descriptions 表 V20260901 + 上传 Tika 解析/文本创建/查询/删除，无去重语义——JD 迭代频繁按条目管理）+ `GET_JOB` READ Tool（第 13 个）+ 会话 `active_job_id`（PUT active-job + context/detail DTO 透出）；Python `AttachmentRef.kind` 扩展 + `attachment_flow` JD 分支（确认块：优化/匹配/面试三选项，自动 `bind_active_job` 失败不阻断）+ `resolve_context` 识别 JD 附件与会话绑定 + 优化子图 `active_job_id` 存在时注入 JD 全文（4000 字符截断）点亮 JD_TARGETED（真实性铁律仍兜底：禁止编造经历凑匹配度）+ `get_job` client；前端 Composer 附件类型切换 tag（简历/JD，上传前可改）+ JD 上传走 `/api/jobs/upload` + ContextPanel「JD 资源将在 P2-1 接入」占位替换为真实绑定 JD（Conversation Memory 优先，附件名回落）+ CopilotPage JD 上传分支
+  - 删除不级联清会话绑定（与简历删除行为对称）：悬挂 active_job_id 由取数失败兜底
 
 **验收**：「按这份 JD 优化我的简历」→ 解析确认 → JSON-path Patch Diff + 勾选实时 PDF 预览 → 部分接受 → 应用 → 新版本可查（原版不变）→ 手动导出 PDF → 全程停留在 /copilot。无编造内容（Case 4 校验器兜底）。
 

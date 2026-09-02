@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     llm_api_key: SecretStr = SecretStr("")
     llm_model: str = "gpt-4o-mini"
     llm_intent_model: str = "gpt-4o-mini"
+    # LLM 单次调用超时（秒）：防止模型侧卡住时 SSE 请求无限挂起（前端表现为"无响应"）
+    llm_timeout_seconds: float = 120.0
 
     agent_service_host: str = "0.0.0.0"
     agent_service_port: int = 8000
@@ -40,13 +42,17 @@ class Settings(BaseSettings):
     # 简历内容注入上限（Agent 内容级分析 / 简历优化，Token 纪律）
     resume_context_max_chars: int = 8000
 
+    # JD 内容注入上限（P2-5 JD_TARGETED 定向优化，Token 纪律）
+    jd_context_max_chars: int = 4000
+
     # 面试发起（P1-4）：Agent 推荐的默认题目数量（与前端创建面试默认一致）
     interview_default_question_count: int = 8
 
     # 新上传简历的异步分析就绪窗口：分析未完成时有限次轮询
-    # 总等待 ≈ attempts × delay（默认约 48s），期间通过 tool_progress 事件向前端反馈
-    analysis_wait_attempts: int = 12
-    analysis_wait_delay_seconds: float = 4.0
+    # 总等待 ≈ attempts × delay（默认约 15s），期间通过 tool_progress 事件向前端反馈；
+    # 超时后返回「稍后获取分析结果」ChoiceBlock，用户可点击重试（避免请求内长时间干等）
+    analysis_wait_attempts: int = 5
+    analysis_wait_delay_seconds: float = 3.0
 
 
 settings = Settings()

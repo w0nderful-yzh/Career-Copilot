@@ -1,12 +1,14 @@
 import { useRef, useState } from 'react';
-import { FileText, Paperclip, Send, Square, X } from 'lucide-react';
+import { BriefcaseBusiness, FileText, Paperclip, Send, Square, X } from 'lucide-react';
 
 // Copilot 输入栏：发送消息 / 停止（取消）当前流式响应
-// 支持拖入或选择 PDF 附件（简历），发送时由外层上传到 Java 简历库
+// 支持拖入或选择 PDF 附件（简历或 JD，发送前可切换类型），发送时由外层上传到对应库
+
+export type AttachmentKind = 'resume' | 'job_description';
 
 interface ComposerProps {
   streaming: boolean;
-  onSend: (message: string, attachment?: File) => void;
+  onSend: (message: string, attachment?: File, attachmentKind?: AttachmentKind) => void;
   onCancel: () => void;
   disabled?: boolean;
 }
@@ -17,24 +19,43 @@ function isPdf(file: File): boolean {
   return ACCEPTED_TYPES.includes(file.type) || file.name.toLowerCase().endsWith('.pdf');
 }
 
+const KIND_META = {
+  resume: {
+    label: '简历',
+    hint: '加入简历库并后台分析，Agent 会引导下一步',
+    icon: FileText,
+    tagClass: 'bg-blue-50 text-blue-600 dark:bg-blue-950/50 dark:text-blue-300',
+  },
+  job_description: {
+    label: 'JD',
+    hint: '作为目标岗位 JD，可定向优化简历 / 匹配分析 / 出题面试',
+    icon: BriefcaseBusiness,
+    tagClass: 'bg-amber-50 text-amber-600 dark:bg-amber-950/50 dark:text-amber-300',
+  },
+} as const;
+
 export default function Composer({ streaming, onSend, onCancel, disabled }: ComposerProps) {
   const [value, setValue] = useState('');
   const [attachment, setAttachment] = useState<File | null>(null);
+  const [attachmentKind, setAttachmentKind] = useState<AttachmentKind>('resume');
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const meta = KIND_META[attachmentKind];
 
   const submit = () => {
     const message = value.trim();
     if ((!message && !attachment) || streaming) return;
-    onSend(message, attachment ?? undefined);
+    onSend(message, attachment ?? undefined, attachmentKind);
     setValue('');
     setAttachment(null);
+    setAttachmentKind('resume');
   };
 
   const handleFile = (file: File | undefined) => {
     if (!file) return;
     if (!isPdf(file)) {
-      window.alert('暂只支持 PDF 简历附件');
+      window.alert('暂只支持 PDF 附件（简历或 JD）');
       return;
     }
     setAttachment(file);
@@ -61,11 +82,33 @@ export default function Composer({ streaming, onSend, onCancel, disabled }: Comp
       >
         {attachment && (
           <div className="mb-2 flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 dark:bg-slate-700/50">
-            <FileText className="h-4 w-4 shrink-0 text-primary-500" />
+            <meta.icon className="h-4 w-4 shrink-0 text-primary-500" />
             <span className="min-w-0 flex-1 truncate text-sm text-slate-700 dark:text-slate-200">
               {attachment.name}
             </span>
-            <span className="shrink-0 text-xs text-slate-400">简历附件</span>
+            {/* 附件类型标记：上传前可切换简历/JD（决定走简历库还是 JD 库） */}
+            <div className="flex shrink-0 items-center rounded-lg border border-slate-200 bg-white p-0.5 dark:border-slate-600 dark:bg-slate-800">
+              {(Object.keys(KIND_META) as AttachmentKind[]).map((kind) => {
+                const kindMeta = KIND_META[kind];
+                const KindIcon = kindMeta.icon;
+                const active = attachmentKind === kind;
+                return (
+                  <button
+                    key={kind}
+                    type="button"
+                    onClick={() => setAttachmentKind(kind)}
+                    className={`flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium transition ${
+                      active
+                        ? kindMeta.tagClass
+                        : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
+                    }`}
+                  >
+                    <KindIcon className="h-3 w-3" />
+                    {kindMeta.label}
+                  </button>
+                );
+              })}
+            </div>
             <button
               onClick={() => setAttachment(null)}
               title="移除附件"
@@ -86,7 +129,7 @@ export default function Composer({ streaming, onSend, onCancel, disabled }: Comp
           />
           <button
             onClick={() => fileInputRef.current?.click()}
-            title="添加附件（PDF 简历）"
+            title="添加附件（PDF 简历或 JD）"
             disabled={disabled}
             className="mb-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-slate-400 transition hover:bg-slate-100 hover:text-primary-600 dark:hover:bg-slate-700 dark:hover:text-primary-400"
           >
@@ -128,7 +171,7 @@ export default function Composer({ streaming, onSend, onCancel, disabled }: Comp
         </div>
       </div>
       <p className="mt-2 text-center text-xs text-slate-400 dark:text-slate-500">
-        支持拖入 PDF 简历，发送后加入简历库并由 Agent 引导下一步
+        {attachment ? meta.hint : '支持拖入 PDF 简历或岗位 JD，Agent 会引导下一步'}
       </p>
     </div>
   );

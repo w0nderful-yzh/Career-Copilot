@@ -1,14 +1,19 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ArrowRight,
   BookOpen,
   BriefcaseBusiness,
+  CheckSquare,
+  ChevronDown,
   FileSearch,
   FileStack,
   MessagesSquare,
+  Minus,
+  Plus,
   SlidersHorizontal,
   Sparkles,
+  Square,
   Target,
   Users,
 } from 'lucide-react';
@@ -21,8 +26,13 @@ import type {
   InterviewSummaryBlock,
   KnowledgeCitationsBlock,
   NavigationBlock,
+  ResumeOptimizationBlock,
+  ResumeOptimizationPatch,
   ResumeSummaryBlock,
+  SkillProfileBlock,
 } from '../../types/copilot';
+import type { ResumeContentJson } from '../../api/history';
+import { historyApi } from '../../api/history';
 import { resolveActionRoute } from '../../constants/routes';
 
 // Copilot 受控 Block 渲染器：只渲染白名单类型，未知类型静默忽略。
@@ -284,6 +294,394 @@ function KnowledgeCitationsBlockView({ block }: { block: KnowledgeCitationsBlock
   );
 }
 
+/** 分数 → 条形颜色（≥80 绿 / ≥60 黄绿 / <60 橙） */
+function skillBarColor(score: number): string {
+  if (score >= 80) return 'bg-emerald-500';
+  if (score >= 60) return 'bg-lime-500';
+  return 'bg-orange-500';
+}
+
+/** 证据来源的可读描述：面试轮次 → 「面试 s1:2 · 55 分」 */
+function evidenceLabel(sourceType: string | null | undefined): string {
+  switch (sourceType) {
+    case 'INTERVIEW_TURN':
+      return '模拟面试答题';
+    case 'INTERVIEW_SESSION':
+      return '面试总评';
+    case 'RESUME':
+      return '简历分析';
+    default:
+      return '评分来源';
+  }
+}
+
+function formatOccurredAt(occurredAt: string | null | undefined): string {
+  if (!occurredAt) return '';
+  const date = new Date(occurredAt);
+  return Number.isNaN(date.getTime()) ? '' : ` · ${date.toLocaleDateString('zh-CN')}`;
+}
+
+/** 单个技能行：分数条 + 可展开的证据明细（可追溯验收：任一分数能点出 Evidence 来源） */
+function SkillProfileRow({
+  skill,
+}: {
+  skill: SkillProfileBlock['skills'][number];
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const score = skill.score ?? 0;
+  const evidences = skill.evidences ?? [];
+  const hasEvidence = evidences.length > 0;
+
+  return (
+    <div className="rounded-lg bg-slate-50 px-3 py-2.5 dark:bg-slate-700/50">
+      <button
+        type="button"
+        disabled={!hasEvidence}
+        onClick={() => setExpanded((prev) => !prev)}
+        className={`grid w-full grid-cols-[5rem_1fr_4.5rem] items-center gap-2 text-left ${
+          hasEvidence ? 'cursor-pointer' : 'cursor-default'
+        }`}
+      >
+        <span className="truncate text-sm font-semibold text-slate-700 dark:text-slate-200">
+          {skill.skill ?? '未知技能'}
+        </span>
+        <span className="h-1.5 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-600">
+          <span
+            className={`block h-full rounded-full ${skillBarColor(score)}`}
+            style={{ width: `${Math.min(Math.max(score, 0), 100)}%` }}
+          />
+        </span>
+        <span className="text-right text-xs font-bold tabular-nums text-slate-600 dark:text-slate-300">
+          {score} 分
+          {hasEvidence && (
+            <ChevronDown
+              className={`ml-1 inline h-3 w-3 text-slate-400 transition-transform ${
+                expanded ? 'rotate-180' : ''
+              }`}
+            />
+          )}
+        </span>
+      </button>
+      {expanded && (
+        <ul className="mt-2 space-y-1 border-t border-slate-200 pt-2 dark:border-slate-600">
+          {evidences.map((evidence, index) => (
+            <li
+              key={evidence.sourceId ?? index}
+              className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400"
+            >
+              <span className="min-w-0 truncate">
+                {evidenceLabel(evidence.sourceType)}
+                {evidence.sourceId ? `（${evidence.sourceId}）` : ''}
+                {formatOccurredAt(evidence.occurredAt)}
+              </span>
+              <span className="ml-2 shrink-0 font-semibold tabular-nums">
+                {evidence.score ?? '-'} 分
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function SkillProfileBlockView({ block }: { block: SkillProfileBlock }) {
+  if (block.skills.length === 0) return null;
+  return (
+    <div className="mt-3 space-y-2 rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-800">
+      <div className="flex items-center gap-2 text-xs font-semibold text-slate-500 dark:text-slate-400">
+        <Target className="h-3.5 w-3.5" />
+        能力画像
+        <span className="font-normal text-slate-400 dark:text-slate-500">
+          （分数 = 面试证据均值，点击查看来源）
+        </span>
+      </div>
+      {block.skills.map((skill) => (
+        <SkillProfileRow key={skill.skill ?? 'unknown'} skill={skill} />
+      ))}
+    </div>
+  );
+}
+
+/** patch 类型展示标签 */
+const PATCH_TYPE_META: Record<ResumeOptimizationPatch['type'], { label: string; className: string }> = {
+  REPLACE: { label: '改写', className: 'bg-amber-50 text-amber-600 dark:bg-amber-900/40 dark:text-amber-300' },
+  ADD: { label: '新增', className: 'bg-emerald-50 text-emerald-600 dark:bg-emerald-900/40 dark:text-emerald-300' },
+  DELETE: { label: '删除', className: 'bg-red-50 text-red-600 dark:bg-red-900/40 dark:text-red-300' },
+};
+
+/** path → 可读位置描述 */
+function patchPathLabel(path: string): string {
+  const segmentNames: Record<string, string> = {
+    basicInfo: '基本信息',
+    education: '教育经历',
+    experience: '工作经历',
+    projects: '项目经历',
+    skills: '技能',
+    customSections: '其他段落',
+  };
+  const segment = path.split(/[.[]/, 1)[0];
+  return segmentNames[segment] ?? segment;
+}
+
+/** 简历优化提案块（P2-3）：Diff 卡片 + 勾选 + 应用（CONFIRM_WRITE 确认入口） */
+function ResumeOptimizationBlockView({
+  block,
+  actionDisabled,
+  onActionSelect,
+}: {
+  block: ResumeOptimizationBlock;
+  actionDisabled: boolean;
+  onActionSelect?: (option: ChoiceOption) => void;
+}) {
+  // 默认全选（Agent 给出的建议默认全部推荐）
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(
+    () => new Set(block.patches.map((patch) => patch.id)),
+  );
+  const [applied, setApplied] = useState(false);
+
+  // ===== Preview PDF（P2-4 勾选即重渲）=====
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewState, setPreviewState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [previewError, setPreviewError] = useState('');
+  // 原版内容只拉一次；勾选变化防抖 600ms 后重渲
+  const contentRef = useRef<ResumeContentJson | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const previewUrlRef = useRef<string | null>(null);
+
+  const fetchContentAndRender = async (ids: Set<string>) => {
+    try {
+      setPreviewState('loading');
+      if (!contentRef.current) {
+        const version = await historyApi.getResumeVersionDetail(block.versionId);
+        if (!version.content) throw new Error('版本没有结构化内容');
+        contentRef.current = version.content;
+      }
+      const content = contentRef.current;
+      const selectedPatches = block.patches
+        .filter((patch) => ids.has(patch.id))
+        .map((patch) => ({
+          id: patch.id,
+          type: patch.type,
+          path: patch.path,
+          oldValue: patch.oldValue ?? null,
+          newValue: patch.newValue ?? null,
+          reason: patch.reason ?? null,
+        }));
+      const blob = await historyApi.previewResumePdf(content, selectedPatches);
+      if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+      const url = URL.createObjectURL(blob);
+      previewUrlRef.current = url;
+      setPreviewUrl(url);
+      setPreviewState('ready');
+    } catch (error) {
+      setPreviewState('error');
+      setPreviewError(error instanceof Error ? error.message : '预览生成失败');
+    }
+  };
+
+  const schedulePreview = (ids: Set<string>) => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => void fetchContentAndRender(ids), 600);
+  };
+
+  // 挂载即按默认全选渲染一次预览（「实时预览」语义），卸载时清理防抖计时器与 blob URL
+  useEffect(() => {
+    schedulePreview(selectedIds);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+    };
+    // 仅挂载时按初始全选渲染一次；勾选变化走 toggle → schedulePreview
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const toggle = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      // 应用后锁定不再重渲
+      if (!applied) schedulePreview(next);
+      return next;
+    });
+  };
+
+  const selectedCount = selectedIds.size;
+  const canApply = !actionDisabled && !applied && selectedCount > 0;
+
+  const handleApply = () => {
+    if (!canApply || !onActionSelect) return;
+    setApplied(true);
+    onActionSelect({
+      action: 'APPLY_RESUME_PATCHES',
+      label: '应用勾选修改',
+      payload: {
+        proposalId: block.proposalId,
+        patchIds: [...selectedIds],
+      },
+    });
+  };
+
+  return (
+    <div className="mt-4 overflow-hidden rounded-2xl border border-primary-200/70 bg-gradient-to-br from-primary-50/60 to-indigo-50/40 dark:border-primary-800/40 dark:from-primary-950/30 dark:to-indigo-950/20">
+      <div className="flex items-center justify-between px-4 pt-4">
+        <div className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white">
+          <Sparkles className="h-4 w-4 text-primary-600 dark:text-primary-400" />
+          简历优化建议
+          <span className="rounded-full bg-white/80 px-2 py-0.5 text-xs font-semibold text-primary-600 dark:bg-slate-800/80 dark:text-primary-300">
+            {block.patches.length} 条
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={() =>
+            setSelectedIds(
+              selectedCount === block.patches.length
+                ? new Set()
+                : new Set(block.patches.map((patch) => patch.id)),
+            )
+          }
+          disabled={applied}
+          className="text-xs font-medium text-primary-600 hover:underline disabled:opacity-50 dark:text-primary-300"
+        >
+          {selectedCount === block.patches.length ? '全不选' : '全选'}
+        </button>
+      </div>
+
+      {block.summary && (
+        <p className="mx-4 mt-2 rounded-xl bg-white/70 px-3 py-2 text-xs leading-5 text-slate-600 dark:bg-slate-800/70 dark:text-slate-300">
+          {block.summary}
+        </p>
+      )}
+      {block.rejectedNote && (
+        <p className="mx-4 mt-2 text-xs text-amber-600 dark:text-amber-400">
+          ⚠ {block.rejectedNote}（不合规建议已自动剔除）
+        </p>
+      )}
+
+      <div className="mt-3 space-y-2 px-4">
+        {block.patches.map((patch) => {
+          const selected = selectedIds.has(patch.id);
+          const typeMeta = PATCH_TYPE_META[patch.type] ?? PATCH_TYPE_META.REPLACE;
+          return (
+            <label
+              key={patch.id}
+              className={`block cursor-pointer rounded-xl border p-3 transition ${
+                selected
+                  ? 'border-primary-300 bg-white dark:border-primary-700 dark:bg-slate-800'
+                  : 'border-slate-200 bg-white/50 opacity-70 dark:border-slate-700 dark:bg-slate-800/50'
+              }`}
+            >
+              <div className="flex items-start gap-2.5">
+                <button
+                  type="button"
+                  role="checkbox"
+                  aria-checked={selected}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    if (!applied) toggle(patch.id);
+                  }}
+                  className="mt-0.5 shrink-0 text-primary-500 disabled:opacity-50"
+                  disabled={applied}
+                >
+                  {selected ? (
+                    <CheckSquare className="h-4.5 w-4.5" />
+                  ) : (
+                    <Square className="h-4.5 w-4.5 text-slate-300 dark:text-slate-600" />
+                  )}
+                </button>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className={`px-1.5 py-0.5 rounded text-[11px] font-bold ${typeMeta.className}`}>
+                      {typeMeta.label}
+                    </span>
+                    <span className="text-[11px] text-slate-400">{patchPathLabel(patch.path)}</span>
+                  </div>
+                  {patch.oldValue && (
+                    <p className="mt-2 flex gap-1.5 rounded-lg bg-red-50/80 px-2.5 py-1.5 text-xs leading-5 text-slate-600 dark:bg-red-950/30 dark:text-slate-300">
+                      <Minus className="mt-0.5 h-3 w-3 shrink-0 text-red-400" />
+                      <span className="line-through decoration-red-300/60">{patch.oldValue}</span>
+                    </p>
+                  )}
+                  {patch.newValue && (
+                    <p className="mt-1 flex gap-1.5 rounded-lg bg-emerald-50/80 px-2.5 py-1.5 text-xs leading-5 text-slate-700 dark:bg-emerald-950/30 dark:text-slate-200">
+                      <Plus className="mt-0.5 h-3 w-3 shrink-0 text-emerald-500" />
+                      <span>{patch.newValue}</span>
+                    </p>
+                  )}
+                  <p className="mt-1.5 text-[11px] text-slate-400">{patch.reason}</p>
+                </div>
+              </div>
+            </label>
+          );
+        })}
+      </div>
+
+      <div className="px-4 pb-4 pt-3">
+        <button
+          type="button"
+          disabled={!canApply || !onActionSelect}
+          onClick={handleApply}
+          className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-primary-500 to-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:-translate-y-0.5 hover:from-primary-600 hover:to-indigo-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-55"
+        >
+          <CheckSquare className="h-4 w-4" />
+          {applied
+            ? '已提交应用'
+            : `应用勾选修改（${selectedCount}/${block.patches.length}）`}
+        </button>
+        <p className="mt-2 text-[11px] text-slate-400">
+          应用后生成新版本，原版本保持不变
+        </p>
+
+        {/* Preview PDF：勾选即重渲（防抖 600ms）；桌面渲染区，排版不满意时原上传件仍是退路 */}
+        <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-800/60">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+              实时预览（已勾选 {selectedCount} 条的效果）
+            </span>
+            <div className="flex items-center gap-2">
+              {previewState === 'loading' && (
+                <span className="text-[11px] text-primary-500">渲染中…</span>
+              )}
+              {previewState !== 'ready' && previewState !== 'loading' && (
+                <button
+                  type="button"
+                  onClick={() => void fetchContentAndRender(selectedIds)}
+                  className="text-[11px] font-medium text-primary-600 hover:underline dark:text-primary-300"
+                >
+                  {previewState === 'error' ? '重试预览' : '生成预览'}
+                </button>
+              )}
+            </div>
+          </div>
+          {previewState === 'error' && (
+            <p className="mt-2 text-[11px] text-red-500">预览失败：{previewError}</p>
+          )}
+          {previewUrl ? (
+            <iframe
+              key={previewUrl}
+              src={previewUrl}
+              title="简历优化预览"
+              className="mt-2 h-[480px] w-full rounded-lg border border-slate-100 dark:border-slate-700"
+            />
+          ) : (
+            previewState !== 'loading' && (
+              <p className="mt-2 text-[11px] text-slate-400">
+                点击「生成预览」查看勾选修改后的 PDF 效果（预览不会保存，应用后才生成新版本）。
+                排版不满意？原始上传件仍在你手里。
+              </p>
+            )
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function BlockRenderer({
   block,
   actionDisabled = false,
@@ -323,6 +721,16 @@ export default function BlockRenderer({
       return <InterviewSummaryBlockView block={block} />;
     case 'knowledge_citations':
       return <KnowledgeCitationsBlockView block={block} />;
+    case 'skill_profile':
+      return <SkillProfileBlockView block={block} />;
+    case 'resume_optimization':
+      return (
+        <ResumeOptimizationBlockView
+          block={block}
+          actionDisabled={actionDisabled}
+          onActionSelect={onActionSelect}
+        />
+      );
     default:
       return null; // 未知类型：受控忽略
   }

@@ -96,6 +96,37 @@ export const conversationApi = {
     request.delete<void>(`${conversationBase}/${conversationId}`),
 };
 
+// ===== 技能画像（Java Profile 模块，P3-2） =====
+
+export interface SkillProfileSkill {
+  skill: string;
+  score: number;
+  evidenceCount: number;
+  updatedAt?: string | null;
+  evidences?: Array<{
+    sourceType: 'RESUME' | 'INTERVIEW_SESSION' | 'INTERVIEW_TURN';
+    sourceId: string;
+    score: number;
+    occurredAt?: string | null;
+  }>;
+}
+
+export interface SkillProfileResponse {
+  skills: SkillProfileSkill[];
+}
+
+export const skillProfileApi = {
+  /** 全部技能画像 + 证据明细（侧栏面板用；无数据时 skills 为空数组）。
+   * Java Tool 端点返回 Result<ToolResponse> 双层信封，需解出内层业务数据 */
+  get: async (): Promise<SkillProfileResponse> => {
+    const envelope = await request.post<{ tool: string; data: SkillProfileResponse }>(
+      '/api/agent/tools/get_skill_profile',
+      {},
+    );
+    return envelope?.data ?? { skills: [] };
+  },
+};
+
 // ===== 简历附件上传（复用 Java 简历库上传，文件不经 Agent） =====
 
 export const resumeUploadApi = {
@@ -103,5 +134,30 @@ export const resumeUploadApi = {
     const formData = new FormData();
     formData.append('file', file);
     return request.upload<UploadResponse>('/api/resumes/upload', formData);
+  },
+};
+
+// ===== JD 附件上传（P2-5：独立于简历库，Tika 解析文本入库） =====
+
+export interface JobUploadResult {
+  id: number;
+  title: string;
+  company?: string | null;
+  contentLength?: number;
+}
+
+export const jobUploadApi = {
+  upload: (file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return request.upload<JobUploadResult>('/api/jobs/upload', formData);
+  },
+};
+
+// ===== JD 查询（P2-5：侧栏活跃资源显示绑定 JD 标题） =====
+
+export const jobApi = {
+  get: async (jobId: number): Promise<JobUploadResult & { contentText?: string }> => {
+    return request.get(`/api/jobs/${jobId}`);
   },
 };

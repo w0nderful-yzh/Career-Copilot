@@ -77,6 +77,10 @@ public class AgentConversationEntity {
   @Column(name = "active_resume_id")
   private Long activeResumeId;
 
+  /** 会话绑定的活动 JD（P2-5，对称 activeResumeId；优化子图 JD_TARGETED / JD 匹配取数用） */
+  @Column(name = "active_job_id")
+  private Long activeJobId;
+
   public enum ConversationStatus {
     ACTIVE,    // 活跃会话
     ARCHIVED   // 已归档

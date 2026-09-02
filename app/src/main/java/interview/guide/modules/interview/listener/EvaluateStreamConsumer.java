@@ -10,8 +10,11 @@ import interview.guide.modules.interview.model.InterviewQuestionDTO;
 import interview.guide.modules.interview.model.InterviewReportDTO;
 import interview.guide.modules.interview.model.InterviewSessionEntity;
 import interview.guide.modules.interview.repository.InterviewSessionRepository;
+import interview.guide.modules.profile.model.SkillEvidenceEntity;
 import interview.guide.modules.interview.service.AnswerEvaluationService;
 import interview.guide.modules.interview.service.InterviewPersistenceService;
+import interview.guide.modules.profile.service.InterviewEvidenceExtractor;
+import interview.guide.modules.profile.service.SkillProfileAggregator;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.stream.StreamMessageId;
 import org.springframework.ai.chat.client.ChatClient;
@@ -36,6 +39,8 @@ public class EvaluateStreamConsumer extends AbstractStreamConsumer<EvaluateStrea
     private final InterviewPersistenceService persistenceService;
     private final ObjectMapper objectMapper;
     private final LlmProviderRegistry llmProviderRegistry;
+    private final InterviewEvidenceExtractor evidenceExtractor;
+    private final SkillProfileAggregator profileAggregator;
 
     public EvaluateStreamConsumer(
         RedisService redisService,
@@ -43,7 +48,9 @@ public class EvaluateStreamConsumer extends AbstractStreamConsumer<EvaluateStrea
         AnswerEvaluationService evaluationService,
         InterviewPersistenceService persistenceService,
         ObjectMapper objectMapper,
-        LlmProviderRegistry llmProviderRegistry
+        LlmProviderRegistry llmProviderRegistry,
+        InterviewEvidenceExtractor evidenceExtractor,
+        SkillProfileAggregator profileAggregator
     ) {
         super(redisService);
         this.sessionRepository = sessionRepository;
@@ -51,6 +58,8 @@ public class EvaluateStreamConsumer extends AbstractStreamConsumer<EvaluateStrea
         this.persistenceService = persistenceService;
         this.objectMapper = objectMapper;
         this.llmProviderRegistry = llmProviderRegistry;
+        this.evidenceExtractor = evidenceExtractor;
+        this.profileAggregator = profileAggregator;
     }
 
     record EvaluatePayload(String sessionId) {}
@@ -138,6 +147,14 @@ public class EvaluateStreamConsumer extends AbstractStreamConsumer<EvaluateStrea
         String resumeText = session.getResume() != null ? session.getResume().getResumeText() : "";
         InterviewReportDTO report = evaluationService.evaluateInterview(chatClient, sessionId, resumeText, questions);
         persistenceService.saveReport(sessionId, report);
+
+        // 评估完成 → 提取逐题评分写入技能画像（失败不影响评估结果本身）
+        try {
+            List<SkillEvidenceEntity> evidences = evidenceExtractor.extract(sessionId);
+            profileAggregator.applyEvidence(evidences);
+        } catch (Exception e) {
+            log.error("画像证据应用失败（不影响评估结果）: sessionId={}", sessionId, e);
+        }
     }
 
     @Override

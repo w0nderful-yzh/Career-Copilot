@@ -64,6 +64,8 @@ def _openai_model(model: str, temperature: float) -> ChatOpenAI:
         api_key=api_key,
         base_url=base_url,
         temperature=temperature,
+        # 单次调用超时：模型侧卡住时快速失败，避免 SSE 无限挂起（前端"无响应"）
+        timeout=settings.llm_timeout_seconds,
     )
 
 
@@ -114,13 +116,20 @@ async def _ensure_llm_config_synced() -> None:
         await sync_agent_llm_config()
 
 
-def get_intent_router() -> IntentRouter:
-    """意图分类用低延迟模型 + temperature=0，保证分类稳定。"""
+async def get_intent_router() -> IntentRouter:
+    """意图分类用低延迟模型 + temperature=0，保证分类稳定。
+
+    async：构造前先确保配置已同步 —— 若作为同步 Depends，会在启动竞态下
+    定型于 .env 回落地址（Java 未就绪时同步失败），整轮请求打到死 URL。
+    测试经 dependency_overrides 整体替换本函数，不受影响。
+    """
+    await _ensure_llm_config_synced()
     return IntentRouter(_openai_model(settings.llm_intent_model, temperature=0.0))
 
 
-def get_answerer() -> Answerer:
-    """回答生成使用常规模型，允许一定自由度。"""
+async def get_answerer() -> Answerer:
+    """回答生成使用常规模型，允许一定自由度（async 语义同 get_intent_router）。"""
+    await _ensure_llm_config_synced()
     return Answerer(_openai_model(settings.llm_model, temperature=0.3))
 
 
@@ -306,11 +315,12 @@ async def _persist_conversation_turn(
 ) -> None:
     """把一轮对话（用户消息 + 助手回复）保存到 Java conversation 模块。
 
-    无 conversation_id、内容为空（如本轮处理失败）时跳过；
-    保存失败仅告警（对话可用性优先）。blocks 以 JSON 字符串持久化，
-    与 Java AgentMessageEntity.blocks 列对齐。
+    用户消息总是保存（失败轮也保留，避免刷新后消息"消失"）；
+    assistant 内容为空（如本轮处理失败）时只存用户消息，不发送空回复
+    （Java 端校验消息内容非空）。保存失败仅告警（对话可用性优先）。
+    blocks 以 JSON 字符串持久化，与 Java AgentMessageEntity.blocks 列对齐。
     """
-    if conversation_id is None or not user_message or not assistant_content:
+    if conversation_id is None or not user_message:
         return
     try:
         conversation_id_int = int(conversation_id)
@@ -318,22 +328,25 @@ async def _persist_conversation_turn(
         logger.warning("conversation_id 非法，跳过持久化: %s", conversation_id)
         return
 
-    blocks_json = (
-        json.dumps(assistant_blocks, ensure_ascii=False) if assistant_blocks else None
-    )
-    try:
-        await backend.save_conversation_messages(
-            conversation_id_int,
-            [
-                {"role": "USER", "content": user_message, "blocks": None},
-                {
-                    "role": "ASSISTANT",
-                    "content": assistant_content,
-                    "blocks": blocks_json,
-                },
-            ],
+    messages = [{"role": "USER", "content": user_message, "blocks": None}]
+    if assistant_content:
+        blocks_json = (
+            json.dumps(assistant_blocks, ensure_ascii=False) if assistant_blocks else None
         )
-        logger.info("conversation turn persisted: id=%s", conversation_id)
+        messages.append(
+            {
+                "role": "ASSISTANT",
+                "content": assistant_content,
+                "blocks": blocks_json,
+            }
+        )
+    try:
+        await backend.save_conversation_messages(conversation_id_int, messages)
+        logger.info(
+            "conversation turn persisted: id=%s messages=%d",
+            conversation_id,
+            len(messages),
+        )
     except BusinessToolError as exc:
         logger.warning(
             "conversation turn persist failed: id=%s code=%s message=%s",

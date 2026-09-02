@@ -485,14 +485,16 @@ function ResumeOptimizationBlockView({
     debounceRef.current = setTimeout(() => void fetchContentAndRender(ids), 600);
   };
 
-  // 卸载时清理防抖计时器与 blob URL
-  useEffect(
-    () => () => {
+  // 挂载即按默认全选渲染一次预览（「实时预览」语义），卸载时清理防抖计时器与 blob URL
+  useEffect(() => {
+    schedulePreview(selectedIds);
+    return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
       if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
-    },
-    [],
-  );
+    };
+    // 仅挂载时按初始全选渲染一次；勾选变化走 toggle → schedulePreview
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const toggle = (id: string) => {
     setSelectedIds((prev) => {

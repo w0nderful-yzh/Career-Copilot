@@ -11,11 +11,15 @@ import interview.guide.modules.resume.service.ResumeGradingService;
 import interview.guide.modules.resume.service.ResumeParseStructuredService;
 import interview.guide.modules.resume.service.ResumePersistenceService;
 import interview.guide.modules.resume.service.ResumeVersionService;
+import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.stream.StreamMessageId;
 import org.springframework.stereotype.Component;
 
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * 简历分析 Stream 消费者
@@ -30,6 +34,8 @@ public class AnalyzeStreamConsumer extends AbstractStreamConsumer<AnalyzeStreamC
     private final ResumeRepository resumeRepository;
     private final ResumeParseStructuredService structuredParseService;
     private final ResumeVersionService versionService;
+    // 评分与结构化解析是两个独立 LLM 调用，用虚拟线程并行执行（对齐 InterviewQuestionService 模式）
+    private final ExecutorService analyzeExecutor;
 
     public AnalyzeStreamConsumer(
         RedisService redisService,
@@ -45,6 +51,12 @@ public class AnalyzeStreamConsumer extends AbstractStreamConsumer<AnalyzeStreamC
         this.resumeRepository = resumeRepository;
         this.structuredParseService = structuredParseService;
         this.versionService = versionService;
+        this.analyzeExecutor = Executors.newVirtualThreadPerTaskExecutor();
+    }
+
+    @PreDestroy
+    void shutdownExecutor() {
+        analyzeExecutor.shutdownNow();
     }
 
     record AnalyzePayload(Long resumeId, String content) {}
@@ -110,18 +122,28 @@ public class AnalyzeStreamConsumer extends AbstractStreamConsumer<AnalyzeStreamC
             return;
         }
 
-        ResumeAnalysisResponse analysis = gradingService.analyzeResume(payload.content());
+        // 评分与结构化解析是两个独立 LLM 调用，并行执行（虚拟线程池）。
+        // 评分结果先就绪即可 saveAnalysis 提交，Agent 侧拿到结果不再被解析拖后。
+        CompletableFuture<ResumeAnalysisResponse> gradingFuture = CompletableFuture.supplyAsync(
+            () -> gradingService.analyzeResume(payload.content()), analyzeExecutor);
+        CompletableFuture<ResumeParseStructuredService.ResumeParseResult> parseFuture = CompletableFuture.supplyAsync(
+            () -> structuredParseService.parse(payload.content()), analyzeExecutor);
+
+        // 评分失败已由服务层吞掉为错误响应（正常不抛）；意外运行时异常经 join 传播到消费者重试逻辑
+        ResumeAnalysisResponse analysis = gradingFuture.join();
         ResumeEntity resume = resumeRepository.findById(resumeId).orElse(null);
         if (resume == null) {
             log.warn("简历在分析期间被删除，跳过保存结果: resumeId={}", resumeId);
+            parseFuture.cancel(true);
             return;
         }
         persistenceService.saveAnalysis(resume, analysis);
 
         // 评分分析成功后创建结构化导入版本 V1（简历优化地基）。
-        // 解析失败不影响已保存的评分结果；重分析会再次触发本链路。
+        // 必须在本方法内完成（markCompleted 前）：shouldSkip 会跳过已 COMPLETED 简历，
+        // 若延后到异步则重启后 V1 可能永不创建。解析失败不影响已保存的评分结果。
         try {
-            var parseResult = structuredParseService.parse(payload.content());
+            ResumeParseStructuredService.ResumeParseResult parseResult = parseFuture.join();
             versionService.createImportVersion(resumeId, parseResult);
         } catch (Exception e) {
             log.error("简历结构化版本创建失败（不影响评分结果）: resumeId={}", resumeId, e);

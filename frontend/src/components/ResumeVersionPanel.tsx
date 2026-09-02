@@ -100,8 +100,9 @@ function ConfirmCard({
           {content?.basicInfo?.name && (
             <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
               解析到姓名「{content.basicInfo.name}」、
-              {content.projects?.length ?? 0} 个项目、
               {content.education?.length ?? 0} 条教育经历、
+              {content.experience?.length ?? 0} 段工作/实习经历、
+              {content.projects?.length ?? 0} 个项目、
               {content.skills?.length ?? 0} 条技能。确认后即可在 Copilot 中「优化简历」。
             </p>
           )}
@@ -243,6 +244,28 @@ function VersionCard({
                 (edu) => `${edu.school ?? ''} ${edu.major ?? ''} ${edu.degree ?? ''}`.trim(),
               )}
             />
+          )}
+          {(content.experience?.length ?? 0) > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 mb-1">工作/实习经历</p>
+              <div className="space-y-2">
+                {(content.experience ?? []).map((exp, idx) => (
+                  <div key={idx} className="rounded-lg bg-slate-50 dark:bg-slate-700/50 px-3 py-2">
+                    <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">
+                      {[exp.company, exp.position].filter(Boolean).join(' ')}
+                      {(exp.startDate || exp.endDate)
+                        ? ` · ${[exp.startDate, exp.endDate].filter(Boolean).join(' - ')}`
+                        : ''}
+                    </p>
+                    <ul className="mt-1 space-y-0.5">
+                      {(exp.bullets ?? []).map((bullet, bIdx) => (
+                        <li key={bIdx} className="text-xs text-slate-500 dark:text-slate-400">· {bullet}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            </div>
           )}
           {(content.projects?.length ?? 0) > 0 && (
             <div>

@@ -699,6 +699,75 @@ async def test_graph_analysis_failed_fails_fast(monkeypatch):
     assert "重新分析" in text
 
 
+async def test_graph_analysis_timeout_returns_retry_choice(monkeypatch):
+    """有界等待仍未就绪时，应返回「稍后获取分析结果」ChoiceBlock 而非静默占位。"""
+    from career_copilot.agent.nodes import business_tools as bt
+
+    monkeypatch.setattr(bt.settings, "analysis_wait_attempts", 2)
+    monkeypatch.setattr(bt.settings, "analysis_wait_delay_seconds", 0.01)
+
+    def pending_handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/context"):
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "data": {"messages": [], "summary": None, "totalCount": 0},
+                    "message": "success",
+                },
+            )
+        tool = path.rsplit("/", 1)[-1]
+        if tool == "get_resume_analysis":
+            # 分析持续未就绪：恒返回业务错误 RESUME_ANALYSIS_NOT_FOUND
+            return httpx.Response(
+                200,
+                json={"code": 2008, "data": None, "message": "简历分析结果不存在"},
+            )
+        data = {
+            "get_resume": {
+                "id": 1,
+                "filename": "a.pdf",
+                "resumeText": "正文",
+                "analyzeStatus": "PROCESSING",
+            }
+        }.get(tool, [])
+        return httpx.Response(200, json={"code": 200, "data": data, "message": "success"})
+
+    deps = GraphDeps(
+        intent_router=FakeIntentRouter(IntentClassification(intent=Intent.RESUME_QUERY)),
+        answerer=FakeAnswerer(),
+        backend=BackendClient(base_url="http://t", transport=httpx.MockTransport(pending_handler)),
+    )
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None,
+        message="分析简历",
+        attachments=[{"kind": "resume", "resume_id": 1, "filename": "a.pdf"}],
+        action=None,
+    )
+
+    statuses: list[str] = []
+    plan_holder: list = []
+    async for mode, chunk in graph.astream(state, stream_mode=["custom", "values"]):
+        if mode == "custom":
+            if chunk["type"] == "run_status":
+                statuses.append(chunk["payload"]["status"])
+        else:
+            plan_holder.append(chunk)
+
+    plan = plan_holder[-1]["plan"]
+    # 未就绪分支应产出可重试的 ChoiceBlock（ANALYZE_RESUME 回传闭环）
+    choice = next((b for b in plan.blocks if b.type == "choice"), None)
+    assert choice is not None, "分析未就绪时应产出 ChoiceBlock 而非纯文本占位"
+    assert choice.options[0].action == "ANALYZE_RESUME"
+    assert choice.options[0].payload == {"resumeId": 1}
+    assert choice.options[0].label == "稍后获取分析结果"
+    text = "".join([c async for c in plan.text])
+    assert "分析" in text and "稍后" in text
+    assert "WAITING_USER" in statuses, "等待用户选择重试时应广播 WAITING_USER"
+
+
 # ===== 短期记忆：load_history / 滚动摘要 / checkpoint =====
 
 

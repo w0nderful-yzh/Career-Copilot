@@ -697,8 +697,16 @@ def test_chat_stream_resume_query_uses_uploaded_resume(backend_transport):
     assert "".join(deltas) == "fake answer"
 
 
-def test_chat_stream_resume_query_analysis_pending():
-    """目标简历仍在后台分析时应如实告知，而不是反问是哪份。"""
+def test_chat_stream_resume_query_analysis_pending(monkeypatch):
+    """目标简历仍在后台分析（未就绪）时应给出「稍后获取」ChoiceBlock 回退。
+
+    不反问是哪份简历，也不请求内干等：等待窗口内未就绪即返回可重试选择。
+    """
+    from career_copilot.agent.nodes import business_tools as bt
+
+    # 缩短等待窗口，避免测试长时间 sleep（行为本身不变）
+    monkeypatch.setattr(bt.settings, "analysis_wait_attempts", 2)
+    monkeypatch.setattr(bt.settings, "analysis_wait_delay_seconds", 0.01)
 
     def pending_handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -728,6 +736,15 @@ def test_chat_stream_resume_query_analysis_pending():
 
     assert events[-1]["type"] == "done"
     assert not any(e["type"] == "error" for e in events)
+    # 等待超时回退：产出「稍后获取分析结果」重试 ChoiceBlock + WAITING_USER
+    blocks = [e["payload"] for e in events if e["type"] == "block"]
+    assert len(blocks) == 1
+    assert blocks[0]["type"] == "choice"
+    option = blocks[0]["options"][0]
+    assert option["action"] == "ANALYZE_RESUME"
+    assert option["label"] == "稍后获取分析结果"
+    assert option["payload"] == {"resumeId": 9}
+    statuses = [e["payload"]["status"] for e in events if e["type"] == "run_status"]
+    assert "WAITING_USER" in statuses
     deltas = "".join(e["payload"]["content"] for e in events if e["type"] == "message_delta")
-    assert "后台分析" in deltas
-    assert not any(e["type"] == "block" for e in events)
+    assert "后台" in deltas and "稍后" in deltas

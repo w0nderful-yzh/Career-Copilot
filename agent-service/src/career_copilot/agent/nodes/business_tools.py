@@ -8,14 +8,20 @@ import asyncio
 from typing import Any, cast
 
 from career_copilot.agent.deps import GraphDeps
-from career_copilot.agent.events import emit_tool_completed, emit_tool_progress, emit_tool_started
+from career_copilot.agent.events import (
+    emit_run_status,
+    emit_tool_completed,
+    emit_tool_progress,
+    emit_tool_started,
+)
 from career_copilot.agent.plan import StreamPlan, static_text
 from career_copilot.agent.response import interview_summary_block, resume_summary_block
 from career_copilot.agent.router import ActionRoute, Intent
-from career_copilot.agent.state import CareerAgentState
+from career_copilot.agent.state import CareerAgentState, RunStatus
 from career_copilot.clients.backend import BusinessToolError
 from career_copilot.config import settings
-from career_copilot.schemas.message import ActionBlock
+from career_copilot.schemas.action import AgentAction
+from career_copilot.schemas.message import ActionBlock, ChoiceBlock, ChoiceOption
 from career_copilot.tools import (
     format_history,
     format_resume_content,
@@ -195,12 +201,31 @@ async def _plan_targeted_resume(
                 "这份简历的上次自动分析失败了。你可以在简历库中对该简历点击"
                 "「重新分析」，完成后再来问我，我会帮你解读。"
             )
-        else:
-            hint = (
-                "这份简历还在后台分析中（稍等片刻即可完成）。"
-                "你可以先来一场模拟面试，或过一会儿再问我，我会直接给你解读结果。"
+            return {"plan": StreamPlan(text=static_text(hint))}
+
+        # 有界等待后仍未就绪：如实说明 + 提供确定性重试入口（不请求内干等）
+        emit_run_status(RunStatus.WAITING_USER.value)
+        return {
+            "plan": StreamPlan(
+                blocks=[
+                    ChoiceBlock(
+                        title="简历仍在分析中",
+                        options=[
+                            ChoiceOption(
+                                action=AgentAction.ANALYZE_RESUME.value,
+                                label="稍后获取分析结果",
+                                payload={"resumeId": resume_id},
+                            ),
+                        ],
+                    ),
+                ],
+                text=static_text(
+                    "这份简历的分析还在后台进行中（通常需要十几秒，本次等待 "
+                    f"{attempts} 次仍未完成）。你可以点击「稍后获取分析结果」"
+                    "稍后重试，或先进行其他操作。"
+                ),
             )
-        return {"plan": StreamPlan(text=static_text(hint))}
+        }
 
     context = await summarize_resume_analysis(analysis)
     # 内容感知：读取完整简历文本（失败不阻断，回落纯摘要）

@@ -52,7 +52,7 @@ export default function InterviewSessionBlockView({
     setStatus('loading');
     setError('');
     try {
-      const s = await interviewApi.getSession(block.sessionId);
+      const s = await interviewApi.getSession(block.session_id);
       setSession(s);
       const idx = Math.min(s.currentQuestionIndex, s.questions.length - 1);
       const current = s.questions[idx] ?? null;
@@ -76,7 +76,7 @@ export default function InterviewSessionBlockView({
       setStatus('error');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [block.sessionId]);
+  }, [block.session_id]);
 
   // 提交答案 → Java 决策引擎返回下一题 / 结束
   const submit = useCallback(async () => {
@@ -86,7 +86,7 @@ export default function InterviewSessionBlockView({
     setStatus('answering');
     try {
       const res = await interviewApi.submitAnswer({
-        sessionId: block.sessionId,
+        sessionId: block.session_id,
         questionIndex: question.questionIndex,
         answer: submitted,
       });
@@ -106,15 +106,15 @@ export default function InterviewSessionBlockView({
       setError('提交答案失败，请重试');
       setStatus('running');
     }
-  }, [session, question, answer, block.sessionId]);
+  }, [session, question, answer, block.session_id]);
 
   // 轮询评估结果（面试完成后 Java 异步整场评估）
   const pollEvaluation = useCallback(async () => {
     try {
-      const s = await interviewApi.getSession(block.sessionId);
+      const s = await interviewApi.getSession(block.session_id);
       if (s.status === 'EVALUATED') {
         if (pollRef.current) window.clearInterval(pollRef.current);
-        const r = await interviewApi.getReport(block.sessionId);
+        const r = await interviewApi.getReport(block.session_id);
         setReport(r);
         setSession(s);
         setStatus('completed');
@@ -132,7 +132,7 @@ export default function InterviewSessionBlockView({
       console.error('轮询评估失败:', err);
       // 网络抖动：保持轮询，不置错误
     }
-  }, [block.sessionId, stopTimers]);
+  }, [block.session_id, stopTimers]);
 
   useEffect(() => {
     void load();
@@ -141,7 +141,7 @@ export default function InterviewSessionBlockView({
   }, []);
 
   // 展示字段（skillId/difficulty 由 Agent 创建块时给出；会话模型不带这些字段）
-  const directionLabel = block.directionName ?? block.skillId ?? '模拟面试';
+  const directionLabel = block.direction_name ?? block.skill_id ?? '模拟面试';
   const difficultyLabel = DIFFICULTY_LABELS[block.difficulty ?? ''] ?? '';
   const modeLabel = MODE_LABELS[block.mode] ?? '';
 
@@ -275,7 +275,7 @@ export default function InterviewSessionBlockView({
                   onActionSelect({
                     action: 'REVIEW_INTERVIEW',
                     label: '让 Copilot 复盘这次面试',
-                    payload: { sessionId: block.sessionId },
+                    payload: { sessionId: block.session_id },
                   })
                 }
                 className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-primary-500 to-indigo-600 px-4 py-2 text-sm font-semibold text-white transition hover:-translate-y-0.5 hover:from-primary-600 hover:to-indigo-700"

@@ -50,22 +50,23 @@ export interface InterviewProposalBlock {
 
 /**
  * 内嵌面试会话块（P4-0）：CREATE_INTERVIEW 成功后原地内嵌，答题直连 Java Interview API。
- * 展示参数（skillId/difficulty/mode/focus）由 Agent 创建时给出；
- * 状态机在块内自管理（读取 getSession / submitAnswer / 轮询评估），不写入 Conversation Message。
+ * 展示参数由 Agent 创建时给出；状态机在块内自管理
+ * （读取 getSession / submitAnswer / 轮询评估），不写入 Conversation Message。
+ * 注意：字段为 snake_case —— 与 Python 协议/Java 透传一致（同 InterviewProposalBlock）。
  */
 export interface InterviewSessionBlock {
   type: 'interview_session';
   /** Java 面试会话 ID */
-  sessionId: string;
+  session_id: string;
   /** Java skillId（如 java-backend），用于展示 */
-  skillId?: string | null;
+  skill_id?: string | null;
   /** Java 难度枚举 junior/mid/senior，用于展示 */
   difficulty?: string | null;
   mode: 'TEXT' | 'VOICE';
   focus?: string[];
-  questionCount?: number | null;
-  /** 方向展示名（Agent 语境，如 "Java 后端"）；缺省回退 skillId */
-  directionName?: string | null;
+  question_count?: number | null;
+  /** 方向展示名（Agent 语境，如 "Java 后端"）；缺省回退 skill_id */
+  direction_name?: string | null;
 }
 
 /** 内嵌面试块的展示状态（块内部状态机，非持久化协议字段） */

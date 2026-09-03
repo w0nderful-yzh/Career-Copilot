@@ -48,6 +48,8 @@ class InterviewSessionIdempotencyTest {
   private LlmProviderRegistry llmProviderRegistry;
   @Mock
   private RedisService redisService;
+  @Mock
+  private TurnEvaluationService turnEvaluationService;
 
   private ObjectMapper objectMapper;
   private InterviewSessionService service;
@@ -63,7 +65,8 @@ class InterviewSessionIdempotencyTest {
         objectMapper,
         evaluateStreamProducer,
         llmProviderRegistry,
-        redisService
+        redisService,
+        turnEvaluationService
     );
     when(redisService.executeWithLock(anyString(), anyLong(), anyLong(), any(), any()))
         .thenAnswer(invocation -> {
@@ -92,6 +95,7 @@ class InterviewSessionIdempotencyTest {
         List.of(question),
         0,
         SessionStatus.CREATED,
+        false,
         objectMapper
     );
     when(sessionCache.getSession(existingSessionId)).thenReturn(Optional.of(cached));
@@ -105,7 +109,8 @@ class InterviewSessionIdempotencyTest {
         "mid",
         null,
         null,
-        requestId
+        requestId,
+        false
     );
 
     InterviewSessionDTO result = service.createSession(request);

@@ -116,7 +116,11 @@ public class InterviewSessionEntity {
     // 知识库面试方向（来自题库 category，普通面试为 null）
     @Column(length = 64)
     private String interviewCategory;
-    
+
+    // 是否自适应面试（P4-3：逐题轻量评估 + 决策选下一题；普通/知识库面试保持顺序题单）
+    @Column(nullable = false)
+    private Boolean adaptive = false;
+
     public enum SessionStatus {
         CREATED,      // 会话已创建
         IN_PROGRESS,  // 面试进行中
@@ -324,6 +328,14 @@ public class InterviewSessionEntity {
 
     public void setInterviewCategory(String interviewCategory) {
         this.interviewCategory = interviewCategory;
+    }
+
+    public Boolean getAdaptive() {
+        return adaptive;
+    }
+
+    public void setAdaptive(Boolean adaptive) {
+        this.adaptive = adaptive;
     }
 
     public void addAnswer(InterviewAnswerEntity answer) {

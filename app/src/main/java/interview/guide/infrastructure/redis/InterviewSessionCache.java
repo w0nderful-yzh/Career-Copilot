@@ -57,6 +57,7 @@ public class InterviewSessionCache {
         private String questionsJson;  // 序列化的问题列表
         private int currentIndex;
         private SessionStatus status;
+        private Boolean adaptive = false;  // P4-3 是否自适应（逐题评估+决策选题）
 
         public CachedSession() {
         }
@@ -64,7 +65,7 @@ public class InterviewSessionCache {
         public CachedSession(String sessionId, String resumeText, Long resumeId, Long knowledgeBaseId,
                             String interviewCategory,
                             List<InterviewQuestionDTO> questions, int currentIndex,
-                            SessionStatus status, ObjectMapper objectMapper) {
+                            SessionStatus status, Boolean adaptive, ObjectMapper objectMapper) {
             this.sessionId = sessionId;
             this.resumeText = resumeText;
             this.resumeId = resumeId;
@@ -72,6 +73,7 @@ public class InterviewSessionCache {
             this.interviewCategory = interviewCategory;
             this.currentIndex = currentIndex;
             this.status = status;
+            this.adaptive = adaptive != null ? adaptive : false;
             try {
                 this.questionsJson = objectMapper.writeValueAsString(questions);
             } catch (JacksonException e) {
@@ -95,10 +97,19 @@ public class InterviewSessionCache {
                            String interviewCategory,
                            List<InterviewQuestionDTO> questions, int currentIndex,
                            SessionStatus status) {
+        saveSession(sessionId, resumeText, resumeId, knowledgeBaseId, interviewCategory,
+            questions, currentIndex, status, false);
+    }
+
+    /** P4-3：带 adaptive 标记保存（自适应会话逐题评估+决策选题） */
+    public void saveSession(String sessionId, String resumeText, Long resumeId, Long knowledgeBaseId,
+                           String interviewCategory,
+                           List<InterviewQuestionDTO> questions, int currentIndex,
+                           SessionStatus status, Boolean adaptive) {
         String key = buildSessionKey(sessionId);
         CachedSession cachedSession = new CachedSession(
             sessionId, resumeText, resumeId, knowledgeBaseId, interviewCategory,
-            questions, currentIndex, status, objectMapper
+            questions, currentIndex, status, adaptive, objectMapper
         );
 
         redisService.set(key, cachedSession, SESSION_TTL);
@@ -140,6 +151,15 @@ public class InterviewSessionCache {
             }
 
             log.debug("更新会话状态: sessionId={}, status={}", sessionId, status);
+        });
+    }
+
+    /** P4-3：更新 adaptive 标记（缓存恢复 DB 后落缓存） */
+    public void updateAdaptive(String sessionId, boolean adaptive) {
+        getSession(sessionId).ifPresent(session -> {
+            session.setAdaptive(adaptive);
+            String key = buildSessionKey(sessionId);
+            redisService.set(key, session, SESSION_TTL);
         });
     }
 

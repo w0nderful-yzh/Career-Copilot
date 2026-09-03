@@ -32,5 +32,7 @@ public record CreateInterviewRequest(
 
     String jdText,                         // JD 原文（自定义面试时作为出题依据）
 
-    String requestId                       // 创建请求幂等键，刷新/重试时复用同一会话
+    String requestId,                      // 创建请求幂等键，刷新/重试时复用同一会话
+
+    Boolean adaptive                       // P4-3 是否启用逐题评估+自适应选题；null=false
 ) {}

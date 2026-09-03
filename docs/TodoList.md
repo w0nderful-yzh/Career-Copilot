@@ -188,13 +188,12 @@
   - `TurnEvaluationService`：回答 → 同步结构化评估（score/answerState/covered·missingPoints/recommendedFocus）；`coverage` 由要点列表**代码计算**（模型不输出浮点）；`score` 夹取 0-100、状态与分数互相补齐自洽；prompt 只含当前题 + 期望要点 + 回答（token 最小），不落库、只服务决策（P4-3 决策引擎接入）
   - NO_ANSWER 短路词表（"不会/不知道/跳过/i don't know"…）免 LLM；LLM 失败回落中性 PARTIAL 不阻塞答题
   - 新增 `TurnEvaluation` record + `turn-evaluation-system/user.st` + `TurnEvaluationProperties`；7 个单测（短路/归一/越界夹取/coverage/失败回落/无要点中性）+ 全量 `:app:test` 通过
-- [ ] **P4-3 Decision Policy + Next Question Selection（代码控边界）**
-  - 决策输入：Turn Evaluation + 当前题 + 当前难度 + 已追问次数 + 剩余题数 + 覆盖度
-  - 输出动作（代码规则 + 有限语义建议）：
-    `FOLLOW_UP`（同主题候选追问，≤追问上限）→ `NEXT_QUESTION`（同 topic 未问主问题）→ `NEXT_TOPIC`（topic 已覆盖完）→ `UPGRADE`/`DOWNGRADE`（连续高分/低分/NO_ANSWER 才调整）→ `SKIP` → `END_INTERVIEW`
-  - **Selection Before Generation**：优先从当前 Topic 池选合适候选；题库无合适候选时 `END_INTERVIEW`/NEXT_TOPIC（一期**不实时 LLM 生题**，动态生成二期 fallback）
-  - 出题去重：同会话内题目不重复；已问 topic 与剩余分配约束
-  - `submitAnswer` 返回值扩展：`nextQuestion` 从「顺序下一题」变为「决策选出的下一题」（`hasNextQuestion=false` → 整场结束，进入现有异步评估闭环，回归现 /interview 页可用）
+- [x] **P4-3 Decision Policy + Next Question Selection（代码控边界，一期 Selection）**
+  - `AdaptiveInterviewPolicy`：主问题 + 内嵌追问池线性题单上的「Selection Before Generation」——答好进追问组（组内顺序消费，天然去重 ≤ 出题上限）、答不上/答错（NO_ANSWER/WRONG/WEAK）中断追问组切下一主问题、追问池耗尽切主问题、主问题全答完 → 面试结束
+  - 会话 `adaptive` 标记（entity/迁移 V20260903/cache/DTO/CreateInterviewRequest）：Agent `create_interview` 默认开启（adaptive=true），/interview-hub 与知识库面试保持原顺序行为
+  - `submitAnswer` 自适应分支：同步 `TurnEvaluationService.evaluateTurn`（失败不阻塞）→ policy 选题；`nextQuestion` = 决策结果；全部主问题答完 → hasNextQuestion=false 进现有整场异步评估闭环（未答的未选追问不参与，答案索引对齐）
+  - 一期明确不做：UPGRADE/DOWNGRADE 动态改写难度、动态 LLM 生题 fallback（题库无候选即结束/换题，二期随 P4-4b 补）
+  - 已验证：policy 7 单测（追问进入/中断/耗尽/末题结束/恢复缺评估）+ 会话接线 3 单测（自适应跳过追问/进入追问/非自适应顺序不变）+ 全量 `:app:test` 通过
 
 ### 一期 · 前端内嵌 + Copilot 接回
 

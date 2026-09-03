@@ -52,8 +52,8 @@ public class InterviewPersistenceService {
                                               String llmProvider,
                                               String skillId,
                                               String difficulty) {
-        return saveSession(sessionId, resumeId, totalQuestions, questions, llmProvider, skillId, difficulty,
-            "NORMAL", null, null);
+        return saveSessionInternal(sessionId, resumeId, totalQuestions, questions, llmProvider,
+            skillId, difficulty, "NORMAL", null, null, null, false);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -67,7 +67,20 @@ public class InterviewPersistenceService {
                                               Long knowledgeBaseId,
                                               String interviewCategory) {
         return saveSessionInternal(sessionId, resumeId, totalQuestions, questions, llmProvider,
-            skillId, difficulty, sourceType, knowledgeBaseId, interviewCategory, null);
+            skillId, difficulty, sourceType, knowledgeBaseId, interviewCategory, null, false);
+    }
+
+    /** P4-3：带 adaptive 标记保存（自适应面试会话） */
+    @Transactional(rollbackFor = Exception.class)
+    public InterviewSessionEntity saveSession(String sessionId, Long resumeId,
+                                              int totalQuestions,
+                                              List<InterviewQuestionDTO> questions,
+                                              String llmProvider,
+                                              String skillId,
+                                              String difficulty,
+                                              boolean adaptive) {
+        return saveSessionInternal(sessionId, resumeId, totalQuestions, questions, llmProvider,
+            skillId, difficulty, "NORMAL", null, null, null, adaptive);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -79,7 +92,21 @@ public class InterviewPersistenceService {
                                                         String difficulty,
                                                         String requestId) {
         return saveSessionInternal(sessionId, resumeId, totalQuestions, questions, llmProvider,
-            skillId, difficulty, "NORMAL", null, null, requestId);
+            skillId, difficulty, "NORMAL", null, null, requestId, false);
+    }
+
+    /** P4-3：带 adaptive 标记的幂等保存 */
+    @Transactional(rollbackFor = Exception.class)
+    public InterviewSessionEntity saveIdempotentSession(String sessionId, Long resumeId,
+                                                        int totalQuestions,
+                                                        List<InterviewQuestionDTO> questions,
+                                                        String llmProvider,
+                                                        String skillId,
+                                                        String difficulty,
+                                                        String requestId,
+                                                        boolean adaptive) {
+        return saveSessionInternal(sessionId, resumeId, totalQuestions, questions, llmProvider,
+            skillId, difficulty, "NORMAL", null, null, requestId, adaptive);
     }
 
     private InterviewSessionEntity saveSessionInternal(String sessionId, Long resumeId,
@@ -91,7 +118,8 @@ public class InterviewPersistenceService {
                                                        String sourceType,
                                                        Long knowledgeBaseId,
                                                        String interviewCategory,
-                                                       String requestId) {
+                                                       String requestId,
+                                                       boolean adaptive) {
         try {
             InterviewSessionEntity session = new InterviewSessionEntity();
             session.setSessionId(sessionId);
@@ -106,6 +134,7 @@ public class InterviewPersistenceService {
             session.setSourceType(sourceType != null ? sourceType : "NORMAL");
             session.setKnowledgeBaseId(knowledgeBaseId);
             session.setInterviewCategory(interviewCategory);
+            session.setAdaptive(adaptive);
 
             // 简历可选：有 resumeId 则关联简历
             if (resumeId != null) {

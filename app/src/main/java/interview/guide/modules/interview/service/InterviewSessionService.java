@@ -19,6 +19,8 @@ import interview.guide.modules.interview.model.InterviewSessionEntity;
 import interview.guide.modules.interview.model.SubmitAnswerRequest;
 import interview.guide.modules.interview.model.SubmitAnswerResponse;
 import interview.guide.modules.interview.model.InterviewSessionDTO.SessionStatus;
+import interview.guide.modules.interview.model.TurnEvaluation;
+import interview.guide.modules.interview.policy.AdaptiveInterviewPolicy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
@@ -54,6 +56,7 @@ public class InterviewSessionService {
     private final EvaluateStreamProducer evaluateStreamProducer;
     private final LlmProviderRegistry llmProviderRegistry;
     private final RedisService redisService;
+    private final TurnEvaluationService turnEvaluationService;
 
     /**
      * 创建新的面试会话
@@ -102,6 +105,7 @@ public class InterviewSessionService {
     }
 
     private InterviewSessionDTO createSessionInternal(CreateInterviewRequest request, String requestId) {
+        boolean adaptive = Boolean.TRUE.equals(request.adaptive());
         // 如果指定了resumeId且未强制创建，检查是否有未完成的会话
         if (request.resumeId() != null && !Boolean.TRUE.equals(request.forceCreate())) {
             Optional<InterviewSessionDTO> unfinishedOpt = findUnfinishedSession(request.resumeId());
@@ -145,7 +149,8 @@ public class InterviewSessionService {
                     request.llmProvider(),
                     skillId,
                     difficulty,
-                    requestId
+                    requestId,
+                    adaptive
                 );
             } catch (Exception e) {
                 Optional<InterviewSessionEntity> concurrentlyCreated =
@@ -159,7 +164,7 @@ public class InterviewSessionService {
         } else {
             try {
                 persistenceService.saveSession(sessionId, request.resumeId(),
-                    questions.size(), questions, request.llmProvider(), skillId, difficulty);
+                    questions.size(), questions, request.llmProvider(), skillId, difficulty, adaptive);
             } catch (Exception e) {
                 log.warn("保存面试会话到数据库失败: {}", e.getMessage());
             }
@@ -174,7 +179,8 @@ public class InterviewSessionService {
             null,
             questions,
             0,
-            SessionStatus.CREATED
+            SessionStatus.CREATED,
+            adaptive
         );
 
         return new InterviewSessionDTO(
@@ -185,7 +191,8 @@ public class InterviewSessionService {
             questions,
             SessionStatus.CREATED,
             null,
-            null
+            null,
+            adaptive
         );
     }
 
@@ -326,7 +333,7 @@ public class InterviewSessionService {
 
             SessionStatus status = convertStatus(entity.getStatus());
 
-            // 保存到 Redis 缓存
+            // 保存到 Redis 缓存（DB 是 adaptive 权威，恢复时落缓存保持逐题评估语义）
             sessionCache.saveSession(
                 entity.getSessionId(),
                 entity.getResume() != null ? entity.getResume().getResumeText() : "",
@@ -335,7 +342,8 @@ public class InterviewSessionService {
                 entity.getInterviewCategory(),
                 questions,
                 entity.getCurrentQuestionIndex(),
-                status
+                status,
+                Boolean.TRUE.equals(entity.getAdaptive())
             );
 
             log.info("从数据库恢复会话到 Redis: sessionId={}, currentIndex={}, status={}",
@@ -421,34 +429,70 @@ public class InterviewSessionService {
         InterviewQuestionDTO answeredQuestion = question.withAnswer(request.answer());
         questions.set(index, answeredQuestion);
 
-        // 移动到下一题
-        int newIndex = index + 1;
-
-        // 检查是否全部完成
-        boolean hasNextQuestion = newIndex < questions.size();
-        InterviewQuestionDTO nextQuestion = hasNextQuestion ? questions.get(newIndex) : null;
+        // P4-3 自适应会话：逐题轻量评估 → 决策引擎选下一题（追问/换主问题/结束）
+        boolean adaptive = Boolean.TRUE.equals(session.getAdaptive());
+        int nextIndex;
+        InterviewQuestionDTO nextQuestion;
+        boolean hasNextQuestion;
+        if (adaptive) {
+            nextQuestion = selectAdaptiveNext(request, session, questions, index, question);
+            hasNextQuestion = nextQuestion != null;
+            nextIndex = hasNextQuestion ? nextQuestion.questionIndex() : questions.size();
+        } else {
+            nextIndex = index + 1;
+            hasNextQuestion = nextIndex < questions.size();
+            nextQuestion = hasNextQuestion ? questions.get(nextIndex) : null;
+        }
 
         SessionStatus newStatus = hasNextQuestion ? SessionStatus.IN_PROGRESS : SessionStatus.COMPLETED;
 
-        persistSubmittedAnswer(request, index, question, newIndex, newStatus);
+        persistSubmittedAnswer(request, index, question, nextIndex, newStatus);
 
         // 更新 Redis 缓存。DB 已经持久化成功，缓存失败时可由后续读取从数据库恢复。
         sessionCache.updateQuestions(request.sessionId(), questions);
-        sessionCache.updateCurrentIndex(request.sessionId(), newIndex);
+        sessionCache.updateCurrentIndex(request.sessionId(), nextIndex);
         if (newStatus == SessionStatus.COMPLETED) {
             sessionCache.updateSessionStatus(request.sessionId(), SessionStatus.COMPLETED);
             enqueueEvaluationTask(request.sessionId());
         }
 
-        log.info("会话 {} 提交答案: 问题{}, 剩余{}题",
-            request.sessionId(), index, questions.size() - newIndex);
+        log.info("会话 {} 提交答案: 问题{}, adaptive={}, 剩余{}题",
+            request.sessionId(), index, adaptive,
+            adaptive ? (hasNextQuestion ? questions.size() - nextIndex - 1 : 0)
+                : questions.size() - nextIndex);
 
         return new SubmitAnswerResponse(
             hasNextQuestion,
             nextQuestion,
-            newIndex,
+            nextIndex,
             questions.size()
         );
+    }
+
+    /**
+     * 自适应会话的下一题：逐题轻量评估（同步、低延迟）→ 决策引擎选题。
+     * 评估/决策永不抛出（内部已回落），失败时退化为「下一主问题」保证流程不断。
+     */
+    private InterviewQuestionDTO selectAdaptiveNext(SubmitAnswerRequest request, CachedSession session,
+                                                    List<InterviewQuestionDTO> questions, int index,
+                                                    InterviewQuestionDTO question) {
+        String provider = null;
+        try {
+            Optional<InterviewSessionEntity> entityOpt = persistenceService.findBySessionId(request.sessionId());
+            if (entityOpt.isPresent()) {
+                provider = entityOpt.get().getLlmProvider();
+            }
+        } catch (Exception e) {
+            log.warn("读取会话 provider 失败，使用默认模型评估: sessionId={}", request.sessionId());
+        }
+        ChatClient chatClient = llmProviderRegistry.getChatClientOrDefault(provider);
+
+        TurnEvaluation evaluation = turnEvaluationService.evaluateTurn(chatClient, question, request.answer());
+        InterviewQuestionDTO next = AdaptiveInterviewPolicy.selectNext(questions, index, evaluation);
+        if (next == null) {
+            log.info("自适应会话全部主问题已作答，面试结束: sessionId={}", request.sessionId());
+        }
+        return next;
     }
 
     private void persistSubmittedAnswer(SubmitAnswerRequest request, int index,
@@ -627,7 +671,8 @@ public class InterviewSessionService {
             questions,
             session.getStatus(),
             session.getKnowledgeBaseId(),
-            session.getInterviewCategory()
+            session.getInterviewCategory(),
+            Boolean.TRUE.equals(session.getAdaptive())
         );
     }
 }

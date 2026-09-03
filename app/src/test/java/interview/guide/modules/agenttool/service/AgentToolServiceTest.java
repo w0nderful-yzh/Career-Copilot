@@ -389,7 +389,7 @@ class AgentToolServiceTest {
       assertThat(response.data()).isSameAs(expected);
       verify(interviewSessionService).createSession(
           new CreateInterviewRequest(
-              null, 8, null, false, null, "java-backend", "mid", null, null, null));
+              null, 8, null, false, null, "java-backend", "mid", null, null, null, true));
     }
 
     @Test

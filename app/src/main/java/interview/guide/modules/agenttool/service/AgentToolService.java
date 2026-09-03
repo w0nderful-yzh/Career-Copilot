@@ -287,7 +287,9 @@ public class AgentToolService {
         difficulty,
         null,
         null,
-        requestId);
+        requestId,
+        true  // P4-3：Agent 发起的面试默认开启逐题评估+自适应选题
+    );
     InterviewSessionDTO session = interviewSessionService.createSession(request);
     return new ToolResponse(AgentToolName.CREATE_INTERVIEW.getName(), session);
   }

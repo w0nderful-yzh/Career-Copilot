@@ -34,6 +34,7 @@ import type {
 import type { ResumeContentJson } from '../../api/history';
 import { historyApi } from '../../api/history';
 import { resolveActionRoute } from '../../constants/routes';
+import InterviewSessionBlockView from './InterviewSessionBlockView';
 
 // Copilot 受控 Block 渲染器：只渲染白名单类型，未知类型静默忽略。
 // Action 必须由用户点击执行，前端通过白名单映射跳转。
@@ -731,6 +732,8 @@ export default function BlockRenderer({
           onActionSelect={onActionSelect}
         />
       );
+    case 'interview_session':
+      return <InterviewSessionBlockView block={block} />;
     default:
       return null; // 未知类型：受控忽略
   }

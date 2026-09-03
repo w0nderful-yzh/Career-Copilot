@@ -14,6 +14,7 @@ from career_copilot.agent.nodes.business_tools import _plan_targeted_resume
 from career_copilot.agent.nodes.interview_proposal import interview_proposal
 from career_copilot.agent.nodes.resume_optimization import resume_optimization
 from career_copilot.agent.plan import StreamPlan, static_text
+from career_copilot.agent.response import interview_session_block
 from career_copilot.agent.router import ActionRoute
 from career_copilot.agent.state import CareerAgentState, RunStatus
 from career_copilot.clients.backend import BusinessToolError
@@ -104,8 +105,8 @@ async def _create_interview_action(
 
     payload 由前端从 InterviewProposalBlock 原样回传（direction/difficulty/focus/
     questionCount/resumeId），先校验必填，再调用 Java create_interview Tool。
-    创建成功后产出 NavigationBlock 跳转现有面试会话页（过渡方案，
-    P4-0 的 InterviewSessionBlock 就绪后原地内嵌替换）。
+    创建成功后产出 InterviewSessionBlock 原地内嵌（P4-0：不再跳转面试页，
+    答题在块内直连 Java Interview API）。
     """
     direction = payload.get("direction")
     difficulty = payload.get("difficulty") or "mid"
@@ -149,15 +150,18 @@ async def _create_interview_action(
     return {
         "plan": StreamPlan(
             blocks=[
-                NavigationBlock(
-                    route=ActionRoute.INTERVIEW_SESSION.value,
-                    label="进入面试",
-                    params={"sessionId": session_id},
+                interview_session_block(
+                    session_id=session_id,
+                    skill_id=direction if isinstance(direction, str) else None,
+                    difficulty=difficulty if isinstance(difficulty, str) else None,
+                    focus=[f for f in (payload.get("focus") or []) if isinstance(f, str)],
+                    question_count=_as_int(payload.get("questionCount")),
+                    direction_name=None,
                 )
             ],
             text=static_text(
                 f"面试已创建（{session.get('totalQuestions') or '?'} 题）。"
-                "点击「进入面试」开始答题，祝你发挥顺利！"
+                "面试已在你面前展开，直接在卡片内回答即可。"
             ),
         )
     }

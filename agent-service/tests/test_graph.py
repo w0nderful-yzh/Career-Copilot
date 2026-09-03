@@ -1109,8 +1109,8 @@ async def test_graph_interview_create_proposal_fallback_without_resume():
     assert proposal.resume_id is None
 
 
-async def test_graph_create_interview_action_navigates_to_session():
-    """CREATE_INTERVIEW action（用户确认后）→ 创建成功 → NavigationBlock 跳转面试页。"""
+async def test_graph_create_interview_action_embeds_session_block():
+    """CREATE_INTERVIEW action（用户确认后）→ 创建成功 → InterviewSessionBlock 原地内嵌（P4-0）。"""
     transport = _proposal_transport()
     deps = _proposal_deps(transport, {})
     graph = build_graph(deps)
@@ -1133,10 +1133,14 @@ async def test_graph_create_interview_action_navigates_to_session():
     result = await graph.ainvoke(state)
 
     plan = result["plan"]
-    nav = next((b for b in plan.blocks if b.type == "navigation"), None)
-    assert nav is not None, "创建成功应产出 NavigationBlock"
-    assert nav.route == "INTERVIEW_SESSION"
-    assert nav.params["sessionId"] == "abc123"
+    block = next((b for b in plan.blocks if b.type == "interview_session"), None)
+    assert block is not None, "创建成功应产出 InterviewSessionBlock"
+    assert block.session_id == "abc123"
+    assert block.skill_id == "java-backend"
+    assert block.difficulty == "mid"
+    assert block.focus == ["JVM"]
+    # P4-0 内嵌后不应再产出跳转面试页的 NavigationBlock
+    assert next((b for b in plan.blocks if b.type == "navigation"), None) is None
 
 
 async def test_graph_create_interview_action_requires_direction():

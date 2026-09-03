@@ -197,14 +197,17 @@
 
 ### 一期 · 前端内嵌 + Copilot 接回
 
-- [ ] **P4-0 InterviewSessionBlock（复用现有面试组件逻辑，不重写）**
-  - 受控 block `interview_session`（interviewId / status / direction / difficulty / mode / focus / questionCount）进白名单；`create_interview` 成功后不再 NavigationBlock 跳 /interview/session（改原地插 InterviewSessionBlock）
-  - 组件复用现有 `InterviewPage` 的答题体验（问题展示/回答输入/进度/计时），抽成块内子组件；**面试轮次不进 Conversation Message**，状态集中在该 block；只保留结果卡 Artifact
-  - 面试运行期隐藏/禁用普通 Composer，避免回答入口歧义；ContextPanel 面试时可切 Interview Context（进度 / 当前 topic / 覆盖 / 剩余）
-  - 答题仍直连 Java `/api/interview/...`（不过 Agent Graph）
+- [x] **P4-0 InterviewSessionBlock（前端自管理状态机，复用 interviewApi 直连 Java）**
+  - 受控 block `interview_session`（sessionId/skillId/difficulty/mode/focus/questionCount/directionName）进白名单（Python MessageBlock union + 前端 AgentBlock）
+  - `execute_action._create_interview_action` 成功 → 产出 InterviewSessionBlock 原地内嵌（替换 P1-4 的 NavigationBlock 跳转方案；该 nav 仍被简历补丁等其他 action 使用，未删）
+  - `InterviewSessionBlockView`：块挂载 getSession → 展示当前题（追问徽标）+ 文本输入（⌘/Ctrl+Enter 提交）→ submitAnswer（Java 决策引擎已返回下一题/结束）→ 结束后 3s 轮询 getSession 到 EVALUATED → getReport → 折叠结果卡（综合分 + per-skill）
+  - **面试轮次不进 Conversation Message**：每轮只走 Java API，块内存活；刷新历史仅重放展示参数（重进会话由块重新拉取，Java 是权威）
+  - 面试运行期隐藏普通 Composer（CopilotPage 检测 interview_session 块 → 提示「请在面试卡片内回答」）
+  - 答题直连 Java `/api/interview/...`（不过 Agent Graph）；创建即 adaptive=true（P4-3 决策引擎生效）
 - [ ] **P4-6a 面试完成后回流 Copilot（一期最小）**
   - 面试结束（状态 COMPLETED/EVALUATED）→ Agent 解释结果（强弱项 + 下一步 Action [再来一场][查看报告]）
-  - 用 InterviewSessionBlock 内嵌替换 P1-4 过渡跳转（P1-4 NavigationBlock 保留为 /interview-hub 手动入口的补充）
+  - 现状：结果卡已展示，Agent 自然语言可引导「复盘/再来一场」；差分画像话术待 P4-6b（需报告/画像差分数据）
+  - P1-4 NavigationBlock 保留为 /interview-hub 手动入口补充（未删）
 
 ### 二期
 

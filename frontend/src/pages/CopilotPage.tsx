@@ -47,6 +47,13 @@ function toCopilotMessages(detail: ConversationDetail): CopilotMessage[] {
   }));
 }
 
+/** 是否存在「运行中」的内嵌面试块（P4-0）：运行期隐藏普通 Composer，避免回答入口歧义 */
+function hasActiveInterview(messages: CopilotMessage[]): boolean {
+  return messages.some((message) =>
+    message.blocks.some((block) => block.type === 'interview_session'),
+  );
+}
+
 export default function CopilotPage() {
   const {
     conversations,
@@ -375,6 +382,8 @@ export default function CopilotPage() {
     abortRef.current?.abort();
   }, []);
 
+  // P4-0：有内嵌面试进行中时隐藏普通 Composer（回答集中在面试块内）
+  const interviewActive = hasActiveInterview(messages);
   const activeConversation = conversations.find((item) => item.id === activeConversationId);
 
   return (
@@ -411,7 +420,13 @@ export default function CopilotPage() {
         </main>
 
         <div className="shrink-0 border-t border-slate-200/60 bg-white/85 pt-3 backdrop-blur-xl dark:border-slate-700 dark:bg-slate-900/85">
-          <Composer streaming={streaming} onSend={send} onCancel={cancel} />
+          {interviewActive ? (
+            <p className="px-4 pb-3 text-center text-xs text-slate-400">
+              模拟面试进行中，请在面试卡片内回答。
+            </p>
+          ) : (
+            <Composer streaming={streaming} onSend={send} onCancel={cancel} />
+          )}
         </div>
       </section>
       <ContextPanel messages={messages} activeJobId={boundJobId} />

@@ -198,6 +198,24 @@ class InterviewProposalBlock(BaseModel):
     summary: str = Field(default="", description="推荐理由（一句话）")
 
 
+class InterviewSessionBlock(BaseModel):
+    """内嵌面试会话块（P4-0）：面试创建成功后的原地内嵌载体。
+
+    只携带展示信息（方向/难度/模式/focus），不含每轮问答；
+    前端块组件持有 sessionId 后直连 Java Interview API 拉取会话/提交答案/轮询评估，
+    不经过 Agent Graph（实时面试边界，见 Inline 设计 §3）。
+    """
+
+    type: Literal["interview_session"] = "interview_session"
+    session_id: str = Field(description="Java 面试会话 ID")
+    skill_id: str | None = Field(default=None, description="Java skillId（如 java-backend）")
+    difficulty: str | None = Field(default=None, description="难度枚举（junior/mid/senior）")
+    mode: Literal["TEXT", "VOICE"] = Field(default="TEXT", description="面试模式")
+    focus: list[str] = Field(default_factory=list, description="重点考察方向")
+    question_count: int | None = Field(default=None, description="题目数量")
+    direction_name: str | None = Field(default=None, description="方向展示名（如 Java 后端）")
+
+
 MessageBlock = Annotated[
     TextBlock
     | ActionBlock
@@ -208,7 +226,8 @@ MessageBlock = Annotated[
     | KnowledgeCitationsBlock
     | SkillProfileBlock
     | ResumeOptimizationBlock
-    | InterviewProposalBlock,
+    | InterviewProposalBlock
+    | InterviewSessionBlock,
     Field(discriminator="type"),
 ]
 

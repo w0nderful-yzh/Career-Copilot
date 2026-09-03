@@ -9,6 +9,7 @@ from career_copilot.schemas.message import (
     ActionBlock,
     CopilotResponse,
     InterviewProposalBlock,
+    InterviewSessionBlock,
     InterviewSummaryBlock,
     KnowledgeCitationsBlock,
     ResumeOptimizationBlock,
@@ -158,4 +159,28 @@ def interview_proposal_block(
         question_count=question_count,
         resume_id=resume_id,
         summary=summary,
+    )
+
+
+def interview_session_block(
+    *,
+    session_id: str,
+    skill_id: str | None = None,
+    difficulty: str | None = None,
+    focus: list[str] | None = None,
+    question_count: int | None = None,
+    direction_name: str | None = None,
+) -> InterviewSessionBlock:
+    """内嵌面试会话块（P4-0）：面试创建成功后原地内嵌。
+
+    只带展示字段；前端据此 sessionId 直连 Java API 拉取会话与答题。
+    """
+    return InterviewSessionBlock(
+        session_id=session_id,
+        skill_id=skill_id,
+        difficulty=difficulty,
+        mode="TEXT",
+        focus=focus or [],
+        question_count=question_count,
+        direction_name=direction_name,
     )

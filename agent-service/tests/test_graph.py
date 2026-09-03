@@ -1061,9 +1061,8 @@ async def test_graph_interview_create_produces_proposal():
     assert proposal.difficulty_name == "中级"
     assert set(proposal.focus) == {"JVM", "PROJECT"}
 
-    # 提案块应带可确认的创建动作（由前端原样回传）
-    choice = next(b for b in plan.blocks if b.type == "choice")
-    assert any(opt.action == "START_INTERVIEW" for opt in choice.options)
+    # Interview Mode 重构：不再下发「重新推荐」Choice（手动调整由前端内联面板完成）
+    assert next((b for b in plan.blocks if b.type == "choice"), None) is None
 
 
 async def test_graph_interview_create_proposal_fallback_without_resume():

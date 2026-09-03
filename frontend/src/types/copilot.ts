@@ -49,6 +49,17 @@ export interface InterviewProposalBlock {
 }
 
 /**
+ * InterviewConfig：手动配置面板与 Agent 推荐收敛到的同一份面试配置。
+ * CREATE_INTERVIEW action 的 payload 即此结构（camelCase，对齐后端 action 契约）。
+ */
+export interface InterviewConfig {
+  direction: string;
+  difficulty: string;
+  question_count: number;
+  focus: string[];
+}
+
+/**
  * 内嵌面试会话块（P4-0）：CREATE_INTERVIEW 成功后原地内嵌，答题直连 Java Interview API。
  * 展示参数由 Agent 创建时给出；状态机在块内自管理
  * （读取 getSession / submitAnswer / 轮询评估），不写入 Conversation Message。

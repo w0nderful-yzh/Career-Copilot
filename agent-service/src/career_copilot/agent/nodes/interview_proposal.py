@@ -6,8 +6,9 @@
 3. 产出 InterviewProposalBlock（[按推荐开始] / [调整配置]）
 4. [按推荐开始] → CREATE_INTERVIEW action → create_interview Tool（CONFIRM_WRITE）
 
-调整配置走 ChoiceBlock 让用户重新选择方向/难度后再次进入推荐。
-LLM 只负责语义推荐，创建动作由确定性 action 触发，禁止模型直接执行写操作。
+手动调整配置由前端内联面板完成（本地 state → CREATE_INTERVIEW，不发聊天消息）；
+自然语言调整直接在 Composer 输入（如「难度高一点，多问 JVM」），由本节点的 LLM
+结合用户消息重新推荐。LLM 只负责语义推荐，创建动作由确定性 action 触发。
 """
 
 import json
@@ -23,8 +24,6 @@ from career_copilot.agent.response import interview_proposal_block
 from career_copilot.agent.state import CareerAgentState, RunStatus
 from career_copilot.clients.backend import BusinessToolError
 from career_copilot.config import settings
-from career_copilot.schemas.action import AgentAction
-from career_copilot.schemas.message import ChoiceBlock, ChoiceOption
 from career_copilot.tools import summarize_resume_for_interview, summarize_skills
 
 logger = logging.getLogger(__name__)
@@ -94,7 +93,9 @@ async def interview_proposal(
         resume_context=resume_context,
     )
 
-    # 4. 产出提案块 + 确认动作（CREATE_INTERVIEW / 调整配置）
+    # 4. 产出提案确认块（Interview Mode 重构：手动调整由前端内联面板完成，
+    #    不再下发「重新推荐」Choice 触发聊天消息；自然语言调整直接在 Composer 输入，
+    #    由 LLM 结合本条消息（含用户调整诉求）重新推荐）
     emit_run_status(RunStatus.WAITING_USER.value)
     block = interview_proposal_block(
         direction=proposal["direction"],
@@ -108,22 +109,11 @@ async def interview_proposal(
     )
     return {
         "plan": StreamPlan(
-            blocks=[
-                block,
-                ChoiceBlock(
-                    title="调整面试配置",
-                    options=[
-                        ChoiceOption(
-                            action=AgentAction.START_INTERVIEW.value,
-                            label="重新推荐（调整方向/难度）",
-                            payload={},
-                        ),
-                    ],
-                ),
-            ],
+            blocks=[block],
             text=static_text(
                 f"根据你的情况，我推荐一场 {block.direction_name} · {block.difficulty_name} "
-                f"模拟面试。{block.summary} 你可以按推荐直接开始，或调整配置。"
+                f"模拟面试。{block.summary} 你可以按推荐直接开始，或点「调整配置」手动修改，"
+                "也可以直接告诉我想要的调整（如「难度高一点，多问 JVM」）。"
             ),
         )
     }

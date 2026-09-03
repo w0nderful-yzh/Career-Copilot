@@ -22,6 +22,7 @@ import type {
   ActionBlock,
   ChoiceBlock,
   ChoiceOption,
+  InterviewConfig,
   InterviewProposalBlock,
   InterviewSummaryBlock,
   KnowledgeCitationsBlock,
@@ -35,6 +36,7 @@ import type { ResumeContentJson } from '../../api/history';
 import { historyApi } from '../../api/history';
 import { resolveActionRoute } from '../../constants/routes';
 import InterviewSessionBlockView from './InterviewSessionBlockView';
+import InterviewConfigPanel from './InterviewConfigPanel';
 
 // Copilot 受控 Block 渲染器：只渲染白名单类型，未知类型静默忽略。
 // Action 必须由用户点击执行，前端通过白名单映射跳转。
@@ -83,30 +85,51 @@ function InterviewProposalBlockView({
   block,
   actionDisabled,
   onConfirm,
-  onAdjust,
 }: {
   block: InterviewProposalBlock;
   actionDisabled: boolean;
+  /** 用户点「按推荐开始」或「应用自定义配置」时回传 CREATE_INTERVIEW action */
   onConfirm: (option: ChoiceOption) => void;
-  onAdjust: (option: ChoiceOption) => void;
 }) {
   const focusNames = block.focus.length > 0 ? block.focus.join(' / ') : '综合考察';
+  // 手动调整后的配置（null = 使用 Agent 推荐）；与 Agent 推荐收敛到同一 InterviewConfig → CREATE_INTERVIEW
+  const [customConfig, setCustomConfig] = useState<InterviewConfig | null>(null);
+  const [panelOpen, setPanelOpen] = useState(false);
+
+  const activeConfig: InterviewConfig = customConfig ?? {
+    direction: block.direction,
+    difficulty: block.difficulty,
+    question_count: block.question_count,
+    focus: block.focus,
+  };
 
   const confirmOption: ChoiceOption = {
     action: 'CREATE_INTERVIEW',
-    label: '按推荐开始',
+    label: customConfig ? '按自定义配置开始' : '按推荐开始',
     payload: {
-      direction: block.direction,
-      difficulty: block.difficulty,
-      focus: block.focus,
-      questionCount: block.question_count,
+      direction: activeConfig.direction,
+      difficulty: activeConfig.difficulty,
+      focus: activeConfig.focus,
+      questionCount: activeConfig.question_count,
       resumeId: block.resume_id ?? null,
     },
   };
-  const adjustOption: ChoiceOption = {
-    action: 'START_INTERVIEW',
-    label: '调整配置',
-    payload: {},
+
+  const applyConfig = (config: InterviewConfig) => {
+    // 手动配置与 Agent 推荐收敛到同一 InterviewConfig → 立即 CREATE_INTERVIEW
+    setCustomConfig(config);
+    setPanelOpen(false);
+    onConfirm({
+      action: 'CREATE_INTERVIEW',
+      label: '按自定义配置开始',
+      payload: {
+        direction: config.direction,
+        difficulty: config.difficulty,
+        focus: config.focus,
+        questionCount: config.question_count,
+        resumeId: block.resume_id ?? null,
+      },
+    });
   };
 
   return (
@@ -141,18 +164,33 @@ function InterviewProposalBlockView({
           className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-primary-500 to-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:-translate-y-0.5 hover:from-primary-600 hover:to-indigo-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-55"
         >
           <Sparkles className="h-4 w-4" />
-          按推荐开始
+          {customConfig ? '按自定义配置开始' : '按推荐开始'}
         </button>
         <button
           type="button"
           disabled={actionDisabled}
-          onClick={() => onAdjust(adjustOption)}
+          onClick={() => setPanelOpen((open) => !open)}
           className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:-translate-y-0.5 hover:border-primary-300 hover:text-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-55 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:border-primary-500 dark:hover:text-primary-300"
         >
           <SlidersHorizontal className="h-4 w-4" />
           调整配置
         </button>
       </div>
+
+      {/* 内联配置面板：本地 state 展开，不触发 Agent、不发送聊天消息 */}
+      {panelOpen && (
+        <InterviewConfigPanel
+          initial={{
+            direction: block.direction,
+            difficulty: block.difficulty,
+            question_count: block.question_count,
+            focus: block.focus,
+          }}
+          disabled={actionDisabled}
+          onApply={applyConfig}
+          onCancel={() => setPanelOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -705,7 +743,6 @@ export default function BlockRenderer({
           block={block}
           actionDisabled={actionDisabled}
           onConfirm={(option) => onActionSelect?.(option)}
-          onAdjust={(option) => onActionSelect?.(option)}
         />
       );
     case 'choice':

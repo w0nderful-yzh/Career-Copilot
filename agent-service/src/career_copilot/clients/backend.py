@@ -37,18 +37,27 @@ class BackendClient:
             base_url=base_url, timeout=timeout, transport=transport
         )
 
-    async def call_tool(self, tool: str, arguments: dict[str, Any] | None = None) -> Any:
+    async def call_tool(
+        self,
+        tool: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> Any:
         """调用 Java Agent Tool 统一入口并解包 Result 信封。
 
         Java 侧约定：HTTP 200 + Result{code, message, data}，
         code != 200 表示业务失败，需转为 BusinessToolError。
         工具响应 data 为 ToolResponse{tool, data}，需再解包内层业务数据。
+        timeout：单次请求超时覆盖（秒）；缺省用客户端默认 30s。
         """
         payload: dict[str, Any] = {"arguments": arguments or {}}
         try:
-            response = await self._client.post(f"/api/agent/tools/{tool}", json=payload)
+            response = await self._client.post(
+                f"/api/agent/tools/{tool}", json=payload, timeout=timeout
+            )
         except httpx.HTTPError as exc:
-            # 网络/连接类错误属于瞬时错误，允许上层有限重试
+            # 网络/连接/超时类错误属于瞬时错误，允许上层有限重试
             raise BusinessToolError(500, f"后端服务不可达: {exc}", retryable=True) from exc
 
         try:
@@ -207,7 +216,9 @@ class BackendClient:
             arguments["resumeText"] = resume_text
         if force_create:
             arguments["forceCreate"] = True
-        data = await self.call_tool("create_interview", arguments)
+        # LLM 同步出题可达 1-3 分钟：用长超时覆盖客户端默认 30s，
+        # 否则 agent 先超时抛「后端服务不可达」，而 Java 仍在后台创建成功（孤儿会话）。
+        data = await self.call_tool("create_interview", arguments, timeout=300.0)
         return data if isinstance(data, dict) else {}
 
     async def list_knowledge_bases(self) -> list[dict[str, Any]]:

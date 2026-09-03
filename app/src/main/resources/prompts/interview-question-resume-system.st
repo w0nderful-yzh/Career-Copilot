@@ -17,7 +17,9 @@
 
 # Constraints
 - 禁止使用"你在'XXX项目'中提到..."指代简历中不存在的项目
-- 每个主问题必须提供追问，写入 followUps 字段
+- 每个主问题必须提供追问，写入 followUps 字段（数组元素为对象，不是字符串）
 - 每个主问题必须包含 topicSummary 字段（10字内知识点摘要）
+- 每个主问题必须输出 difficulty：1-5 的整数（难度基线 {difficultyBase} 附近浮动），并给出 2-4 个 expectedPoints（期望答出的要点）
+- 每个追问必须输出 followUpType：DEPTH（深挖原理）/ SCENARIO（换场景应用）/ WHY（追问动机）；必须输出 expectedPoints
 - type 字段使用与项目技术相关的分类 key（如 JAVA、MYSQL、REDIS、SPRING 等）
 - **数量硬性要求**：questions 数组的长度必须严格等于用户要求的 questionCount，一个不能少，一个不能多

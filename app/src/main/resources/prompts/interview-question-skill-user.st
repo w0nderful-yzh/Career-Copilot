@@ -1,6 +1,8 @@
 # Input Data
 请生成共 {questionCount} 个主问题。
-每个主问题都必须额外生成 {followUpCount} 个追问。
+每个主问题都必须额外生成 {followUpCount} 个追问（followUps 为对象数组）。
+单题难度基线为 {difficultyBase}（1-5），可在各题 ±1 内浮动。
+
 
 ## 难度级别
 {difficultyDescription}
@@ -30,3 +32,4 @@
   - "MySQL 索引失效场景"
   - "HashMap 扩容机制"
   - "TCP 三次握手流程"
+- 每个主问题必须包含 difficulty 与 expectedPoints；followUps 内每个对象必须包含 question / followUpType / expectedPoints

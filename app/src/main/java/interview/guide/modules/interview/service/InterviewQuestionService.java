@@ -62,6 +62,13 @@ public class InterviewQuestionService {
         "senior", "3年+经验。考察架构设计和深度调优。"
     );
 
+    /** 整体难度枚举 → 单题难度基线（1-5），供生成时让模型在基线上下浮动 */
+    private static final Map<String, Integer> DIFFICULTY_BASE = Map.of(
+        "junior", 2,
+        "mid", 3,
+        "senior", 4
+    );
+
     private static final String[][] GENERIC_FALLBACK_QUESTIONS = {
         {"请描述一个你主导解决的技术难题，你的分析思路是什么？", "GENERAL", "综合能力"},
         {"你在做技术方案选型时，通常考虑哪些因素？请举例说明。", "GENERAL", "综合能力"},
@@ -83,10 +90,19 @@ public class InterviewQuestionService {
     private final ExecutorService questionExecutor;
     private final int followUpCount;
 
-    private record QuestionListDTO(List<QuestionDTO> questions) {}
+    /**
+     * P4-1 出题 schema（对齐自适应引擎 §10）：
+     * 主问题携带数值难度 difficulty(1-5) 与考察要点 expectedPoints；
+     * followUps 由纯文本升级为带语义类型 followUpType 与 expectedPoints 的追问对象。
+     * 包可见：供同包单测直接构造验证生成契约（非对外 API）。
+     */
+    record QuestionListDTO(List<QuestionDTO> questions) {}
 
-    private record QuestionDTO(String question, String type, String category,
-                               String topicSummary, List<String> followUps) {}
+    record QuestionDTO(String question, String type, String category,
+                       String topicSummary, Integer difficulty,
+                       List<String> expectedPoints, List<FollowUpDTO> followUps) {}
+
+    record FollowUpDTO(String question, String followUpType, List<String> expectedPoints) {}
 
     public InterviewQuestionService(
             StructuredOutputInvoker structuredOutputInvoker,
@@ -129,14 +145,16 @@ public class InterviewQuestionService {
 
         SkillDTO skill = resolveSkill(skillId, customCategories, jdText);
         String difficultyDesc = resolveDifficulty(difficulty);
+        int difficultyBase = DIFFICULTY_BASE.getOrDefault(
+            difficulty != null ? difficulty : InterviewDefaults.DIFFICULTY, 3);
         ChatClient questionChatClient =
             llmProviderRegistry.getPlainChatClient(llmProvider);
 
         boolean hasResume = resumeText != null && !resumeText.isBlank();
         String historicalSection = buildHistoricalSection(historicalQuestions);
         if (!hasResume) {
-            return generateDirectionOnly(questionChatClient, skill, difficultyDesc, questionCount,
-                historicalSection);
+            return generateDirectionOnly(questionChatClient, skill, difficultyDesc, difficultyBase,
+                questionCount, historicalSection);
         }
 
         int resumeCount = Math.max(1, (int) Math.round(questionCount * RESUME_QUESTION_RATIO));
@@ -147,12 +165,12 @@ public class InterviewQuestionService {
 
         CompletableFuture<List<InterviewQuestionDTO>> resumeFuture = CompletableFuture.supplyAsync(
             () -> generateResumeQuestions(questionChatClient, resumeText, resumeCount, skill,
-                difficultyDesc, historicalSection),
+                difficultyDesc, difficultyBase, historicalSection),
             questionExecutor);
 
         CompletableFuture<List<InterviewQuestionDTO>> directionFuture = CompletableFuture.supplyAsync(
-            () -> generateDirectionOnly(questionChatClient, skill, difficultyDesc, directionCount,
-                historicalSection),
+            () -> generateDirectionOnly(questionChatClient, skill, difficultyDesc, difficultyBase,
+                directionCount, historicalSection),
             questionExecutor);
 
         List<InterviewQuestionDTO> resumeQuestions;
@@ -162,8 +180,8 @@ public class InterviewQuestionService {
         } catch (CompletionException e) {
             log.error("简历题生成失败，降级为全方向题", e.getCause());
             directionFuture.cancel(true);
-            return generateDirectionOnly(questionChatClient, skill, difficultyDesc, questionCount,
-                historicalSection);
+            return generateDirectionOnly(questionChatClient, skill, difficultyDesc, difficultyBase,
+                questionCount, historicalSection);
         }
 
         try {
@@ -171,14 +189,14 @@ public class InterviewQuestionService {
         } catch (CompletionException e) {
             log.error("方向题生成失败，降级为全简历题", e.getCause());
             if (resumeQuestions.isEmpty()) {
-                return generateFallbackQuestions(skill, questionCount);
+                return generateFallbackQuestions(skill, questionCount, difficultyBase);
             }
             return resumeQuestions;
         }
 
         if (resumeQuestions.isEmpty() && directionQuestions.isEmpty()) {
             log.warn("简历题和方向题均为空，回退到默认问题");
-            return generateFallbackQuestions(skill, questionCount);
+            return generateFallbackQuestions(skill, questionCount, difficultyBase);
         }
 
         List<InterviewQuestionDTO> merged = mergeQuestionBatches(resumeQuestions, directionQuestions);
@@ -189,11 +207,12 @@ public class InterviewQuestionService {
 
     private List<InterviewQuestionDTO> generateResumeQuestions(
             ChatClient questionClient, String resumeText, int questionCount,
-            SkillDTO skill, String difficultyDesc, String historicalSection) {
+            SkillDTO skill, String difficultyDesc, int difficultyBase, String historicalSection) {
         try {
             Map<String, Object> variables = new HashMap<>();
             variables.put("questionCount", questionCount);
             variables.put("followUpCount", followUpCount);
+            variables.put("difficultyBase", difficultyBase);
             variables.put("skillName", skill.name());
             variables.put("skillDescription", skill.description() != null ? skill.description() : "");
             variables.put("difficultyDescription", difficultyDesc);
@@ -210,7 +229,7 @@ public class InterviewQuestionService {
                 ErrorCode.INTERVIEW_QUESTION_GENERATION_FAILED,
                 "简历题生成失败：", "简历题", log);
 
-            List<InterviewQuestionDTO> questions = convertToQuestions(dto);
+            List<InterviewQuestionDTO> questions = convertToQuestions(dto, difficultyBase);
             questions = capToMainCount(questions, questionCount);
             log.info("简历题生成完成: 请求={}, 实际主问题={}",
                 questionCount, questions.stream().filter(q -> !q.isFollowUp()).count());
@@ -224,7 +243,7 @@ public class InterviewQuestionService {
     }
 
     private List<InterviewQuestionDTO> generateDirectionOnly(
-            ChatClient questionClient, SkillDTO skill, String difficultyDesc,
+            ChatClient questionClient, SkillDTO skill, String difficultyDesc, int difficultyBase,
             int questionCount, String historicalSection) {
         Map<String, Integer> allocation = skillService.calculateAllocation(skill.categories(), questionCount);
         String allocationTable = skillService.buildAllocationDescription(allocation, skill.categories());
@@ -236,6 +255,7 @@ public class InterviewQuestionService {
             Map<String, Object> variables = new HashMap<>();
             variables.put("questionCount", questionCount);
             variables.put("followUpCount", followUpCount);
+            variables.put("difficultyBase", difficultyBase);
             variables.put("difficultyDescription", difficultyDesc);
             variables.put("skillName", skill.name());
             variables.put("skillDescription", skill.description() != null ? skill.description() : "");
@@ -255,10 +275,10 @@ public class InterviewQuestionService {
                 ErrorCode.INTERVIEW_QUESTION_GENERATION_FAILED,
                 "方向题生成失败：", "方向题", log);
 
-            List<InterviewQuestionDTO> questions = convertToQuestions(dto);
+            List<InterviewQuestionDTO> questions = convertToQuestions(dto, difficultyBase);
             if (questions.stream().filter(q -> !q.isFollowUp()).count() == 0) {
                 log.warn("方向题返回空题单，回退到默认问题");
-                return generateFallbackQuestions(skill, questionCount);
+                return generateFallbackQuestions(skill, questionCount, difficultyBase);
             }
             questions = capToMainCount(questions, questionCount);
             log.info("方向题生成完成: 请求={}, 实际主问题={}",
@@ -268,7 +288,7 @@ public class InterviewQuestionService {
             throw e;
         } catch (Exception e) {
             log.error("方向题生成失败，回退到默认问题: {}", e.getMessage(), e);
-            return generateFallbackQuestions(skill, questionCount);
+            return generateFallbackQuestions(skill, questionCount, difficultyBase);
         }
     }
 
@@ -307,7 +327,7 @@ public class InterviewQuestionService {
             DIFFICULTY_DESCRIPTIONS.get(InterviewDefaults.DIFFICULTY));
     }
 
-    private List<InterviewQuestionDTO> convertToQuestions(QuestionListDTO dto) {
+    List<InterviewQuestionDTO> convertToQuestions(QuestionListDTO dto, int difficultyBase) {
         List<InterviewQuestionDTO> questions = new ArrayList<>();
         int index = 0;
 
@@ -320,19 +340,73 @@ public class InterviewQuestionService {
                 continue;
             }
             String type = (q.type() != null && !q.type().isBlank()) ? q.type().toUpperCase() : DEFAULT_QUESTION_TYPE;
+            int difficulty = normalizeDifficulty(q.difficulty(), difficultyBase);
+            List<String> expectedPoints = sanitizeExpectedPoints(q.expectedPoints());
             int mainQuestionIndex = index;
-            questions.add(InterviewQuestionDTO.create(index++, q.question(), type, q.category(), q.topicSummary(), false, null));
+            questions.add(InterviewQuestionDTO.createMain(
+                index++, q.question(), type, q.category(), q.topicSummary(), difficulty, expectedPoints));
 
-            List<String> followUps = sanitizeFollowUps(q.followUps());
+            List<FollowUpDTO> followUps = sanitizeFollowUps(q.followUps());
             for (int i = 0; i < followUps.size(); i++) {
-                questions.add(InterviewQuestionDTO.create(
-                    index++, followUps.get(i), type,
-                    buildFollowUpCategory(q.category(), i + 1), null, true, mainQuestionIndex
+                FollowUpDTO followUp = followUps.get(i);
+                // 追问不重复携带整体难度：决策引擎在 P4-3 依据主问题难度与作答质量决定是否加难
+                questions.add(InterviewQuestionDTO.createFollowUp(
+                    index++, followUp.question(), type,
+                    buildFollowUpCategory(q.category(), i + 1), mainQuestionIndex,
+                    normalizeFollowUpType(followUp.followUpType()),
+                    sanitizeExpectedPoints(followUp.expectedPoints())
                 ));
             }
         }
 
         return questions;
+    }
+
+    /** 难度归一：模型未给或越界时回落到整体难度基线，并夹取到 1-5 */
+    private int normalizeDifficulty(Integer difficulty, int difficultyBase) {
+        if (difficulty == null) {
+            return difficultyBase;
+        }
+        return Math.max(1, Math.min(5, difficulty));
+    }
+
+    private List<String> sanitizeExpectedPoints(List<String> expectedPoints) {
+        if (expectedPoints == null || expectedPoints.isEmpty()) {
+            return List.of();
+        }
+        return expectedPoints.stream()
+            .filter(item -> item != null && !item.isBlank())
+            .map(String::trim)
+            .limit(6)
+            .collect(Collectors.toList());
+    }
+
+    private List<FollowUpDTO> sanitizeFollowUps(List<FollowUpDTO> followUps) {
+        if (followUpCount == 0 || followUps == null || followUps.isEmpty()) {
+            return List.of();
+        }
+        return followUps.stream()
+            .filter(item -> item != null && item.question() != null && !item.question().isBlank())
+            .map(item -> new FollowUpDTO(item.question().trim(),
+                normalizeFollowUpType(item.followUpType()),
+                sanitizeExpectedPoints(item.expectedPoints())))
+            .limit(followUpCount)
+            .collect(Collectors.toList());
+    }
+
+    /** 追问语义类型白名单：未知类型回落为 DEPTH（继续深挖） */
+    private String normalizeFollowUpType(String followUpType) {
+        if (followUpType == null) {
+            return InterviewQuestionDTO.FOLLOW_UP_DEPTH;
+        }
+        String upper = followUpType.trim().toUpperCase();
+        return switch (upper) {
+            case InterviewQuestionDTO.FOLLOW_UP_SCENARIO,
+                 InterviewQuestionDTO.FOLLOW_UP_WHY,
+                 InterviewQuestionDTO.FOLLOW_UP_CLARIFICATION,
+                 InterviewQuestionDTO.FOLLOW_UP_DEPTH -> upper;
+            default -> InterviewQuestionDTO.FOLLOW_UP_DEPTH;
+        };
     }
 
     /**
@@ -364,22 +438,26 @@ public class InterviewQuestionService {
         return capped;
     }
 
-    private List<InterviewQuestionDTO> generateFallbackQuestions(SkillDTO skill, int count) {
+    private List<InterviewQuestionDTO> generateFallbackQuestions(SkillDTO skill, int count, int difficultyBase) {
         List<SkillCategoryDTO> categories = skill != null ? skill.categories() : List.of();
         List<InterviewQuestionDTO> questions = new ArrayList<>();
         int index = 0;
 
+        // fallback 主问题无考察要点可枚举，expectedPoints 留空；仍打上难度基线供决策引擎参考
         if (!categories.isEmpty()) {
             int generated = 0;
             while (generated < count) {
                 SkillCategoryDTO cat = categories.get(generated % categories.size());
                 String question = "请谈谈你在\"" + cat.label() + "\"方向的技术理解和实践经验。";
-                questions.add(InterviewQuestionDTO.create(index++, question, cat.key(), cat.label(), null, false, null));
+                questions.add(InterviewQuestionDTO.createMain(
+                    index++, question, cat.key(), cat.label(), null, difficultyBase, List.of()));
                 int mainIndex = index - 1;
                 for (int j = 0; j < followUpCount; j++) {
-                    questions.add(InterviewQuestionDTO.create(
+                    questions.add(InterviewQuestionDTO.createFollowUp(
                         index++, buildDefaultFollowUp(question, j + 1),
-                        cat.key(), buildFollowUpCategory(cat.label(), j + 1), null, true, mainIndex
+                        cat.key(), buildFollowUpCategory(cat.label(), j + 1), mainIndex,
+                        j == 0 ? InterviewQuestionDTO.FOLLOW_UP_SCENARIO : InterviewQuestionDTO.FOLLOW_UP_DEPTH,
+                        List.of()
                     ));
                 }
                 generated++;
@@ -389,12 +467,15 @@ public class InterviewQuestionService {
 
         for (int i = 0; i < Math.min(count, GENERIC_FALLBACK_QUESTIONS.length); i++) {
             String[] q = GENERIC_FALLBACK_QUESTIONS[i];
-            questions.add(InterviewQuestionDTO.create(index++, q[0], q[1], q[2], null, false, null));
+            questions.add(InterviewQuestionDTO.createMain(
+                index++, q[0], q[1], q[2], null, difficultyBase, List.of()));
             int mainIndex = index - 1;
             for (int j = 0; j < followUpCount; j++) {
-                questions.add(InterviewQuestionDTO.create(
+                questions.add(InterviewQuestionDTO.createFollowUp(
                     index++, buildDefaultFollowUp(q[0], j + 1),
-                    q[1], buildFollowUpCategory(q[2], j + 1), null, true, mainIndex
+                    q[1], buildFollowUpCategory(q[2], j + 1), mainIndex,
+                    j == 0 ? InterviewQuestionDTO.FOLLOW_UP_SCENARIO : InterviewQuestionDTO.FOLLOW_UP_DEPTH,
+                    List.of()
                 ));
             }
         }
@@ -442,17 +523,6 @@ public class InterviewQuestionService {
         return "\n\n# Skill Persona\n"
             + "以下内容来自当前面试方向的 SKILL.md，请作为面试官角色、风格与出题约束：\n"
             + promptSanitizer.wrapWithDelimiters("skill_persona", skill.persona());
-    }
-
-    private List<String> sanitizeFollowUps(List<String> followUps) {
-        if (followUpCount == 0 || followUps == null || followUps.isEmpty()) {
-            return List.of();
-        }
-        return followUps.stream()
-            .filter(item -> item != null && !item.isBlank())
-            .map(String::trim)
-            .limit(followUpCount)
-            .collect(Collectors.toList());
     }
 
     private String buildFollowUpCategory(String category, int order) {

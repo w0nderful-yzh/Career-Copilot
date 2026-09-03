@@ -173,16 +173,11 @@ public class KnowledgeBaseInterviewService {
       // 在可用的追问池里随机抽 followUpCount 个，避免每次面试都问同一组追问
       List<KnowledgeBaseQuestionFollowUpDTO> picked = pickFollowUps(source.followUps(), followUpCount);
       for (KnowledgeBaseQuestionFollowUpDTO followUp : picked) {
-        questions.add(new InterviewQuestionDTO(
+        questions.add(InterviewQuestionDTO.fromQuestionBankFollowUp(
             questions.size(),
             followUp.question(),
             defaultString(entity.getType(), "KNOWLEDGE_BASE"),
             defaultString(entity.getCategory(), "知识库追问"),
-            entity.getTopicSummary(),
-            null,
-            null,
-            null,
-            true,
             mainIndex,
             followUp.referenceAnswer(),
             followUp.keyPoints(),

@@ -169,30 +169,49 @@
 > 目标：交互与引擎双升级——面试在 Copilot 内发起并内嵌执行（不再跳配置页），由固定题单升级为动态追问。
 > 交互设计：`Career-Copilot-Inline-Interview-Design.md`；引擎设计：`Career Copilot 自适应模拟面试引擎设计文档.md`（Selection Before Generation）
 > 边界（Inline §3/§23-26）：Agent 管发起/配置推荐/结果解释；Java Engine 管实时执行（状态机 + Turn Evaluation + Decision Policy）；React InterviewSessionBlock 管展示。**答题直连 Java API，不过 Agent Graph**。
+> 现状基线（2026-09-02）：题单是创建时 LLM 一次性生成的**线性 list**（questionsJson 存 session），`submitAnswer` 同步存答案 + index+1 固定顺序返回下一题；评估是**整场异步**（EvaluateStream → 报告 → Evidence → 画像，P4-5 后半段已通）。**无 Question Pool / Turn Evaluation / Decision Policy / difficulty 数值 / expectedPoints / 持久化 question id**，P4 是全新引擎。
+> **P4 一期边界（2026-09-02 决策）**：Java 引擎改造成逐题决策；题库=创建时预生成 JSON 落库 + Selection；轻量评估同步在 submitAnswer 内做（只服务决策）；动态 LLM 生题 / Lookahead / 复杂时间分配 / 全量画像实时更新 二期再做。执行顺序改为 **Java 引擎先行（P4-1/2/3）→ 前端内嵌（P4-0）→ 端到端回接（P4-4/5/6）**。
 
-- [ ] **P4-0 InterviewSessionBlock 前端基线**（Inline §11-14、§19）
-  - 协议 `interview_session`（interviewId / status: READY|RUNNING|COMPLETED / direction / difficulty / mode / focus）加入受控 Block 白名单
-  - 组件树：Header / Progress / CurrentQuestion / AnswerComposer / Timer / Result
-  - 面试运行期隐藏或禁用普通 Composer（避免回答入口歧义）；ContextPanel 切换 Interview Context（进度 / 当前 Topic / 已覆盖·待覆盖 / 剩余时间，复用 P1-1 的面板）
-  - 面试过程集中在 Block 内，不写入 Conversation Message；结束折叠为结果卡（综合分 + per-skill 分数 + [查看详细报告]）
-  - 答题请求 React → Java Interview API 直连（语音面试暂沿用现有页面，Focus Mode 暂缓）
-- [ ] **P4-1 Question Pool 结构化**
-  - 每 Topic 预置 Main / Follow-up / Depth / Scenario 四类题目入库（题库生成走现有异步链路）
-- [ ] **P4-2 轻量 Turn Evaluation**
-  - 每轮回答 → 结构化输出（score / coverage / missingPoints / answerState / recommendedAction），低延迟模型；不复用整场报告
-- [ ] **P4-3 Decision Policy（代码控边界，LLM 只判语义）**
-  - 最大追问数 / Topic 时间预算 / 剩余总时长 / 难度上下限 / 话题覆盖率 / 出题去重
-  - **P3 接入点（原 P3-3 拆入）**：面试推荐时低分技能作为 focus 传入 create_interview——升级 P1-4 已上线的 interview_proposal 节点，从「LLM 猜 focus」变「Evidence 驱动」
-- [ ] **P4-4 动态行为集**
-  - FOLLOW_UP / NEXT_QUESTION / NEXT_TOPIC / UPGRADE / DOWNGRADE / SKIP / END_INTERVIEW
-  - Selection before Generation：优先 Pool 选题，无合适候选才 LLM 动态生题（fallback）
-- [ ] **P4-5 Interview Report 增强 → Evidence**
-  - 报告增加 per-skill 评分与关键 Turn 引用，落库后调用 Profile Aggregator 更新画像（闭环二右半段，依赖核心三）
-- [ ] **P4-6 面试完成后回流 Copilot**（Inline §22）
-  - 完成后 Agent 解释结果：强弱项对比（含画像变化 JVM 54→61 这类）+ 下一步 Action（[专项复习][再来一场][查看报告]）
-  - 用 InterviewSessionBlock 替换 P1-4 的过渡跳转方案，会话创建后原地内嵌展示
-- [ ] **P4-7 /interview-hub 重定位**（Inline §9，可选收尾）
-  - 默认展示最近面试与分数，仅点「创建自定义面试」才展开完整配置；Agent 成为默认入口
+## P4 实施顺序（2026-09 重排）
+
+> 现有 TodoList P4-0..P4-7 原顺序把前端 UI 放在引擎改造之前，且未区分一期/二期。重排为「引擎先行、端到端最后」，理由：① P4-0 的 InterviewSessionBlock 需要建立在新的逐题 API 上，先改造 Java 才能定协议；② 现 /interview 独立页可在引擎改造期间继续做回归（不破坏既有入口）；③ 避免在旧题单协议上先做 UI 再返工。
+> 一期 = P4-1/P4-2/P4-3/P4-0/P4-6a/P4-4a；二期 = P4-4b/P4-5/P4-6b/P4-7。
+
+### 一期 · Java 引擎改造
+
+- [ ] **P4-1 题库结构化（Question Graph 基础）**
+  - 扩展 `InterviewQuestionDTO`：`difficulty`（数值 1-5）、`expectedPoints: List<String>`、`followUpType`（一期枚举 DEPTH/SCENARIO/WHY/CLARIFICATION，先支持前两者）
+  - 题目仍创建时一次性生成：生成 prompt 要求按 direction categories 输出 Main 题 + 每题候选追问（挂 `expectedPoints`）；题库以 JSON 形式存 session（沿用 questionsJson，不加新表）
+  - 追问与主问题**不再线性合并**，改为图结构（主问题 + 独立候选追问 list，主问题引用 candidate follow-ups）
+  - 回归：现 /interview 独立页仍按主问题顺序作答可用（引擎未切换前顺序语义不变）
+- [ ] **P4-2 轻量 Turn Evaluation（同步、低延迟）**
+  - 每轮回答 → 同步结构化评估：`score / coverage / answerState(EXCELLENT|GOOD|PARTIAL|WEAK|WRONG|NO_ANSWER) / missingPoints / recommendedFocus`；低延迟模型 + `StructuredOutputInvoker`；不落库、只服务决策
+  - 短回答（"不会"等）直接短路为 NO_ANSWER 免评估
+- [ ] **P4-3 Decision Policy + Next Question Selection（代码控边界）**
+  - 决策输入：Turn Evaluation + 当前题 + 当前难度 + 已追问次数 + 剩余题数 + 覆盖度
+  - 输出动作（代码规则 + 有限语义建议）：
+    `FOLLOW_UP`（同主题候选追问，≤追问上限）→ `NEXT_QUESTION`（同 topic 未问主问题）→ `NEXT_TOPIC`（topic 已覆盖完）→ `UPGRADE`/`DOWNGRADE`（连续高分/低分/NO_ANSWER 才调整）→ `SKIP` → `END_INTERVIEW`
+  - **Selection Before Generation**：优先从当前 Topic 池选合适候选；题库无合适候选时 `END_INTERVIEW`/NEXT_TOPIC（一期**不实时 LLM 生题**，动态生成二期 fallback）
+  - 出题去重：同会话内题目不重复；已问 topic 与剩余分配约束
+  - `submitAnswer` 返回值扩展：`nextQuestion` 从「顺序下一题」变为「决策选出的下一题」（`hasNextQuestion=false` → 整场结束，进入现有异步评估闭环，回归现 /interview 页可用）
+
+### 一期 · 前端内嵌 + Copilot 接回
+
+- [ ] **P4-0 InterviewSessionBlock（复用现有面试组件逻辑，不重写）**
+  - 受控 block `interview_session`（interviewId / status / direction / difficulty / mode / focus / questionCount）进白名单；`create_interview` 成功后不再 NavigationBlock 跳 /interview/session（改原地插 InterviewSessionBlock）
+  - 组件复用现有 `InterviewPage` 的答题体验（问题展示/回答输入/进度/计时），抽成块内子组件；**面试轮次不进 Conversation Message**，状态集中在该 block；只保留结果卡 Artifact
+  - 面试运行期隐藏/禁用普通 Composer，避免回答入口歧义；ContextPanel 面试时可切 Interview Context（进度 / 当前 topic / 覆盖 / 剩余）
+  - 答题仍直连 Java `/api/interview/...`（不过 Agent Graph）
+- [ ] **P4-6a 面试完成后回流 Copilot（一期最小）**
+  - 面试结束（状态 COMPLETED/EVALUATED）→ Agent 解释结果（强弱项 + 下一步 Action [再来一场][查看报告]）
+  - 用 InterviewSessionBlock 内嵌替换 P1-4 过渡跳转（P1-4 NavigationBlock 保留为 /interview-hub 手动入口的补充）
+
+### 二期
+
+- [ ] **P4-4b 动态行为集扩展**：Follow-up 类型扩展（SCENARIO/WHY 等）+ 候选池无合适题时 LLM 动态生题（fallback，结构化输出 + 写回池）
+- [ ] **P4-5 报告增强（P4 侧）**：逐题评估可携带 difficulty/expectedPoints → 报告生成时若已有逐题数据可补充 per-skill 引用（Profile 聚合链路 P3 已通，闭环二右半段依赖核心三）
+- [ ] **P4-6b 画像联动增强**：面试后 Copilot 按新画像给下一步建议（"JVM 54→61"，需 Java 报告/画像差分数据可用后接入）
+- [ ] **P4-7 /interview-hub 重定位（可选收尾）**：默认最近面试列表，仅点「创建自定义面试」展开完整配置
 
 **验收**（对齐 Inline §28 MVP 十项 + §30 四个 Case）：自然语言发起 → 推荐 → 确认创建 → 内嵌答题 → 同主题追问不重复、难度可升降 → 结果卡 → Evidence 更新画像 → Copilot 给出下一步建议；全程停留在 /copilot。
 
@@ -263,3 +282,9 @@ Voice Agent 重构（现有语音面试保留原样）
 | **自评审循环预留节点、配置化、一期默认最小** | 每轮 2 次 LLM 调用 + 20-40s 等待；真实性靠代码校验器（确定性）而非 LLM review；有实测证据再开多轮 |
 | **Preview PDF 勾选即重渲；Preview ≠ 正式版本** | Typst 性能撑得起实时预览；确认前零持久化（临时 JSON 直渲 PDF 字节） |
 | **正式 PDF 手动导出** | 避免用户不导出时的浪费渲染；完成回执给导航，按钮放版本详情页 |
+| **P4 答题链路改造成逐题决策引擎**（一期） | 题单固定顺序无法动态追问/升降难度，是「AI 题库」而非自适应面试；一期先做 FOLLOW_UP/NEXT_QUESTION/NEXT_TOPIC + 追问上限 + 难度微调，Selection before Generation |
+| **P4 题库=创建时预生成 JSON 落库，不加独立 Question 表**（一期） | 对齐现有「创建即生成」无新异步链路；池 JSON 存 session 够一期决策用；Question 独立表/Lookahead/跨会话题库 二期按需引入 |
+| **P4 轻量 Turn Evaluation 同步在 submitAnswer 内做** | 轻量评估只服务下一题决策，1-3s 内返回可接受；不落库、不复用整场报告；避免再引入异步+轮询的复杂度 |
+| **P4 一期不实时 LLM 动态生题；池无候选→NEXT_TOPIC/END** | 实时生成拉高延迟且违反 Selection before Generation；动态生成作为二期 fallback（结构化 + 写回池） |
+| **P4-0 复用 InterviewPage 组件逻辑而非重写** | 答题交互已直连 Java API 且验证过；抽成块内子组件，避免 UI 双份实现，也保留 /interview 独立手动入口 |
+| **P4 实施顺序：Java 引擎先行 → 前端内嵌 → 端到端回接**（2026-09） | P4-0 需建立在新逐题 API 上；现 /interview 页可作引擎改造期回归；避免在旧题单协议上先做 UI 再返工 |

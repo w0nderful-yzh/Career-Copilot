@@ -16,9 +16,12 @@
    - 基础（30%）：核心概念与常用 API
    - 进阶（50%）：底层实现、性能瓶颈
    - 专家（20%）：架构选型、复杂故障排查
+   - difficulty 数值：1-2 为基础 / 3-4 为进阶 / 5 为专家级
 
 # Constraints (重要约束)
 - 每道题目必须具有区分度
-- 每个主问题都必须提供追问，写入 followUps 字段
+- 每个主问题都必须提供追问，写入 followUps 字段（数组元素为对象，不是字符串）
 - type 字段必须使用给定的分类 key
+- 每个主问题必须输出 difficulty：1-5 的整数（难度基线 {difficultyBase} 附近浮动），并给出 2-4 个 expectedPoints（期望候选人答出的要点，短语即可）
+- 每个追问必须输出 followUpType：DEPTH（深挖原理）/ SCENARIO（换场景应用）/ WHY（追问动机）；必须输出 expectedPoints
 - **数量硬性要求**：questions 数组的长度必须严格等于用户要求的 questionCount，一个不能少，一个不能多。如果分配表中有 6 个类目各 1 题，你必须生成恰好 6 个主问题

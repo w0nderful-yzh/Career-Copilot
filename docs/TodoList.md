@@ -184,9 +184,10 @@
   - 题目仍创建时一次性生成：生成 prompt 要求按 direction categories 输出 Main 题 + 每题候选追问（挂 `expectedPoints`）；题库以 JSON 形式存 session（沿用 questionsJson，不加新表）
   - 追问与主问题**不再线性合并**，改为图结构（主问题 + 独立候选追问 list，主问题引用 candidate follow-ups）
   - 回归：现 /interview 独立页仍按主问题顺序作答可用（引擎未切换前顺序语义不变）
-- [ ] **P4-2 轻量 Turn Evaluation（同步、低延迟）**
-  - 每轮回答 → 同步结构化评估：`score / coverage / answerState(EXCELLENT|GOOD|PARTIAL|WEAK|WRONG|NO_ANSWER) / missingPoints / recommendedFocus`；低延迟模型 + `StructuredOutputInvoker`；不落库、只服务决策
-  - 短回答（"不会"等）直接短路为 NO_ANSWER 免评估
+- [x] **P4-2 轻量 Turn Evaluation（同步、低延迟）**
+  - `TurnEvaluationService`：回答 → 同步结构化评估（score/answerState/covered·missingPoints/recommendedFocus）；`coverage` 由要点列表**代码计算**（模型不输出浮点）；`score` 夹取 0-100、状态与分数互相补齐自洽；prompt 只含当前题 + 期望要点 + 回答（token 最小），不落库、只服务决策（P4-3 决策引擎接入）
+  - NO_ANSWER 短路词表（"不会/不知道/跳过/i don't know"…）免 LLM；LLM 失败回落中性 PARTIAL 不阻塞答题
+  - 新增 `TurnEvaluation` record + `turn-evaluation-system/user.st` + `TurnEvaluationProperties`；7 个单测（短路/归一/越界夹取/coverage/失败回落/无要点中性）+ 全量 `:app:test` 通过
 - [ ] **P4-3 Decision Policy + Next Question Selection（代码控边界）**
   - 决策输入：Turn Evaluation + 当前题 + 当前难度 + 已追问次数 + 剩余题数 + 覆盖度
   - 输出动作（代码规则 + 有限语义建议）：

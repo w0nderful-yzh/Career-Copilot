@@ -166,8 +166,11 @@ export default function InterviewWorkspace({
       } else {
         // 意外回到未完成（理论不发生），继续轮询
       }
-    } catch {
-      // 网络抖动：保持轮询
+    } catch (err) {
+      // 会话不存在（已删除/被清理）→ 停止轮询，避免无限「评估中」
+      if (pollRef.current) window.clearInterval(pollRef.current);
+      console.error('轮询面试评估失败（可能会话已删除）:', err);
+      onChangeStatus({ ...mode, status: 'error', error: '面试会话不存在或已删除，请返回对话。' });
     }
   }, [mode, onChangeStatus, stopTimers]);
 

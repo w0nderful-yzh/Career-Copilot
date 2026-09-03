@@ -4,6 +4,7 @@ import interview.guide.common.constant.CommonConstants.InterviewDefaults;
 import interview.guide.common.exception.BusinessException;
 import interview.guide.common.exception.ErrorCode;
 import interview.guide.common.model.AsyncTaskStatus;
+import interview.guide.infrastructure.redis.InterviewSessionCache;
 import interview.guide.modules.interview.model.HistoricalQuestion;
 import interview.guide.modules.interview.model.InterviewAnswerEntity;
 import interview.guide.modules.interview.model.InterviewQuestionDTO;
@@ -35,12 +36,14 @@ import java.util.Optional;
 @Service
 @RequiredArgsConstructor
 public class InterviewPersistenceService {
-    
+
     private final InterviewSessionRepository sessionRepository;
     private final InterviewAnswerRepository answerRepository;
     private final ResumeRepository resumeRepository;
     private final ObjectMapper objectMapper;
     private final SkillProfileAggregator profileAggregator;
+    /** 删除会话时必须同步失效 Redis 缓存，否则缓存残留形成「幽灵会话」（DB 无、UI 可进） */
+    private final InterviewSessionCache sessionCache;
     
     /**
      * 保存新的面试会话（支持可选简历）
@@ -357,6 +360,8 @@ public class InterviewPersistenceService {
             profileAggregator.removeInterviewSessionEvidence(
                 sessions.stream().map(InterviewSessionEntity::getSessionId).toList());
             sessionRepository.deleteAll(sessions);
+            // 同步失效 Redis 缓存，防「幽灵会话」残留
+            sessions.forEach(session -> sessionCache.deleteSession(session.getSessionId()));
             log.info("已删除 {} 个面试会话（包含所有答案）", sessions.size());
         }
     }
@@ -373,6 +378,8 @@ public class InterviewPersistenceService {
             // 级联清理该会话的技能画像证据并重聚合受影响技能
             profileAggregator.removeInterviewSessionEvidence(sessionId);
             sessionRepository.delete(sessionOpt.get());
+            // 同步失效 Redis 缓存，防「幽灵会话」残留
+            sessionCache.deleteSession(sessionId);
             log.info("已删除面试会话: sessionId={}", sessionId);
         } else {
             throw new BusinessException(ErrorCode.INTERVIEW_SESSION_NOT_FOUND);

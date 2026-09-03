@@ -1,5 +1,6 @@
 package interview.guide.modules.interview.service;
 
+import interview.guide.infrastructure.redis.InterviewSessionCache;
 import interview.guide.modules.interview.model.InterviewSessionEntity;
 import interview.guide.modules.interview.repository.InterviewAnswerRepository;
 import interview.guide.modules.interview.repository.InterviewSessionRepository;
@@ -14,6 +15,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import tools.jackson.databind.ObjectMapper;
 
 import java.util.List;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -34,6 +36,9 @@ class InterviewPersistenceServiceTest {
 
   @Mock
   private SkillProfileAggregator profileAggregator;
+
+  @Mock
+  private InterviewSessionCache sessionCache;
 
   private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -72,13 +77,28 @@ class InterviewPersistenceServiceTest {
     assertThat(saved.getKnowledgeBaseId()).isNull();
   }
 
+  @Test
+  @DisplayName("删除会话时同步失效 Redis 缓存（防幽灵会话残留）")
+  void deleteSessionEvictsCache() {
+    InterviewPersistenceService service = newService();
+    InterviewSessionEntity entity = new InterviewSessionEntity();
+    entity.setSessionId("ghost-session");
+    when(sessionRepository.findBySessionId("ghost-session")).thenReturn(Optional.of(entity));
+
+    service.deleteSessionBySessionId("ghost-session");
+
+    verify(sessionRepository).delete(entity);
+    verify(sessionCache).deleteSession("ghost-session");
+  }
+
   private InterviewPersistenceService newService() {
     return new InterviewPersistenceService(
         sessionRepository,
         answerRepository,
         resumeRepository,
         objectMapper,
-        profileAggregator
+        profileAggregator,
+        sessionCache
     );
   }
 }

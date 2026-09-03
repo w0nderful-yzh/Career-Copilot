@@ -3,6 +3,7 @@ import { useOutletContext } from 'react-router-dom';
 import { conversationApi, jobUploadApi, resumeUploadApi, streamChat } from '../api/agentChat';
 import Composer, { type AttachmentKind } from '../components/copilot/Composer';
 import ContextPanel from '../components/copilot/ContextPanel';
+import InterviewWorkspace from '../components/copilot/InterviewWorkspace';
 import MessageList from '../components/copilot/MessageList';
 import type { CopilotOutletContext } from '../components/Layout';
 import type {
@@ -13,6 +14,8 @@ import type {
   ConversationDetail,
   ConversationItem,
   CopilotMessage,
+  InterviewModeState,
+  InterviewSessionBlock,
   StreamEvent,
 } from '../types/copilot';
 
@@ -47,11 +50,17 @@ function toCopilotMessages(detail: ConversationDetail): CopilotMessage[] {
   }));
 }
 
-/** 是否存在「运行中」的内嵌面试块（P4-0）：运行期隐藏普通 Composer，避免回答入口歧义 */
-function hasActiveInterview(messages: CopilotMessage[]): boolean {
-  return messages.some((message) =>
-    message.blocks.some((block) => block.type === 'interview_session'),
-  );
+/** 取消息流里最近一个 interview_session 信号块（Interview Mode 重构：进入 Interview Mode 的信号） */
+function latestInterviewSignal(messages: CopilotMessage[]): InterviewSessionBlock | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    for (let j = messages[i].blocks.length - 1; j >= 0; j--) {
+      const block = messages[i].blocks[j];
+      if (block.type === 'interview_session') {
+        return block;
+      }
+    }
+  }
+  return null;
 }
 
 export default function CopilotPage() {
@@ -68,6 +77,8 @@ export default function CopilotPage() {
   // 会话绑定的活动 JD（Conversation Memory，P2-5；侧栏活跃资源展示用）
   const [boundJobId, setBoundJobId] = useState<number | null>(null);
   const [streaming, setStreaming] = useState(false);
+  // Interview Mode（Interview Mode 重构）：null = 普通聊天；有值 = 中间区进入面试模式
+  const [interviewMode, setInterviewMode] = useState<InterviewModeState | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   // 新建会话首次触发历史加载时跳过（保留刚追加的流式消息，避免被空历史覆盖）
   const skipHistoryLoadRef = useRef<number | null>(null);
@@ -382,8 +393,53 @@ export default function CopilotPage() {
     abortRef.current?.abort();
   }, []);
 
-  // P4-0：有内嵌面试进行中时隐藏普通 Composer（回答集中在面试块内）
-  const interviewActive = hasActiveInterview(messages);
+  // 面试信号块到达 → 进入 Interview Mode（若已是同会话 mode 则保持，避免重复进入）
+  useEffect(() => {
+    const signal = latestInterviewSignal(messages);
+    if (!signal) return;
+    setInterviewMode((prev) => {
+      if (prev && prev.sessionId === signal.session_id) return prev;
+      const title = signal.direction_name || signal.skill_id || '模拟面试';
+      return {
+        sessionId: signal.session_id,
+        status: 'starting',
+        title,
+        difficulty: signal.difficulty ?? null,
+      };
+    });
+  }, [messages]);
+
+  // 切换会话时退出 Interview Mode（Java 会话保留，可恢复）
+  useEffect(() => {
+    setInterviewMode(null);
+  }, [activeConversationId]);
+
+  // 面试完成 → 退出 Interview Mode，向会话写入一条轻量「面试完成摘要」artifact
+  // （领域隔离：过程不写 conversation，只写结果；供历史回放与复盘）
+  const exitInterviewWithSummary = useCallback(async (title: string) => {
+    const summaryContent = `✅ 模拟面试完成（${title}）。表现已写入能力画像，可让我复盘本次面试或再来一场。`;
+    if (activeConversationId !== null) {
+      const assistantId = `interview_done_${Date.now()}`;
+      setMessages((prev) => [
+        ...prev,
+        { id: assistantId, role: 'assistant', content: summaryContent, blocks: [], status: 'done' },
+      ]);
+      try {
+        const res = await fetch(`/api/agent/conversations/${activeConversationId}/messages`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            messages: [{ role: 'ASSISTANT', content: summaryContent, blocks: JSON.stringify([]) }],
+          }),
+        });
+        if (!res.ok) console.error('保存面试完成摘要失败:', res.status);
+      } catch (err) {
+        console.error('保存面试完成摘要失败:', err);
+      }
+    }
+    setInterviewMode(null);
+  }, [activeConversationId]);
+
   const activeConversation = conversations.find((item) => item.id === activeConversationId);
 
   return (
@@ -404,30 +460,34 @@ export default function CopilotPage() {
           </div>
         </header>
 
-        <main className="relative flex-1 overflow-y-auto bg-[radial-gradient(circle_at_top,_rgba(99,102,241,0.06),_transparent_38%)] dark:bg-[radial-gradient(circle_at_top,_rgba(99,102,241,0.10),_transparent_38%)]">
-          {loadingHistory ? (
-            <div className="flex h-full items-center justify-center text-sm text-slate-400">
-              加载对话中…
-            </div>
-          ) : (
-            <MessageList
-              messages={messages}
-              actionDisabled={streaming}
-              onActionSelect={submitAction}
-              onQuickPrompt={(prompt) => void send(prompt)}
-            />
-          )}
-        </main>
+        {interviewMode ? (
+          <InterviewWorkspace
+            mode={interviewMode}
+            onChangeStatus={setInterviewMode}
+            onExit={() => void exitInterviewWithSummary(interviewMode.title)}
+          />
+        ) : (
+          <>
+            <main className="relative flex-1 overflow-y-auto bg-[radial-gradient(circle_at_top,_rgba(99,102,241,0.06),_transparent_38%)] dark:bg-[radial-gradient(circle_at_top,_rgba(99,102,241,0.10),_transparent_38%)]">
+              {loadingHistory ? (
+                <div className="flex h-full items-center justify-center text-sm text-slate-400">
+                  加载对话中…
+                </div>
+              ) : (
+                <MessageList
+                  messages={messages}
+                  actionDisabled={streaming}
+                  onActionSelect={submitAction}
+                  onQuickPrompt={(prompt) => void send(prompt)}
+                />
+              )}
+            </main>
 
-        <div className="shrink-0 border-t border-slate-200/60 bg-white/85 pt-3 backdrop-blur-xl dark:border-slate-700 dark:bg-slate-900/85">
-          {interviewActive ? (
-            <p className="px-4 pb-3 text-center text-xs text-slate-400">
-              模拟面试进行中，请在面试卡片内回答。
-            </p>
-          ) : (
-            <Composer streaming={streaming} onSend={send} onCancel={cancel} />
-          )}
-        </div>
+            <div className="shrink-0 border-t border-slate-200/60 bg-white/85 pt-3 backdrop-blur-xl dark:border-slate-700 dark:bg-slate-900/85">
+              <Composer streaming={streaming} onSend={send} onCancel={cancel} />
+            </div>
+          </>
+        )}
       </section>
       <ContextPanel messages={messages} activeJobId={boundJobId} />
     </div>

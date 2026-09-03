@@ -35,7 +35,6 @@ import type {
 import type { ResumeContentJson } from '../../api/history';
 import { historyApi } from '../../api/history';
 import { resolveActionRoute } from '../../constants/routes';
-import InterviewSessionBlockView from './InterviewSessionBlockView';
 import InterviewConfigPanel from './InterviewConfigPanel';
 
 // Copilot 受控 Block 渲染器：只渲染白名单类型，未知类型静默忽略。
@@ -770,12 +769,9 @@ export default function BlockRenderer({
         />
       );
     case 'interview_session':
-      return (
-        <InterviewSessionBlockView
-          block={block}
-          onActionSelect={onActionSelect}
-        />
-      );
+      // Interview Mode 重构：该块仅作为「进入 Interview Mode」的信号，
+      // 由 CopilotPage 消费并切换到 InterviewWorkspace，不再渲染 Card。
+      return null;
     default:
       return null; // 未知类型：受控忽略
   }

@@ -60,34 +60,29 @@ export interface InterviewConfig {
 }
 
 /**
- * 内嵌面试会话块（P4-0）：CREATE_INTERVIEW 成功后原地内嵌，答题直连 Java Interview API。
- * 展示参数由 Agent 创建时给出；状态机在块内自管理
- * （读取 getSession / submitAnswer / 轮询评估），不写入 Conversation Message。
- * 注意：字段为 snake_case —— 与 Python 协议/Java 透传一致（同 InterviewProposalBlock）。
+ * 面试会话信号块（Interview Mode 重构）：CREATE_INTERVIEW 成功后由 Agent 下发。
+ * 前端不再渲染成大 Card，而是把它作为「进入 Interview Mode」的信号：
+ * CopilotPage 读取 session_id → 切到 Interview Mode，由消息流渲染 Java 题目数据。
  */
 export interface InterviewSessionBlock {
   type: 'interview_session';
-  /** Java 面试会话 ID */
   session_id: string;
-  /** Java skillId（如 java-backend），用于展示 */
   skill_id?: string | null;
-  /** Java 难度枚举 junior/mid/senior，用于展示 */
   difficulty?: string | null;
   mode: 'TEXT' | 'VOICE';
   focus?: string[];
   question_count?: number | null;
-  /** 方向展示名（Agent 语境，如 "Java 后端"）；缺省回退 skill_id */
   direction_name?: string | null;
 }
 
-/** 内嵌面试块的展示状态（块内部状态机，非持久化协议字段） */
-export type InterviewLiveStatus =
-  | 'loading'      // 拉取会话中
-  | 'running'      // 面试进行中（展示当前题 + 输入）
-  | 'answering'    // 提交答案后等待下一题（决策/评估中）
-  | 'evaluating'   // 全部答完，等待异步整场评估
-  | 'completed'    // 评估完成，展示结果卡
-  | 'error';       // 会话不可用
+/** Interview Mode 的运行时状态（放 CopilotPage，驱动中间区渲染） */
+export interface InterviewModeState {
+  sessionId: string;
+  status: 'starting' | 'running' | 'evaluating' | 'completed' | 'error';
+  title: string;
+  difficulty?: string | null;
+  error?: string | null;
+}
 
 export interface ChoiceOption {
   action: string;

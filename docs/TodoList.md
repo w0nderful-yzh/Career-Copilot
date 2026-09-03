@@ -204,6 +204,7 @@
   - **面试轮次不进 Conversation Message**：每轮只走 Java API，块内存活；刷新历史仅重放展示参数（重进会话由块重新拉取，Java 是权威）
   - 面试运行期隐藏普通 Composer（CopilotPage 检测 interview_session 块 → 提示「请在面试卡片内回答」）
   - 答题直连 Java `/api/interview/...`（不过 Agent Graph）；创建即 adaptive=true（P4-3 决策引擎生效）
+  - ⚠️ 2026-09-03 Interview Mode 重构后 **已废弃删除**：`InterviewSessionBlockView` 大卡移除，`interview_session` 改为「进入 Interview Mode 的信号块」（见下方「Interview Mode 重构」）
 - [x] **P4-6a 面试完成后回流 Copilot（一期最小）**
   - 结果卡 [让 Copilot 复盘这次面试] → REVIEW_INTERVIEW action → execute_action 读 Java `/details`（强项/弱项/逐题得分，**真实数据不得编造**）→ answerer 流式复盘 + [再来一场] Choice + [查看面试记录] Action
   - AgentTool 侧 `get_interview_detail` client（直连详情端点，非 Tool）+ `summarize_interview_detail` 裁剪（Token 纪律）
@@ -293,3 +294,20 @@ Voice Agent 重构（现有语音面试保留原样）
 | **P4 一期不实时 LLM 动态生题；池无候选→NEXT_TOPIC/END** | 实时生成拉高延迟且违反 Selection before Generation；动态生成作为二期 fallback（结构化 + 写回池） |
 | **P4-0 复用 InterviewPage 组件逻辑而非重写** | 答题交互已直连 Java API 且验证过；抽成块内子组件，避免 UI 双份实现，也保留 /interview 独立手动入口 |
 | **P4 实施顺序：Java 引擎先行 → 前端内嵌 → 端到端回接**（2026-09） | P4-0 需建立在新逐题 API 上；现 /interview 页可作引擎改造期回归；避免在旧题单协议上先做 UI 再返工 |
+
+---
+
+# Interview Mode 重构（2026-09-03，交互模型升级，覆盖 P4-0 卡片方案）
+
+> 决策来源：`Career_Copilot_模拟面试_Interview_Mode_重构说明.md`。
+> 核心：模拟面试不是一张嵌入聊天的 Card，而是 Copilot 的一种**页面模式**——中间主交互区切换为 Interview Mode，
+> 题目/回答以普通消息流渲染，输入复用底部 Composer，顶部轻量状态栏（题号/计时/结束面试）。
+
+- [x] **结构调整**
+  - `CopilotPage` 引入 `mode: chat | interview`（`InterviewModeState`）；`interview_session` 块 = 进入 Interview Mode 的信号（不再渲染 Card，删除 InterviewSessionBlockView）
+  - `InterviewWorkspace`：顶部轻量状态栏 + 消息流（面试官题/用户答，复用气泡视觉）+ 底部答题输入（Enter 提交）+ 结束面试/提前交卷
+  - `InterviewConfigPanel`：提案块下内联配置面板（方向/难度/题量/focus 多选，skillApi 数据），**点击调整配置不再发送聊天消息**；[按自定义配置] 与 [按推荐] 收敛同一 InterviewConfig → CREATE_INTERVIEW
+- [x] **领域隔离（A）**：面试每轮 Q/A 不写普通 conversation；Java InterviewSession 为权威持久化；完成后写一条轻量「面试完成摘要」artifact（本地气泡 + POST /conversations/{id}/messages）供历史回放/复盘
+- [x] **可恢复（B）**：切会话/刷新不结束面试；Java 会话保留，重新进入按 sessionId 恢复 Interview Mode（顶栏 status running/evaluating/completed）
+- [x] **轻量结果（C）**：完成后留在 Interview Mode 展示综合分/维度分摘要 + [完成并返回对话]；不再用大型结果 Card
+- [x] **调整配置三态**：① 内联面板手动改 ② Composer 自然语言「难度高一点，多问 JVM」→ interview_proposal 结合本条消息重新推荐（原「重新推荐」Choice 移除）

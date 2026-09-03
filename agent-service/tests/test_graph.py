@@ -1143,6 +1143,75 @@ async def test_graph_create_interview_action_embeds_session_block():
     assert next((b for b in plan.blocks if b.type == "navigation"), None) is None
 
 
+async def test_graph_review_interview_reads_detail_and_streams_review():
+    """REVIEW_INTERVIEW action（结果卡）→ 读 Java 面试详情 → 复盘流 + 下一步动作（P4-6a）。"""
+    hits: list[str] = []
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        hits.append(path)
+        if path == "/api/interview/sessions/abc123/details":
+            return httpx.Response(200, json={
+                "code": 200,
+                "data": {
+                    "sessionId": "abc123",
+                    "overallScore": 73,
+                    "strengths": ["Redis 回答完整", "MySQL 索引原理清晰"],
+                    "improvements": ["JVM 类加载机制理解偏浅"],
+                    "overallFeedback": "整体中上，JVM 需要加强。",
+                    "answers": [
+                        {"category": "Redis", "questionIndex": 0, "score": 82, "feedback": "持久化对比清楚"},
+                        {"category": "JVM", "questionIndex": 1, "score": 55, "feedback": "类加载器未答全"},
+                    ],
+                },
+                "message": "success",
+            })
+        return httpx.Response(200, json={"code": 200, "data": None, "message": "success"})
+
+    deps, _ = make_deps(
+        IntentClassification(intent=Intent.GENERAL_CHAT), transport
+    )
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None,
+        message="",
+        attachments=[],
+        action={
+            "type": "ACTION_SELECTED",
+            "action": "REVIEW_INTERVIEW",
+            "payload": {"sessionId": "abc123"},
+        },
+    )
+    result = await graph.ainvoke(state)
+
+    plan = result["plan"]
+    assert any(path.endswith("/interview/sessions/abc123/details") for path in hits), "应调用 Java 面试详情"
+    text = "".join([chunk async for chunk in plan.text])
+    assert "fake answer" in text
+    # 附下一步动作：查看面试记录（导航白名单）+ 再来一场（Choice）
+    assert next((b for b in plan.blocks if b.type == "action"), None) is not None
+    choice = next((b for b in plan.blocks if b.type == "choice"), None)
+    assert choice is not None
+    assert any(opt.action == "START_INTERVIEW" for opt in choice.options)
+
+
+async def test_graph_review_interview_requires_session_id():
+    """REVIEW_INTERVIEW 缺 sessionId 应提示，不调用后端。"""
+    transport = _proposal_transport()
+    deps = _proposal_deps(transport, {})
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None,
+        message="",
+        attachments=[],
+        action={"type": "ACTION_SELECTED", "action": "REVIEW_INTERVIEW", "payload": {}},
+    )
+    result = await graph.ainvoke(state)
+    text = "".join([c async for c in result["plan"].text])
+    assert "缺少面试信息" in text
+    assert result["plan"].blocks == []
+
+
 async def test_graph_create_interview_action_requires_direction():
     """CREATE_INTERVIEW 缺 direction 时应拒绝创建并提示（不调后端写接口）。"""
     transport = _proposal_transport()

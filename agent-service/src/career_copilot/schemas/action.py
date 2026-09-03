@@ -18,6 +18,7 @@ class AgentAction(StrEnum):
     START_INTERVIEW = "START_INTERVIEW"  # 模拟面试（面试提案：推荐/调整）
     CREATE_INTERVIEW = "CREATE_INTERVIEW"  # 按推荐配置创建面试（CONFIRM_WRITE）
     APPLY_RESUME_PATCHES = "APPLY_RESUME_PATCHES"  # 应用勾选的简历优化建议（CONFIRM_WRITE，P2-2）
+    REVIEW_INTERVIEW = "REVIEW_INTERVIEW"  # 复盘刚结束的面试（P4-6a 面试结果回流 Copilot）
     JOB_MATCH = "JOB_MATCH"  # 岗位匹配（预留）
 
 

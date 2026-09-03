@@ -204,10 +204,12 @@
   - **面试轮次不进 Conversation Message**：每轮只走 Java API，块内存活；刷新历史仅重放展示参数（重进会话由块重新拉取，Java 是权威）
   - 面试运行期隐藏普通 Composer（CopilotPage 检测 interview_session 块 → 提示「请在面试卡片内回答」）
   - 答题直连 Java `/api/interview/...`（不过 Agent Graph）；创建即 adaptive=true（P4-3 决策引擎生效）
-- [ ] **P4-6a 面试完成后回流 Copilot（一期最小）**
-  - 面试结束（状态 COMPLETED/EVALUATED）→ Agent 解释结果（强弱项 + 下一步 Action [再来一场][查看报告]）
-  - 现状：结果卡已展示，Agent 自然语言可引导「复盘/再来一场」；差分画像话术待 P4-6b（需报告/画像差分数据）
+- [x] **P4-6a 面试完成后回流 Copilot（一期最小）**
+  - 结果卡 [让 Copilot 复盘这次面试] → REVIEW_INTERVIEW action → execute_action 读 Java `/details`（强项/弱项/逐题得分，**真实数据不得编造**）→ answerer 流式复盘 + [再来一场] Choice + [查看面试记录] Action
+  - AgentTool 侧 `get_interview_detail` client（直连详情端点，非 Tool）+ `summarize_interview_detail` 裁剪（Token 纪律）
+  - 差分画像话术（"JVM 54→61"）待 P4-6b（需报告/画像差分数据接入）
   - P1-4 NavigationBlock 保留为 /interview-hub 手动入口补充（未删）
+  - 已验证：graph 2 例（详情命中 + 复盘流 + 动作；缺 sessionId 拒绝）+ agent-service 75 pytest 通过 + 前端 build
 
 ### 二期
 

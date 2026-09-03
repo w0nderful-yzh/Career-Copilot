@@ -110,6 +110,39 @@ async def summarize_interviews(history: list[dict[str, Any]], limit: int = 5) ->
     return "最近模拟面试：\n" + "\n".join(rows)
 
 
+def summarize_interview_detail(detail: dict[str, Any], max_answers: int = 8) -> str:
+    """把单场面试详情（Java /details）裁剪为复盘上下文：强项/弱项 + 逐题评分。
+
+    只摘客观字段（overallScore/strengths/improvements + 每题 score/feedback），
+    不复述题目全文，避免长文塞入 Prompt。
+    """
+    if not detail:
+        return "（面试详情不可用）"
+    lines = [f"面试 {detail.get('sessionId')} 复盘数据："]
+    score = detail.get("overallScore")
+    if score is not None:
+        lines.append(f"- 综合得分: {score}")
+    strengths = detail.get("strengths") or []
+    if strengths:
+        lines.append(f"- 强项: {'；'.join(str(s) for s in strengths[:4])}")
+    improvements = detail.get("improvements") or []
+    if improvements:
+        lines.append(f"- 待提升: {'；'.join(str(s) for s in improvements[:4])}")
+    overall = detail.get("overallFeedback")
+    if overall:
+        lines.append(f"- 总评: {str(overall)[:200]}")
+    answers = detail.get("answers") or []
+    if answers:
+        lines.append("逐题表现：")
+        for a in answers[:max_answers]:
+            feedback = str(a.get("feedback") or "").strip()
+            lines.append(
+                f"  - [{a.get('category')}] 得分{a.get('score')}"
+                + (f" 反馈: {feedback[:80]}" if feedback else "")
+            )
+    return "\n".join(lines)
+
+
 def summarize_skills(skills: list[dict[str, Any]], limit: int = 8) -> str:
     """把技能方向列表裁剪为适合放入 Prompt 的摘要（id + 展示名 + 分类）。"""
     if not skills:

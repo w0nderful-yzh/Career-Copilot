@@ -19,7 +19,8 @@ from career_copilot.agent.router import ActionRoute
 from career_copilot.agent.state import CareerAgentState, RunStatus
 from career_copilot.clients.backend import BusinessToolError
 from career_copilot.schemas.action import AgentAction
-from career_copilot.schemas.message import ActionBlock, NavigationBlock
+from career_copilot.schemas.message import ActionBlock, ChoiceBlock, ChoiceOption, NavigationBlock
+from career_copilot.tools import format_history, summarize_interview_detail
 
 
 async def execute_action(state: CareerAgentState, deps: GraphDeps) -> dict[str, Any]:
@@ -59,6 +60,9 @@ async def execute_action(state: CareerAgentState, deps: GraphDeps) -> dict[str, 
 
     if action_name == AgentAction.APPLY_RESUME_PATCHES.value:
         return await _apply_resume_patches_action(state, deps, payload)
+
+    if action_name == AgentAction.REVIEW_INTERVIEW.value:
+        return await _review_interview_action(state, deps, payload)
 
     return {"plan": _dispatch(action_name, payload)}
 
@@ -244,6 +248,71 @@ async def _apply_resume_patches_action(
                 "原版本保持不变，你可以随时对比或回退。"
                 "需要的话我可以基于新版本再做一轮优化，或者来一场模拟面试检验效果。"
             ),
+        )
+    }
+
+
+async def _review_interview_action(
+    state: CareerAgentState,
+    deps: GraphDeps,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """复盘刚结束的面试（P4-6a 面试结果回流 Copilot）。
+
+    payload 由结果卡携带 sessionId。读取 Java 面试详情（强项/弱项/逐题得分），
+    让 LLM 基于客观数据给出复盘（answerer 系统 prompt 禁止编造参考信息）；
+    附 [再来一场] / [查看面试记录] 下一步动作。
+    """
+    session_id = payload.get("sessionId")
+    if not isinstance(session_id, str) or not session_id:
+        return {
+            "plan": StreamPlan(
+                text=static_text("缺少面试信息，请回到面试结果卡片重新操作。")
+            )
+        }
+
+    emit_tool_started("interview_review")
+    try:
+        detail = await deps.backend.get_interview_detail(session_id)
+    except BusinessToolError as exc:
+        emit_tool_completed("interview_review")
+        return {
+            "plan": StreamPlan(
+                text=static_text(
+                    f"读取面试详情失败：{exc.message}。你可以在「面试记录」页查看完整报告。"
+                )
+            )
+        }
+    emit_tool_completed("interview_review")
+
+    context = summarize_interview_detail(detail)
+    history = format_history(
+        state.get("history") or [],
+        state.get("history_summary"),
+        snapshot=state.get("user_snapshot"),
+    )
+    message = (state.get("message") or "").strip() or "请帮我复盘这次面试"
+
+    return {
+        "plan": StreamPlan(
+            blocks=[
+                ActionBlock(
+                    route=ActionRoute.INTERVIEW_HISTORY.value,
+                    label="查看面试记录",
+                    params={},
+                ),
+                ChoiceBlock(
+                    title="下一步",
+                    options=[
+                        ChoiceOption(
+                            action=AgentAction.START_INTERVIEW.value,
+                            label="再来一场模拟面试",
+                            payload={},
+                        ),
+                    ],
+                ),
+            ],
+            text=deps.answerer.answer_stream(message, context, history or None),
         )
     }
 

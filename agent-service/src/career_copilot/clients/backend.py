@@ -101,6 +101,21 @@ class BackendClient:
         data = await self.call_tool("get_interview_history")
         return data if isinstance(data, list) else []
 
+    async def get_interview_detail(self, session_id: str) -> dict[str, Any]:
+        """单场面试详情（P4-6a 复盘数据源）。
+
+        直连 Java /api/interview/sessions/{sessionId}/details：
+        strengths/improvements/overallFeedback + 逐题 answers（题目/回答/分数/反馈）。
+        非 Agent Tool（无 CONFIRM_WRITE），Java 会话不存在时抛 BusinessToolError。
+        """
+        try:
+            response = await self._client.get(f"/api/interview/sessions/{session_id}/details")
+        except httpx.HTTPError as exc:
+            raise BusinessToolError(500, f"后端服务不可达: {exc}", retryable=True) from exc
+        body = self._unwrap_result(response)
+        data = body.get("data")
+        return data if isinstance(data, dict) else {}
+
     async def get_skill_profile(self) -> dict[str, Any]:
         """用户技能画像：各技能聚合分 + 可追溯证据（来自哪些面试、每题得分）。
 

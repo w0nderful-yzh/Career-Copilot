@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CheckCircle2, Clock, Loader2, RotateCcw, Send, Trophy } from 'lucide-react';
+import { CheckCircle2, Clock, Loader2, RotateCcw, Send, Sparkles, Trophy } from 'lucide-react';
 import { interviewApi } from '../../api/interview';
-import type { InterviewSessionBlock, InterviewLiveStatus } from '../../types/copilot';
+import type { ChoiceOption, InterviewSessionBlock, InterviewLiveStatus } from '../../types/copilot';
 import type { InterviewQuestion, InterviewSession, InterviewReport } from '../../types/interview';
 
 // P4-0 内嵌面试会话块：答题直连 Java Interview API，块内自管理状态机。
 // - 拉取会话 → 展示当前题 → 提交答案（Java 决策引擎返回下一题/结束）→ 结束轮询整场评估 → 结果卡
 // - 面试运行期由上层隐藏普通 Composer；本块不向 Conversation 写入每轮内容。
+// P4-6a：结果卡提供「让 Copilot 复盘」→ 通过 onActionSelect 触发 REVIEW_INTERVIEW action。
 
 const DIFFICULTY_LABELS: Record<string, string> = {
   junior: '校招',
@@ -22,7 +23,13 @@ function formatSeconds(totalSeconds: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-export default function InterviewSessionBlockView({ block }: { block: InterviewSessionBlock }) {
+export default function InterviewSessionBlockView({
+  block,
+  onActionSelect,
+}: {
+  block: InterviewSessionBlock;
+  onActionSelect?: (option: ChoiceOption) => void;
+}) {
   const [session, setSession] = useState<InterviewSession | null>(null);
   const [question, setQuestion] = useState<InterviewQuestion | null>(null);
   const [status, setStatus] = useState<InterviewLiveStatus>('loading');
@@ -260,8 +267,22 @@ export default function InterviewSessionBlockView({ block }: { block: InterviewS
               </div>
             )}
             <p className="mx-auto mt-3 max-w-md text-xs leading-relaxed text-slate-400">
-              面试完成，评估已写入能力画像。你可以让 Copilot 复盘本次表现，或再来一场。
+              面试完成，评估已写入能力画像。
             </p>
+            {onActionSelect && (
+              <button
+                onClick={() =>
+                  onActionSelect({
+                    action: 'REVIEW_INTERVIEW',
+                    label: '让 Copilot 复盘这次面试',
+                    payload: { sessionId: block.sessionId },
+                  })
+                }
+                className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-primary-500 to-indigo-600 px-4 py-2 text-sm font-semibold text-white transition hover:-translate-y-0.5 hover:from-primary-600 hover:to-indigo-700"
+              >
+                <Sparkles className="h-4 w-4" /> 让 Copilot 复盘这次面试
+              </button>
+            )}
           </div>
         )}
       </div>

@@ -733,7 +733,12 @@ export default function BlockRenderer({
         />
       );
     case 'interview_session':
-      return <InterviewSessionBlockView block={block} />;
+      return (
+        <InterviewSessionBlockView
+          block={block}
+          onActionSelect={onActionSelect}
+        />
+      );
     default:
       return null; // 未知类型：受控忽略
   }

@@ -10,6 +10,7 @@ import interview.guide.modules.conversation.dto.CreateConversationRequest;
 import interview.guide.modules.conversation.dto.SaveMessagesRequest;
 import interview.guide.modules.conversation.dto.SaveMessagesRequest.MessagePayload;
 import interview.guide.modules.conversation.model.AgentConversationEntity;
+import interview.guide.modules.conversation.model.AgentConversationEntity.ConversationStatus;
 import interview.guide.modules.conversation.model.AgentMessageEntity;
 import interview.guide.modules.conversation.model.AgentMessageEntity.MessageRole;
 import interview.guide.modules.conversation.model.AgentMessageEntity.MessageStatus;
@@ -52,12 +53,43 @@ public class AgentConversationService {
     return toListItem(conversation);
   }
 
-  public List<ConversationListItemDTO> listConversations() {
+  /**
+   * 会话列表：默认只返回活跃会话；status 传 ARCHIVED 时返回已归档会话。
+   *
+   * <p>归档是软隐藏且可恢复，与 {@link #deleteConversation} 的硬删除语义区分：
+   * 归档用于「从工作区收起但保留记录」，删除不可恢复。
+   */
+  public List<ConversationListItemDTO> listConversations(String status) {
+    ConversationStatus queryStatus = parseConversationStatus(status);
     return conversationRepository
-        .findActiveByUserIdOrderByPinnedAndUpdatedAtDesc(DEFAULT_USER_ID)
+        .findByUserIdAndStatusOrderByPinnedAndUpdatedAtDesc(DEFAULT_USER_ID, queryStatus)
         .stream()
         .map(this::toListItem)
         .toList();
+  }
+
+  /** 归档会话：软隐藏，可从归档列表恢复 */
+  @Transactional
+  public void archiveConversation(Long conversationId) {
+    changeStatus(conversationId, ConversationStatus.ARCHIVED);
+  }
+
+  /** 恢复已归档会话，回到活跃列表（置顶状态保持不变） */
+  @Transactional
+  public void restoreConversation(Long conversationId) {
+    changeStatus(conversationId, ConversationStatus.ACTIVE);
+  }
+
+  /**
+   * 删除会话：硬删除且不可恢复（前端确认文案与此一致）。
+   *
+   * <p>只想从工作区收起、保留记录的场景应使用 {@link #archiveConversation}。
+   */
+  @Transactional
+  public void deleteConversation(Long conversationId) {
+    AgentConversationEntity conversation = getConversationOrThrow(conversationId);
+    conversationRepository.delete(conversation);
+    log.info("Conversation deleted: id={}", conversationId);
   }
 
   public ConversationDetailDTO getConversationDetail(Long conversationId) {
@@ -157,11 +189,12 @@ return new ConversationContextDTO(
     conversationRepository.save(conversation);
   }
 
-  @Transactional
-  public void deleteConversation(Long conversationId) {
+  /** 变更会话状态（归档 / 恢复共用） */
+  private void changeStatus(Long conversationId, ConversationStatus status) {
     AgentConversationEntity conversation = getConversationOrThrow(conversationId);
-    conversationRepository.delete(conversation);
-    log.info("Conversation deleted: id={}", conversationId);
+    conversation.setStatus(status);
+    conversationRepository.save(conversation);
+    log.info("Conversation status changed: id={}, status={}", conversationId, status);
   }
 
   /**
@@ -236,6 +269,19 @@ return new ConversationContextDTO(
     } catch (IllegalArgumentException e) {
       throw new BusinessException(
           ErrorCode.CONVERSATION_MESSAGE_INVALID, "非法消息状态: " + status);
+    }
+  }
+
+  /** 解析列表查询的会话状态；缺省（未传）按 ACTIVE，只列活跃会话 */
+  private ConversationStatus parseConversationStatus(String status) {
+    if (status == null || status.isBlank()) {
+      return ConversationStatus.ACTIVE;
+    }
+    try {
+      return ConversationStatus.valueOf(status.trim().toUpperCase());
+    } catch (IllegalArgumentException e) {
+      throw new BusinessException(
+          ErrorCode.CONVERSATION_STATUS_INVALID, "非法会话状态: " + status);
     }
   }
 

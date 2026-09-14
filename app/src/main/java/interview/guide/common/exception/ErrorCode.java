@@ -94,7 +94,8 @@ public enum ErrorCode {
 
     // ========== Copilot 对话模块错误 13xxx ==========
     CONVERSATION_NOT_FOUND(13001, "对话不存在"),
-    CONVERSATION_MESSAGE_INVALID(13002, "对话消息参数无效");
+    CONVERSATION_MESSAGE_INVALID(13002, "对话消息参数无效"),
+    CONVERSATION_STATUS_INVALID(13003, "对话状态参数无效");
 
     private final Integer code;
     private final String message;

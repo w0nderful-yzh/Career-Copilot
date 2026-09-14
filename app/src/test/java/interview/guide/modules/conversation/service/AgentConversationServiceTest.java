@@ -296,6 +296,78 @@ class AgentConversationServiceTest {
   }
 
   @Nested
+  @DisplayName("会话状态（归档/恢复）")
+  class ConversationStatusLifecycle {
+
+    @Test
+    @DisplayName("归档：置为 ARCHIVED 并落库")
+    void archiveSetsArchived() {
+      AgentConversationEntity conversation = stubConversation(50L);
+      when(conversationRepository.save(any())).thenReturn(conversation);
+
+      conversationService.archiveConversation(50L);
+
+      assertThat(conversation.getStatus())
+          .isEqualTo(AgentConversationEntity.ConversationStatus.ARCHIVED);
+      verify(conversationRepository).save(conversation);
+    }
+
+    @Test
+    @DisplayName("恢复：置回 ACTIVE，置顶状态保持不变")
+    void restoreSetsActiveAndKeepsPin() {
+      AgentConversationEntity conversation = stubConversation(51L);
+      conversation.setStatus(AgentConversationEntity.ConversationStatus.ARCHIVED);
+      conversation.setIsPinned(true);
+      when(conversationRepository.save(any())).thenReturn(conversation);
+
+      conversationService.restoreConversation(51L);
+
+      assertThat(conversation.getStatus())
+          .isEqualTo(AgentConversationEntity.ConversationStatus.ACTIVE);
+      assertThat(conversation.getIsPinned()).isTrue();
+    }
+
+    @Test
+    @DisplayName("列表：未传 status 时只查活跃会话（不要把归档会话混进来）")
+    void listDefaultsToActive() {
+      when(conversationRepository.findByUserIdAndStatusOrderByPinnedAndUpdatedAtDesc(
+          "default", AgentConversationEntity.ConversationStatus.ACTIVE))
+          .thenReturn(List.of());
+
+      conversationService.listConversations(null);
+
+      verify(conversationRepository).findByUserIdAndStatusOrderByPinnedAndUpdatedAtDesc(
+          "default", AgentConversationEntity.ConversationStatus.ACTIVE);
+    }
+
+    @Test
+    @DisplayName("列表：status=ARCHIVED 时查已归档会话（归档集合此前无入口可查看）")
+    void listArchived() {
+      AgentConversationEntity archived = new AgentConversationEntity();
+      archived.setId(52L);
+      archived.setTitle("旧会话");
+      archived.setMessageCount(3);
+      archived.setStatus(AgentConversationEntity.ConversationStatus.ARCHIVED);
+      when(conversationRepository.findByUserIdAndStatusOrderByPinnedAndUpdatedAtDesc(
+          "default", AgentConversationEntity.ConversationStatus.ARCHIVED))
+          .thenReturn(List.of(archived));
+
+      var items = conversationService.listConversations("archived");
+
+      assertThat(items).hasSize(1);
+      assertThat(items.get(0).title()).isEqualTo("旧会话");
+    }
+
+    @Test
+    @DisplayName("列表：非法 status 抛 CONVERSATION_STATUS_INVALID")
+    void rejectsInvalidStatus() {
+      assertThatThrownBy(() -> conversationService.listConversations("DELETED"))
+          .isInstanceOf(BusinessException.class)
+          .hasFieldOrPropertyWithValue("code", ErrorCode.CONVERSATION_STATUS_INVALID.getCode());
+    }
+  }
+
+  @Nested
   @DisplayName("会话不存在")
   class ConversationNotFound {
 

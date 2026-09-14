@@ -25,6 +25,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
+    # 挂真实 Postgres：每次 CI 都会在全新空库上真跑一遍完整 Flyway 迁移链
+    # （此前 CI 里所有迁移都是零验证），并让依赖真实 DB 的集成用例真正执行而非跳过。
+    # 刻意不挂 Redis：实测 Redis 不可用时 Spring 上下文仍能启动（消费者只报连接告警），
+    # 相关用例不依赖它；多加一个 service 只会拖慢 CI。
+    # 迁移自带 CREATE EXTENSION（hstore / uuid-ossp / vector），故无需挂载 init.sql。
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: interview_guide
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -36,9 +56,16 @@ jobs:
           java-version: "25"
           cache: gradle
 
-      # 依赖真实 DB / 本地二进制的集成用例（画像真实 DB 链路、Typst golden）在 CI 中按条件跳过；
-      # 跳过是显式声明的预期行为，不算失败。任何 failures/errors 都必须为 0。
+      # 依赖本地二进制（Typst golden）与语音面试 test profile 的用例仍按条件跳过，
+      # 跳过是显式声明的预期行为；任何 failures/errors 都必须为 0。
       - name: Run backend tests
+        env:
+          # 集成用例按「环境变量 → 项目根 .env」解析凭据；CI 无 .env，故由此注入
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: "5432"
+          POSTGRES_DB: interview_guide
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
         run: ./gradlew :app:test --no-daemon
 
   agent:

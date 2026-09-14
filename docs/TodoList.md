@@ -65,8 +65,8 @@
   - 已回归：意图「JVM GC 是什么」→ KNOWLEDGE_QA → knowledge_tool 节点（未裸答）；本地知识库为空时如实兜底；search_knowledge → RAG 答案 → knowledge_citations 引用块由既有单测覆盖（test_chat_api）
 - [ ] **P1-6 打磨（非闭环必需，穿插做）**
   - [x] 流式中断消息标记（Java message status「已停止」）—— 2026-09-14 完成，三态落库见下方「P1 待收口」
-  - [ ] 会话重命名 / 归档 UI（API 已有）
-  - [ ] Composer 移除 window.alert，改内联错误提示
+  - [x] 会话重命名 / 归档 UI（API 已有）—— 2026-09-14 完成，含归档视图与恢复入口
+  - [x] Composer 移除 window.alert，改内联错误提示 —— 2026-09-14 完成
 
 **验收**：Text/File/Action 三类输入稳定可用；Tool 调用有可见状态；附件→确认→选择→跳转全链路在前端真实可点。
 
@@ -300,6 +300,9 @@ Voice Agent 重构（现有语音面试保留原样）
 | **加载失败必须与空态显式区分**（2026-09-14） | 此前拉会话详情失败只 `console.error`、`messages` 保持为空，界面渲染出新会话首屏，用户会以为历史被清空；会话列表失败会显示「还没有对话」；删除失败更是毫无反馈。三处统一改为受控错误态 + 重试入口 |
 | **「重新发送」语义 = 新的一轮，不新增 regenerate 协议** | Java `saveMessages` 会一并落一条用户消息，界面与历史必须与持久化一致（不做无痕重放）。若要「原地续写 / 重新生成」，需在 `ChatRequest` 增加 regenerate 语义以跳过 USER 落库——协议变更成本高于本轮收益，留作后续独立改动 |
 | **代码高亮改 prism-light + 25 种白名单语言** | 默认 prism 构建含 300 种语言语法，异步 chunk 达 697.69 kB；未注册语言直接按纯文本渲染，比对未知语言依赖高亮器兜底更确定，也避免把整包语法拉回来 |
+| **会话「删除」与「归档」语义分离**（2026-09-14） | 删除 = 硬删除且不可恢复；归档 = 软隐藏、保留记录、可恢复。数据层早有 `ConversationStatus{ACTIVE,ARCHIVED}` 且列表只查 ACTIVE，但既无归档入口也无恢复入口（只进不出的黑洞），故补齐归档/恢复端点与归档视图，并把删除确认文案改为引导改用归档 |
+| **会话列表用 `?status=` 过滤而非两个端点**（2026-09-14） | 复用同一 DTO 与查询、语义直白；代价是前端路由桩必须与查询参数无关（本次已因此踩到 E2E 假失败） |
+| **CI backend job 挂真实 Postgres，不挂 Redis**（2026-09-14） | 迁移链此前在 CI 里零验证；挂 Postgres 后每次 CI 都在空库上跑完整迁移且集成用例真跑。Redis 经实测不可用时上下文仍能启动（消费者仅告警），无需为其增加 CI 时长 |
 
 ---
 
@@ -331,7 +334,7 @@ Todo 原始统计为 **32 / 48 项勾选（约 66.7%）**。由于列表中包�
 当前项目定位：**核心技术骨架基本齐备，可进入集成测试和产品打磨阶段，但还未达到完整产品验收标准。**
 
 > **工程基线（2026-09-14 更新）**：P6-0 已完成 —— Java / Python / Frontend 三端质量门禁全部转绿，并已固化到 CI（含原 CI 从未触发的分支配置修复）。后续功能累计不得再引入失败基线。详见「四、验证基线问题」与「五、P6-0」。
-> **P1 待收口进度**：4 项已完成 3 项（Composer 内联错误 / 停止生成三态落库 / 加载与错误态 + 重发入口），仅剩「会话重命名、归档/恢复」。另完成一项主动性能优化（P6-5）。
+> **P1 待收口进度**：**4 项全部完成**（Composer 内联错误 / 停止生成三态落库 / 加载与错误态 + 重发入口 / 会话重命名与归档恢复）。另完成一项主动性能优化（P6-5）。
 > 勾选计数：审计节之前的原始 TodoList 仍为 **32 / 48**；审计节自身为 **31 / 81**（含新增的 P6 打磨项）。
 
 | 模块 | 代码审计状态 | 当前判断 |
@@ -388,7 +391,13 @@ Todo 原始统计为 **32 / 48 项勾选（约 66.7%）**。由于列表中包�
   - Python：落库移出生成器 `finally`（`done` 改在正常/异常分支发出），改为调度**脱手任务**——独立 `BackendClient`（不复用请求作用域连接池，后者在请求结束时被 aclose，且模块级直建会绕过 dependency_overrides，故留 `_new_persist_client` 作为测试接缝）；终态默认 STOPPED，只有跑到流末尾才改写 COMPLETED，abort 天然落回「已停止」；`lifespan` 关闭时 `flush_pending_persists()` 收敛在途写入，避免进程退出丢内容。
   - 前端：`MessageStatus` 增加 `stopped`；`cancel()` 不再把中断标成 `done`；历史回放按 Java status 还原 done/stopped/error（缺省不误判为异常）；停止态用中性提示，与 error 红条区分。
   - 已验证：Java 对话服务 20 个单测（含 7 个终态用例）；Python 79 个测试通过，其中 `test_chat_stream_aborted_turn_persists_as_stopped` 直接驱动 `StreamingResponse.body_iterator` 后 `aclose()` 触发 GeneratorExit（TestClient 的 `response.close()` 不会真正中断服务端生成器，服务端会跑完，故无法用它复现；该用例在修复前必然失败）；前端新增 `test:copilot-turn-status` 4 个映射单测 + build + E2E 通过。
-- [ ] 补齐会话重命名、归档/恢复能力；明确"删除"和"归档"的产品语义
+- [x] 补齐会话重命名、归档/恢复能力；明确"删除"和"归档"的产品语义（2026-09-14）
+  - **侦察结论：一半已通电、一半是黑洞**。`PUT /title`、`PUT /pin`、`DELETE` 端点早已存在，前端 `conversationApi.rename/togglePin` 也写好了但**从未被调用**；实体与 DB 早有 `ConversationStatus{ACTIVE,ARCHIVED}`，`listConversations()` 也已经在过滤 ACTIVE —— 也就是说「归档」在数据层已经生效，但既没有归档入口，也没有查看/恢复入口，**已归档会话只进不出**。
+  - Java：会话列表加 `?status=ACTIVE|ARCHIVED`（默认 ACTIVE）过滤；新增 `PUT /{id}/archive` 与 `PUT /{id}/restore`；仓储方法由写死 `status = 'ACTIVE'` 改为状态参数；新增错误码 `CONVERSATION_STATUS_INVALID(13003)`。
+  - 前端：会话条目由「只有一个删除图标」扩成 置顶 / 重命名 / 归档 / 删除（归档视图为 恢复 / 删除）；重命名为就地编辑（Enter 保存、Esc 取消、失焦保存，空标题不提交）；侧栏底部加「已归档」入口，进入后顶部变为返回入口。
+  - **语义定案**：删除 = 硬删除且不可恢复；归档 = 软隐藏、保留记录、可恢复。删除确认文案改为「删除后不可恢复。若只是想从列表收起、保留记录，请改用『归档』」。归档当前打开的会话时一并取消选中，避免它从列表消失却仍处于打开状态。
+  - 已验证：Java 会话服务 27 个单测（含 5 个状态生命周期用例）；真实链路（bootRun 8081 + 真库）——建会话 → 重命名/置顶 → 归档后从活跃列表消失且出现在归档列表 → 恢复后回到活跃列表并从归档移除 → 非法 status 返回 `13003`；新增 `e2e/copilot-sessions.spec.ts` 2 条（就地重命名、归档→查看→恢复完整来回）
+  - 踩坑：新增 `?status=` 查询参数后，E2E 里写死的路径 glob 桩不再匹配，请求落到真实后端而表现为「列表加载失败」——**是 E2E 抓到的真实回归**，桩已改为与查询参数无关的正则
 - [x] 补充 Copilot 主链路的加载、空状态、断网、SSE 中断和 Tool 失败体验（2026-09-14）
   - **加载失败不再伪装成空态**：`CopilotPage` 拉会话详情失败此前只 `console.error`，`messages` 保持空数组 → 界面渲染出「今天想为求职推进哪一步？」的新会话首屏，用户会以为历史被清空。现在显式记录失败态，展示错误面板 + [重试]（重试走递增 reloadKey 重新触发加载 effect）
   - **会话列表失败同理**：`Layout` 记录 `conversationError` 并传入 `SessionList`；列表已有内容时作顶部提示（如删除失败——此前删除失败也只有 console，界面毫无反馈），列表为空时提示本身就是主体，两种情况都不退化成「还没有对话」
@@ -459,7 +468,7 @@ Todo 原始统计为 **32 / 48 项勾选（约 66.7%）**。由于列表中包�
   - 修复方式：`.scrollbar-thin` 三条规则改为直接声明 + Tailwind 主题变量（`var(--color-slate-*)`），暗色显式写 `.dark` 祖先选择器
   - 已验证：构建产物中 `:where()` 出现 0 次，3 条 `css-syntax-error` 警告消失
 - [x] 评估并拆分超过 500 KB 的 `syntax-highlighter` 等大 Chunk（2026-09-14，见「五、P6-5 性能优化」）
-- [ ] 补充简历优化、能力画像和文字自适应面试 E2E；Copilot 加载/错误/停止态已由 `e2e/copilot-states.spec.ts` 覆盖
+- [ ] 补充简历优化、能力画像和文字自适应面试 E2E；Copilot 加载/错误/停止态（`e2e/copilot-states.spec.ts`）与会话管理（`e2e/copilot-sessions.spec.ts`）已覆盖
 
 ## 五、Phase 6：产品优化与打磨——优先级 P6
 
@@ -467,12 +476,14 @@ Todo 原始统计为 **32 / 48 项勾选（约 66.7%）**。由于列表中包�
 
 - [x] Java 全量测试通过 —— `./gradlew :app:test --no-daemon`：384 测试 / 0 失败 / 0 错误 / 50 跳过（跳过均为显式声明的预期行为）
 - [x] Python pytest、ruff、mypy 全部通过 —— ruff 0 错、mypy 0 错（40 源文件）、pytest 75 通过
-- [x] Frontend build、unit test、E2E 全部通过 —— build 成功且 CSS 语法警告清零、7 个单测脚本 29 项通过、Playwright E2E 5 项通过
+- [x] Frontend build、unit test、E2E 全部通过 —— build 成功且 CSS 语法警告清零、7 个单测脚本 29 项通过、Playwright E2E 7 项通过
 - [x] 将上述命令固化到 CI，禁止带失败基线继续累计功能
   - **关键修复**：`.github/workflows/ci.yml` 原触发分支写的是 `master`，而本仓库真实分支是 `main`（默认）+ `dev`，`master` 只存在于 upstream 父仓库 —— 即原 CI **从未被触发过**。已改为 `main` + `dev`
   - 新增 `agent` job：`uv sync --frozen` → `ruff check src tests` → `mypy src` → `pytest`（原 CI 完全没有 Python 门禁）
   - 新增 `test:copilot-action`（原 CI 漏跑）与 Playwright E2E（含 `playwright install --with-deps chromium`）；E2E 用例自带 WebSocket stub 与 API route mock，只需前端 dev server，不依赖 Java/DB
   - 新增聚合 `quality-gate` job（`needs: [backend, agent, frontend]`，`if: always()` 且任一非 success 即 exit 1）：分支保护只需勾选这一个 check
+  - **backend job 挂真实 Postgres service**（`pgvector/pgvector:pg16` + 健康检查 + 注入 `POSTGRES_*`）：每次 CI 都会在**全新空库**上真跑一遍完整 Flyway 迁移链（此前 CI 里所有迁移都是零验证），依赖真实 DB 的集成用例也从「跳过」变为真跑；刻意不挂 Redis——已实测 Redis 不可用时上下文仍能启动（消费者只报连接告警），相关用例不依赖它
+  - 该改动经本地空库预验证：新建空库 → `POSTGRES_DB=xxx ./gradlew :app:cleanTest :app:test` → 15 条迁移全部成功、hstore/uuid-ossp/vector 扩展自动创建、`agent_messages.status` 为 NOT NULL 且 `completed` 已移除、24 张表就绪
 
 **验证方式**：以上三端命令均在本地以 CI 原样命令复跑通过；CI 触发分支与 YAML 结构已校验。
 

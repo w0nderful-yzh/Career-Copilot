@@ -319,9 +319,6 @@ async def _review_interview_action(
 
 def _dispatch(action_name: str | None, payload: dict[str, Any]) -> StreamPlan:
     """动作注册表：action key → 确定流程。"""
-    resume_id = payload.get("resumeId")
-    params: dict[str, Any] = {"resumeId": resume_id} if resume_id else {}
-
     handlers: dict[str, StreamPlan] = {
         # ANALYZE_RESUME / OPTIMIZE_RESUME / START_INTERVIEW / CREATE_INTERVIEW 已在上方异步处理
         AgentAction.JOB_MATCH.value: StreamPlan(

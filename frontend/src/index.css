@@ -96,20 +96,40 @@
     }
 }
 
-/* 自定义滚动条 */
+/* 自定义滚动条
+   注意：这里不能对伪元素使用 @apply 的 dark:/hover: 变体——变体选择器会被重写成空的
+   `:where()`，产出 `::-webkit-scrollbar-track:where()` 这类非法语法，vite 压缩阶段会报
+   css-syntax-error。因此直接写声明 + Tailwind 主题变量，暗色走 .dark 祖先选择器。 */
 @layer utilities {
   .scrollbar-thin::-webkit-scrollbar {
-    @apply w-2 h-2;
+    width: 0.5rem;
+    height: 0.5rem;
   }
 
-    .scrollbar-thin::-webkit-scrollbar-track {
-    @apply bg-slate-100 rounded;
-        @apply dark:bg-slate-800;
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background-color: var(--color-slate-100);
+    border-radius: 0.25rem;
   }
 
-    .scrollbar-thin::-webkit-scrollbar-thumb {
-    @apply bg-slate-300 rounded hover:bg-slate-400;
-        @apply dark:bg-slate-600 dark:hover:bg-slate-500;
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: var(--color-slate-300);
+    border-radius: 0.25rem;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background-color: var(--color-slate-400);
+  }
+
+  .dark .scrollbar-thin::-webkit-scrollbar-track {
+    background-color: var(--color-slate-800);
+  }
+
+  .dark .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: var(--color-slate-600);
+  }
+
+  .dark .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background-color: var(--color-slate-500);
   }
 }
 

@@ -15,7 +15,7 @@ import json
 import logging
 from typing import Any
 
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from career_copilot.agent.deps import GraphDeps
 from career_copilot.agent.events import emit_run_status, emit_tool_completed, emit_tool_started
@@ -31,7 +31,12 @@ logger = logging.getLogger(__name__)
 PROPOSAL_SYSTEM_PROMPT = """你是 Career Copilot 的面试配置推荐器。
 根据用户消息、简历内容与可选面试方向，推导一场模拟面试的推荐配置。
 只输出 json 对象，不要输出任何额外文本：
-{"direction": "<skillId>", "difficulty": "junior|mid|senior", "focus": ["分类key"], "summary": "一句话推荐理由"}
+{
+  "direction": "<skillId>",
+  "difficulty": "junior|mid|senior",
+  "focus": ["分类key"],
+  "summary": "一句话推荐理由"
+}
 
 规则：
 - direction 必须来自「可选面试方向」列表中的 skillId，优先选择与用户简历/意图最匹配的方向；
@@ -79,7 +84,9 @@ async def interview_proposal(
             )
             resume_context = summarize_resume_for_interview(resume)
         except BusinessToolError as exc:
-            logger.info("面试推荐读取简历失败，回退通用推荐: resumeId=%s code=%s", resume_id, exc.code)
+            logger.info(
+                "面试推荐读取简历失败，回退通用推荐: resumeId=%s code=%s", resume_id, exc.code
+            )
         finally:
             emit_tool_completed("resume_query")
 
@@ -140,6 +147,9 @@ async def _derive_proposal(
     )
     try:
         model = getattr(deps.answerer, "_model", None)
+        if model is None:
+            # 模型未注入（配置缺失）属于可恢复场景：走 except 回落确定性默认推荐
+            raise RuntimeError("answerer 未注入模型，无法推导面试推荐配置")
         response = await model.ainvoke(
             [
                 SystemMessage(content=PROPOSAL_SYSTEM_PROMPT),

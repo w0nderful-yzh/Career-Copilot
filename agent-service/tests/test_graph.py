@@ -1159,8 +1159,18 @@ async def test_graph_review_interview_reads_detail_and_streams_review():
                     "improvements": ["JVM 类加载机制理解偏浅"],
                     "overallFeedback": "整体中上，JVM 需要加强。",
                     "answers": [
-                        {"category": "Redis", "questionIndex": 0, "score": 82, "feedback": "持久化对比清楚"},
-                        {"category": "JVM", "questionIndex": 1, "score": 55, "feedback": "类加载器未答全"},
+                        {
+                            "category": "Redis",
+                            "questionIndex": 0,
+                            "score": 82,
+                            "feedback": "持久化对比清楚",
+                        },
+                        {
+                            "category": "JVM",
+                            "questionIndex": 1,
+                            "score": 55,
+                            "feedback": "类加载器未答全",
+                        },
                     ],
                 },
                 "message": "success",
@@ -1184,7 +1194,9 @@ async def test_graph_review_interview_reads_detail_and_streams_review():
     result = await graph.ainvoke(state)
 
     plan = result["plan"]
-    assert any(path.endswith("/interview/sessions/abc123/details") for path in hits), "应调用 Java 面试详情"
+    assert any(
+        path.endswith("/interview/sessions/abc123/details") for path in hits
+    ), "应调用 Java 面试详情"
     text = "".join([chunk async for chunk in plan.text])
     assert "fake answer" in text
     # 附下一步动作：查看面试记录（导航白名单）+ 再来一场（Choice）

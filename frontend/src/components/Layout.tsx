@@ -51,6 +51,11 @@ export default function Layout() {
   const [loadingConversations, setLoadingConversations] = useState(false);
   // 会话列表加载失败：与「还没有对话」的空态区分，否则失败会被当成空列表展示
   const [conversationError, setConversationError] = useState<string | null>(null);
+  // 归档视图：归档在数据层早已生效（列表只查 ACTIVE），但此前没有任何归档入口，
+  // 也没有查看/恢复入口——归档集合只进不出。这里补上进入与恢复。
+  const [archivedMode, setArchivedMode] = useState(false);
+  const [archivedConversations, setArchivedConversations] = useState<ConversationItem[]>([]);
+  const [archivedLoading, setArchivedLoading] = useState(false);
 
   const refreshConversations = useCallback(async () => {
     try {
@@ -75,23 +80,121 @@ export default function Layout() {
     navigate(ROUTES.copilot);
   }, [navigate]);
 
-  const deleteConversation = useCallback(
-    async (conversationId: number) => {
-      const confirmed = window.confirm('确定删除这段对话吗？删除后不可恢复。');
-      if (!confirmed) return;
+  /**
+   * 会话操作统一包装：失败写入 conversationError（界面可见），成功后刷新受影响的列表。
+   *
+   * @param refresh 操作影响哪个列表：active 刷新活跃列表，archived 刷新归档列表
+   * @returns 是否成功（调用方据此决定是否要继续做后续状态调整，如取消选中）
+   */
+  const runConversationAction = useCallback(
+    async (
+      action: () => Promise<unknown>,
+      failMessage: string,
+      refresh: 'active' | 'archived',
+    ): Promise<boolean> => {
       try {
-        await conversationApi.remove(conversationId);
-        setConversations((prev) => prev.filter((c) => c.id !== conversationId));
-        if (activeConversationId === conversationId) {
-          setActiveConversationId(null);
+        await action();
+        setConversationError(null);
+        if (refresh === 'archived') {
+          setArchivedConversations(await conversationApi.list('ARCHIVED'));
+        } else {
+          await refreshConversations();
         }
+        return true;
       } catch (err) {
-        console.error('Failed to delete conversation:', err);
-        // 删除失败此前只有 console：界面无任何反馈，用户会以为删掉了
-        setConversationError(err instanceof Error ? err.message : '删除会话失败，请重试');
+        console.error(failMessage, err);
+        setConversationError(err instanceof Error ? err.message : failMessage);
+        return false;
       }
     },
-    [activeConversationId],
+    [refreshConversations],
+  );
+
+  const renameConversation = useCallback(
+    (conversationId: number, title: string) =>
+      runConversationAction(
+        () => conversationApi.rename(conversationId, title),
+        '重命名失败，请重试',
+        archivedMode ? 'archived' : 'active',
+      ),
+    [archivedMode, runConversationAction],
+  );
+
+  const togglePinConversation = useCallback(
+    (conversationId: number) =>
+      runConversationAction(
+        () => conversationApi.togglePin(conversationId),
+        '置顶操作失败，请重试',
+        archivedMode ? 'archived' : 'active',
+      ),
+    [archivedMode, runConversationAction],
+  );
+
+  const archiveConversation = useCallback(
+    async (conversationId: number) => {
+      const ok = await runConversationAction(
+        () => conversationApi.archive(conversationId),
+        '归档失败，请重试',
+        'active',
+      );
+      // 归档的正是当前打开的会话：一并取消选中，避免它从列表消失却仍处于打开状态
+      if (ok && activeConversationId === conversationId) {
+        setActiveConversationId(null);
+      }
+    },
+    [activeConversationId, runConversationAction],
+  );
+
+  const restoreConversation = useCallback(
+    async (conversationId: number) => {
+      const ok = await runConversationAction(
+        () => conversationApi.restore(conversationId),
+        '恢复失败，请重试',
+        'archived',
+      );
+      // 恢复后它也回到活跃列表，同步刷新以免切回去看到旧数据
+      if (ok) {
+        await refreshConversations();
+      }
+    },
+    [refreshConversations, runConversationAction],
+  );
+
+  const openArchived = useCallback(async () => {
+    setArchivedMode(true);
+    setArchivedLoading(true);
+    setConversationError(null);
+    try {
+      setArchivedConversations(await conversationApi.list('ARCHIVED'));
+    } catch (err) {
+      console.error('Failed to load archived conversations:', err);
+      setConversationError(err instanceof Error ? err.message : '归档列表加载失败');
+    } finally {
+      setArchivedLoading(false);
+    }
+  }, []);
+
+  const closeArchived = useCallback(() => {
+    setArchivedMode(false);
+    setConversationError(null);
+  }, []);
+
+  const deleteConversation = useCallback(
+    async (conversationId: number) => {
+      const confirmed = window.confirm(
+        '确定删除这段对话吗？删除后不可恢复。若只是想从列表收起、保留记录，请改用「归档」。',
+      );
+      if (!confirmed) return;
+      const ok = await runConversationAction(
+        () => conversationApi.remove(conversationId),
+        '删除失败，请稍后重试',
+        archivedMode ? 'archived' : 'active',
+      );
+      if (ok && activeConversationId === conversationId) {
+        setActiveConversationId(null);
+      }
+    },
+    [activeConversationId, archivedMode, runConversationAction],
   );
 
   // Layout 全局复用会话侧栏，仅首次挂载时恢复最近会话。
@@ -212,14 +315,24 @@ export default function Layout() {
         {/* 会话与 Workspace 在所有页面保持一致，切换业务页时不再回退旧导航。 */}
         <nav className="flex-1 overflow-y-auto p-3">
             <SessionList
-              conversations={conversations}
+              conversations={archivedMode ? archivedConversations : conversations}
               activeConversationId={activeConversationId}
-              loading={loadingConversations}
+              loading={archivedMode ? archivedLoading : loadingConversations}
               error={conversationError}
+              archivedMode={archivedMode}
               onNew={newConversation}
-              onSelect={selectConversation}
-              onDelete={deleteConversation}
-              onRetry={() => void refreshConversations()}
+              onOpenArchived={() => void openArchived()}
+              onCloseArchived={closeArchived}
+              onRetry={() => void (archivedMode ? openArchived() : refreshConversations())}
+              actions={{
+                onSelect: selectConversation,
+                onRename: (conversationId, title) =>
+                  void renameConversation(conversationId, title),
+                onTogglePin: (conversationId) => void togglePinConversation(conversationId),
+                onArchive: (conversationId) => void archiveConversation(conversationId),
+                onRestore: (conversationId) => void restoreConversation(conversationId),
+                onDelete: (conversationId) => void deleteConversation(conversationId),
+              }}
             />
             <div className="mx-2 mt-3 border-t border-slate-100 pt-4 dark:border-slate-700">
               <p className="mb-2 px-3 text-[11px] font-bold uppercase tracking-[0.16em] text-slate-400 dark:text-slate-500">

@@ -10,6 +10,11 @@ import { expect, test } from '@playwright/test';
 
 const CONVERSATION_ID = 7;
 
+// 路由匹配必须与查询参数无关：列表接口会带 ?status=ACTIVE，写死路径 glob 会漏匹配，
+// 请求落到真实后端（ECONNREFUSED）后表现为「列表加载失败」，用例会以错误的原因失败。
+const LIST_URL = /\/api\/agent\/conversations(\?.*)?$/;
+const detailUrl = (id: number) => new RegExp(`/api/agent/conversations/${id}$`);
+
 const okConversation = {
   id: CONVERSATION_ID,
   title: '复盘最近面试',
@@ -34,10 +39,10 @@ test.describe('Copilot 加载与错误态', () => {
   test('会话详情加载失败时给出错误与重试，而不是伪装成空会话', async ({ page }) => {
     let detailFails = true;
 
-    await page.route('**/api/agent/conversations', (route) =>
+    await page.route(LIST_URL, (route) =>
       route.fulfill(result(200, 'success', [okConversation])),
     );
-    await page.route(`**/api/agent/conversations/${CONVERSATION_ID}`, (route) => {
+    await page.route(detailUrl(CONVERSATION_ID), (route) => {
       if (detailFails) {
         // 此前只 console.error，界面会渲染出新会话首屏
         return route.fulfill(result(500, '数据库连接失败', null));
@@ -87,13 +92,13 @@ test.describe('Copilot 加载与错误态', () => {
   test('会话列表加载失败时不显示「还没有对话」的空态', async ({ page }) => {
     let listFails = true;
 
-    await page.route('**/api/agent/conversations', (route) => {
+    await page.route(LIST_URL, (route) => {
       if (listFails) {
         return route.fulfill(result(500, '后端服务不可达', null));
       }
       return route.fulfill(result(200, 'success', [okConversation]));
     });
-    await page.route(`**/api/agent/conversations/${CONVERSATION_ID}`, (route) =>
+    await page.route(detailUrl(CONVERSATION_ID), (route) =>
       route.fulfill(
         result(200, 'success', {
           ...okConversation,

@@ -78,8 +78,12 @@ export async function streamChat(
 
 const conversationBase = '/api/agent/conversations';
 
+/** 会话状态：ACTIVE 活跃（默认列表）/ ARCHIVED 已归档（软隐藏，可恢复） */
+export type ConversationStatusFilter = 'ACTIVE' | 'ARCHIVED';
+
 export const conversationApi = {
-  list: () => request.get<ConversationItem[]>(conversationBase),
+  list: (status: ConversationStatusFilter = 'ACTIVE') =>
+    request.get<ConversationItem[]>(`${conversationBase}?status=${status}`),
 
   create: () => request.post<ConversationItem>(conversationBase, {}),
 
@@ -91,6 +95,13 @@ export const conversationApi = {
 
   togglePin: (conversationId: number) =>
     request.put<void>(`${conversationBase}/${conversationId}/pin`),
+
+  /** 归档：从活跃列表收起但保留记录，可恢复（区别于 remove 的硬删除） */
+  archive: (conversationId: number) =>
+    request.put<void>(`${conversationBase}/${conversationId}/archive`),
+
+  restore: (conversationId: number) =>
+    request.put<void>(`${conversationBase}/${conversationId}/restore`),
 
   remove: (conversationId: number) =>
     request.delete<void>(`${conversationBase}/${conversationId}`),

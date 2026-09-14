@@ -64,9 +64,9 @@
 - [x] **P1-5 KNOWLEDGE_QA 保持 Tool 化**（已通，回归验证即可）
   - 已回归：意图「JVM GC 是什么」→ KNOWLEDGE_QA → knowledge_tool 节点（未裸答）；本地知识库为空时如实兜底；search_knowledge → RAG 答案 → knowledge_citations 引用块由既有单测覆盖（test_chat_api）
 - [ ] **P1-6 打磨（非闭环必需，穿插做）**
-  - 流式中断消息标记（Java message status「已停止」）
-  - 会话重命名 / 归档 UI（API 已有）
-  - Composer 移除 window.alert，改内联错误提示
+  - [x] 流式中断消息标记（Java message status「已停止」）—— 2026-09-14 完成，三态落库见下方「P1 待收口」
+  - [ ] 会话重命名 / 归档 UI（API 已有）
+  - [ ] Composer 移除 window.alert，改内联错误提示
 
 **验收**：Text/File/Action 三类输入稳定可用；Tool 调用有可见状态；附件→确认→选择→跳转全链路在前端真实可点。
 
@@ -294,6 +294,9 @@ Voice Agent 重构（现有语音面试保留原样）
 | **P4 一期不实时 LLM 动态生题；池无候选→NEXT_TOPIC/END** | 实时生成拉高延迟且违反 Selection before Generation；动态生成作为二期 fallback（结构化 + 写回池） |
 | **P4-0 复用 InterviewPage 组件逻辑而非重写** | 答题交互已直连 Java API 且验证过；抽成块内子组件，避免 UI 双份实现，也保留 /interview 独立手动入口 |
 | **P4 实施顺序：Java 引擎先行 → 前端内嵌 → 端到端回接**（2026-09） | P4-0 需建立在新逐题 API 上；现 /interview 页可作引擎改造期回归；避免在旧题单协议上先做 UI 再返工 |
+| **停止生成落库改为「脱手任务」+ 消息三态 status**（2026-09-14） | 落库原在 SSE 生成器 `finally` 中且伴随 `yield`：客户端 abort 时 `finally` 的 yield 触发 `RuntimeError: async generator ignored GeneratorExit`，后续 `await` 落库被整体跳过，整轮对话丢失。三态 status 替代建表后从未被写入的 `completed` 布尔，使「已停止」刷新后可还原 |
+| **未完成的助手消息允许空内容** | 用户停止/生成失败时可能尚未产出任何内容；若仍要求内容非空，只能是丢掉整条助手消息，刷新后无法区分「被停止」与「没人回答」。已完成消息与用户消息仍禁止空白 |
+| **脱手落库独立建 BackendClient，不复用请求作用域** | 请求结束时 `get_backend_client` 会 aclose 连接池，而落库任务生命周期长于请求。单列为 `_new_persist_client()` 兼作测试接缝（模块内直建会绕过 `dependency_overrides`，测试会打真实后端） |
 
 ---
 
@@ -311,3 +314,194 @@ Voice Agent 重构（现有语音面试保留原样）
 - [x] **可恢复（B）**：切会话/刷新不结束面试；Java 会话保留，重新进入按 sessionId 恢复 Interview Mode（顶栏 status running/evaluating/completed）
 - [x] **轻量结果（C）**：完成后留在 Interview Mode 展示综合分/维度分摘要 + [完成并返回对话]；不再用大型结果 Card
 - [x] **调整配置三态**：① 内联面板手动改 ② Composer 自然语言「难度高一点，多问 JVM」→ interview_proposal 结合本条消息重新推荐（原「重新推荐」Choice 移除）
+
+---
+
+# 代码实现审计与产品优化清单（2026-09-14）
+
+> 本节基于 `docs/TodoList.md` 与当前代码、测试结果逐项核对后追加。原有勾选记录保留，用于记录实施历史；本节中的“完成”以当前代码能够形成稳定、可验证的端到端行为为准。
+
+## 一、当前完成情况
+
+Todo 原始统计为 **32 / 48 项勾选（约 66.7%）**。由于列表中包含重复里程碑、阶段性实现和暂缓项，该比例不等同于产品完成度。
+
+当前项目定位：**核心技术骨架基本齐备，可进入集成测试和产品打磨阶段，但还未达到完整产品验收标准。**
+
+> **工程基线（2026-09-14 更新）**：P6-0 已完成 —— Java / Python / Frontend 三端质量门禁全部转绿，并已固化到 CI（含原 CI 从未触发的分支配置修复）。后续功能累计不得再引入失败基线。详见「四、验证基线问题」与「五、P6-0」。
+> 勾选计数：审计节之前的原始 TodoList 仍为 **32 / 48**；审计节自身为 **31 / 81**（含新增的 P6 打磨项）。
+
+| 模块 | 代码审计状态 | 当前判断 |
+|---|---|---|
+| P1 Copilot 主链路 | 基本完成 | Agent、SSE、会话持久化和 Checkpoint 已实现；异常反馈、停止状态和会话管理仍需收口 |
+| P3 能力画像 | 基本完成 | Evidence、聚合、查询和展示已实现；画像驱动下一场专项面试尚未闭环 |
+| P2 简历优化 | 部分完成 | 结构化版本、Proposal、Patch、预览和导出已实现；解析纠错、模式语义和真实性校验仍不完整 |
+| P4 自适应面试 | 部分完成 | Turn Evaluation、决策策略和报告回流已实现；题目元数据、恢复、退出和复盘存在断点 |
+| P5 三条产品闭环 | 未完成 | 尚无一条达到稳定端到端验收及自动化回归标准 |
+
+## 二、已确认实现
+
+### P1 Copilot
+
+- [x] LangGraph 主图、意图路由及业务节点已接通
+- [x] SSE token、Tool、Run 事件及流结束后的消息持久化已接通
+- [x] Java Conversation API、上下文加载和消息保存已实现
+- [x] PostgreSQL Checkpoint 已接入 Agent 生命周期
+- [x] 前端 Copilot Workspace、结构化 Block 和 Action 路由已实现
+
+### P3 能力画像
+
+- [x] Skill Profile、Skill Evidence 数据结构及迁移已实现
+- [x] 面试 Evidence 提取、幂等聚合、删除后重算已实现
+- [x] Profile 查询 Tool、Agent 节点和前端画像面板已实现
+- [x] 面试报告完成后可触发 Evidence 和 Profile 更新
+
+### P2 简历优化
+
+- [x] Resume Version、Optimization Proposal 和目标岗位字段迁移已建立
+- [x] Agent 可读取 Resume、Profile 和 JD 上下文生成 Patch Proposal
+- [x] Java 可校验并应用 Patch，生成新版本
+- [x] Typst PDF 预览和正式导出链路已建立
+- [x] 前端已提供 Patch 勾选、Diff、Preview 和确认应用交互
+
+### P4 自适应面试
+
+- [x] 问题 DTO 已具备 difficulty、expectedPoints、followUpType 字段
+- [x] 轻量 Turn Evaluation 和结果归一化已实现
+- [x] FOLLOW_UP、NEXT_QUESTION、NEXT_TOPIC 等代码边界策略已实现
+- [x] submitAnswer 已串联评估、选题、完成和异步报告
+- [x] Interview Mode、配置面板和完成摘要的基础 UI 已实现
+
+## 三、Todo 标记与实际实现的差异
+
+### P1 待收口
+
+- [ ] 用受控错误状态和重试入口替换 Composer 中的 `window.alert`
+- [x] 停止生成时由 Java 持久化 `STOPPED/CANCELLED` 状态，避免仅修改前端本地消息（2026-09-14）
+  - **实际缺陷比原描述严重**：落库写在 SSE 生成器的 `finally` 中且伴随 `yield`，客户端 abort 会让 `finally` 抛 `RuntimeError: async generator ignored GeneratorExit`，后面的 `await` 落库被整体跳过 —— 即按「停止生成」后**本轮根本没落库**，刷新后用户的问题和已产出的回答一起消失。
+  - Java：`V20260914` 迁移把 `agent_messages.completed`（建表后从未被写入/读取的死字段）替换为三态 `status`（COMPLETED/STOPPED/FAILED，含 CHECK 约束与历史回填）；`AgentMessageDTO` 与 `SaveMessagesRequest.MessagePayload` 透出 status；未完成的助手消息允许空内容（停止/失败时可能尚未产出内容，但「本轮未完成」需要留痕），已完成仍禁止空白。
+  - Python：落库移出生成器 `finally`（`done` 改在正常/异常分支发出），改为调度**脱手任务**——独立 `BackendClient`（不复用请求作用域连接池，后者在请求结束时被 aclose，且模块级直建会绕过 dependency_overrides，故留 `_new_persist_client` 作为测试接缝）；终态默认 STOPPED，只有跑到流末尾才改写 COMPLETED，abort 天然落回「已停止」；`lifespan` 关闭时 `flush_pending_persists()` 收敛在途写入，避免进程退出丢内容。
+  - 前端：`MessageStatus` 增加 `stopped`；`cancel()` 不再把中断标成 `done`；历史回放按 Java status 还原 done/stopped/error（缺省不误判为异常）；停止态用中性提示，与 error 红条区分。
+  - 已验证：Java 对话服务 20 个单测（含 7 个终态用例）；Python 79 个测试通过，其中 `test_chat_stream_aborted_turn_persists_as_stopped` 直接驱动 `StreamingResponse.body_iterator` 后 `aclose()` 触发 GeneratorExit（TestClient 的 `response.close()` 不会真正中断服务端生成器，服务端会跑完，故无法用它复现；该用例在修复前必然失败）；前端新增 `test:copilot-turn-status` 4 个映射单测 + build + E2E 通过。
+- [ ] 补齐会话重命名、归档/恢复能力；明确"删除"和"归档"的产品语义
+- [ ] 补充 Copilot 主链路的加载、空状态、断网、SSE 中断和 Tool 失败体验
+
+### P3 待收口
+
+- [ ] 将 Resume Analysis 等可信来源接入 Evidence；当前主要证据仍是 `INTERVIEW_TURN`
+- [ ] 面试提案读取 Skill Profile，自动将低分技能转换为 focusSkills
+- [ ] 面试完成后展示画像变化及对应 Evidence，而不只展示最新静态分数
+- [ ] 为分数变化提供来源、时间和面试场次追溯入口
+
+### P2 待修正
+
+- [ ] 增加简历解析纠错/补录页面；当前前端明确不提供结构化补录表单
+- [ ] 落实 GENERAL、STRUCTURE、JD_TARGETED 模式判定及上下文不足时的澄清流程
+- [ ] JD 定向优化时持久化 `JD_TARGETED` 和 `targetJobId`；禁止仍统一写为 `GENERAL`
+- [ ] 扩展确定性真实性校验：除新增数字外，还要识别新增技术栈、公司、项目和经历事实
+- [ ] “全选/全不选”后重新生成 Preview，保证选择状态与预览一致
+- [ ] 明确 Proposal 的 REJECTED 操作入口及审计状态流转
+- [ ] 评估是否启用配置化 self-review；没有质量证据前保持默认关闭
+
+### P4 待修正
+
+- [ ] 修复简历题与通用题合并时 difficulty、expectedPoints、followUpType 元数据丢失
+- [ ] 恢复面试时按“实际已提问轮次”重建消息，不得按题库下标展示被策略跳过的追问题
+- [ ] 修复完成并退出后被旧 `interview_session` block 自动重新拉回 Interview Mode 的问题
+- [ ] 进度按实际已提问题数计算，候选追问题不得提前计入用户可见总进度
+- [ ] 将 `REVIEW_INTERVIEW` 接到真实前端入口，并支持指定 session 的逐题复盘
+- [ ] 为自适应选题补充包含“题目合并、跳过追问、刷新恢复、提前结束”的集成测试
+- [ ] P4-4b、P4-5、P4-6b、P4-7 继续保持未完成状态，按实际依赖逐项推进
+
+## 四、验证基线问题
+
+### Java
+
+- [x] 修复 `SkillProfilePipelineIntegrationTest` 的数据库不可用跳过机制；当前 Spring/Flyway 在测试方法执行前已连接数据库，导致 `assumeTrue` 无法生效
+  - 修复方式：改用类级 `@EnabledIf(value = "localDatabaseAvailable", ...)`（对齐 `TypstCompilerTest` 既有惯例），方法内 `assumeTrue` 移除
+  - 条件内先判断凭据可解析、再以 1s 超时探测 `POSTGRES_HOST:PORT` TCP 连通性；求值发生在 Spring 上下文创建之前，因此不再触发 Flyway 连接
+  - 同时把 `POSTGRES_PORT`/`POSTGRES_DB` 的解析从「仅环境变量」改为「环境变量 → .env → 默认值」，避免 .env 中配置的端口被忽略
+  - 已验证：报告记录 `tests=1 skipped=1 failures=0`，跳过原因可读，不再整类报错
+- [x] 恢复 `./gradlew :app:test --no-daemon` 全绿基线
+- 当前结果（2026-09-14）：**384 个测试，0 个失败，0 个错误，50 个跳过，334 个通过**
+  - 50 个跳过均为显式声明的预期跳过：`VoiceInterviewIntegrationTest`（@Disabled 待修 test profile 配置）、Typst golden（本机无 typst 二进制）、画像真实 DB 链路（本地无 DB）、4 个「待重写」用例
+  - 附带修复：本机默认 `JAVA_HOME` 指向 Corretto 8，Gradle 需 JDK 17+；门禁命令需以 JDK 25 运行（CI 由 `setup-java` 保证）
+
+### Python Agent
+
+- [x] `uv run pytest`：75 个测试通过
+- [x] 修复 `ruff check src tests` 的 8 个错误
+  - `execute_action.py` 删除死代码（未使用的 `resume_id` / `params`）
+  - `interview_proposal.py` 移除未使用导入 `BaseMessage`；prompt 内 JSON 示例改多行；`logger.info` 换行
+  - `clients/backend.py` 的 `ASYNC109`：`call_tool(timeout=...)` 是透传给 httpx 的逐请求超时，非等待语义，故就地 `# noqa: ASYNC109` 并注明理由（未删除参数——`create_interview` 依赖 `timeout=300.0`）
+  - `tests/test_graph.py` 3 处超长行拆行
+- [x] 修复 `mypy src` 的 1 个错误：面试提案中的模型对象可能为 `None`
+  - 修复方式：`_derive_proposal` 内取到模型后显式判空并 `raise RuntimeError`，由既有 `except Exception` 回落确定性默认推荐（失败不阻断面试发起）
+
+### Frontend
+
+- [x] `pnpm run build` 通过
+- [x] Copilot Action 路由测试 6 个通过
+- [x] 修复 CSS 语法警告
+  - 根因：`@custom-variant dark` 与伪元素选择器上的 `@apply dark:/hover:` 组合，会被重写成空的 `:where()`，产出 `::-webkit-scrollbar-track:where()` 这种非法语法
+  - 修复方式：`.scrollbar-thin` 三条规则改为直接声明 + Tailwind 主题变量（`var(--color-slate-*)`），暗色显式写 `.dark` 祖先选择器
+  - 已验证：构建产物中 `:where()` 出现 0 次，3 条 `css-syntax-error` 警告消失
+- [ ] 评估并拆分超过 500 KB 的 `syntax-highlighter` 等大 Chunk（当前仅剩此一条构建警告，不阻断门禁）
+- [ ] 补充 Copilot、简历优化、能力画像和文字自适应面试 E2E；当前 E2E 主要覆盖 Voice Interview
+
+## 五、Phase 6：产品优化与打磨——优先级 P6
+
+### P6-0 先恢复工程质量门禁 ✅（2026-09-14 完成）
+
+- [x] Java 全量测试通过 —— `./gradlew :app:test --no-daemon`：384 测试 / 0 失败 / 0 错误 / 50 跳过（跳过均为显式声明的预期行为）
+- [x] Python pytest、ruff、mypy 全部通过 —— ruff 0 错、mypy 0 错（40 源文件）、pytest 75 通过
+- [x] Frontend build、unit test、E2E 全部通过 —— build 成功且 CSS 语法警告清零、6 个单测脚本 23 项通过、Playwright E2E 3 项通过
+- [x] 将上述命令固化到 CI，禁止带失败基线继续累计功能
+  - **关键修复**：`.github/workflows/ci.yml` 原触发分支写的是 `master`，而本仓库真实分支是 `main`（默认）+ `dev`，`master` 只存在于 upstream 父仓库 —— 即原 CI **从未被触发过**。已改为 `main` + `dev`
+  - 新增 `agent` job：`uv sync --frozen` → `ruff check src tests` → `mypy src` → `pytest`（原 CI 完全没有 Python 门禁）
+  - 新增 `test:copilot-action`（原 CI 漏跑）与 Playwright E2E（含 `playwright install --with-deps chromium`）；E2E 用例自带 WebSocket stub 与 API route mock，只需前端 dev server，不依赖 Java/DB
+  - 新增聚合 `quality-gate` job（`needs: [backend, agent, frontend]`，`if: always()` 且任一非 success 即 exit 1）：分支保护只需勾选这一个 check
+
+**验证方式**：以上三端命令均在本地以 CI 原样命令复跑通过；CI 触发分支与 YAML 结构已校验。
+
+### P6-1 修复影响主流程的状态问题
+
+- [ ] 修复 Interview Mode 的恢复、退出重入和候选题进度问题
+- [ ] 修复问题池合并导致的结构化元数据丢失
+- [ ] 补齐 SSE 中断、停止生成和 Agent Tool 失败后的可恢复状态
+- [ ] 为所有异步状态提供明确的 loading、failed、retry 和 completed UI
+
+### P6-2 打磨简历优化可信度与可解释性
+
+- [ ] 支持解析内容纠错后再确认成为 ACTIVE 版本
+- [ ] 正确区分通用优化、结构优化和 JD 定向优化
+- [ ] 每条 Patch 展示“修改原因、依据、影响范围和真实性风险”
+- [ ] 对新增事实执行确定性校验；无法确认时要求用户补充或确认
+- [ ] 保证 Proposal、Preview、Apply、Version、Export 使用同一组选中 Patch
+
+### P6-3 打通画像驱动的自适应体验
+
+- [ ] 画像低分技能可一键生成定向面试提案
+- [ ] 面试配置明确展示“为什么推荐这些 focusSkills”
+- [ ] 面试报告产生 Evidence 后自动刷新画像
+- [ ] Copilot 展示分数前后变化，并基于 Evidence 给下一步建议
+- [ ] 所有画像变化均可追溯到 Resume、Interview 或 Learning Evidence
+
+### P6-4 三条产品闭环 E2E 验收
+
+- [ ] **简历闭环**：上传/选择 Resume → 绑定 JD → Gap/Patch → 预览 → 确认 → 新版本 → PDF
+- [ ] **面试闭环**：低分技能 → 定向面试 → 自适应追问 → 报告 → Evidence → 新画像
+- [ ] **Copilot 闭环**：一句自然语言完成上下文读取、面试提案、创建、执行、复盘和下一步建议
+- [ ] 每条闭环至少包含 happy path、用户取消、刷新恢复、依赖失败和重试场景
+- [ ] 三条闭环均通过自动化 E2E 后，再将 Phase 5 标记为完成
+
+## 六、产品打磨停止标准
+
+满足以下条件后，才将当前阶段定义为“可演示、可稳定回归的产品版本”：
+
+- [ ] P1/P2/P3/P4 无已知 P0/P1 主流程缺陷
+- [ ] 三条 P5 产品闭环均有稳定 E2E 覆盖
+- [x] Java、Python、Frontend 质量门禁全部为绿色（2026-09-14，见 P6-0）
+- [ ] 刷新、切会话、停止、取消、失败重试不会破坏业务状态
+- [ ] 用户能理解每一次 Agent 推荐的依据、即将产生的副作用和确认结果
+- [ ] Profile 的每次变化都能追溯到结构化 Evidence
+- [ ] Demo 主链无需人工修复数据库或手动绕过异常即可完成

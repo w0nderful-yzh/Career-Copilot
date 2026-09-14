@@ -1,12 +1,16 @@
 name: CI
 
+# 触发分支必须对齐本仓库真实分支：origin 为 main（默认）+ dev。
+# 历史配置写的是 master —— 那只是 upstream 父仓库的分支，导致本仓库 CI 从未被触发过。
 on:
   push:
     branches:
-      - master
+      - main
+      - dev
   pull_request:
     branches:
-      - master
+      - main
+      - dev
 
 permissions:
   contents: read
@@ -17,9 +21,9 @@ concurrency:
 
 jobs:
   backend:
-    name: Backend tests
+    name: Backend tests (Java)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Checkout repository
@@ -32,13 +36,45 @@ jobs:
           java-version: "25"
           cache: gradle
 
+      # 依赖真实 DB / 本地二进制的集成用例（画像真实 DB 链路、Typst golden）在 CI 中按条件跳过；
+      # 跳过是显式声明的预期行为，不算失败。任何 failures/errors 都必须为 0。
       - name: Run backend tests
         run: ./gradlew :app:test --no-daemon
 
-  frontend:
-    name: Frontend tests and build
+  agent:
+    name: Agent service checks (Python)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: agent-service
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: agent-service/uv.lock
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Lint (ruff)
+        run: uv run ruff check src tests
+
+      - name: Type check (mypy)
+        run: uv run mypy src
+
+      - name: Tests (pytest)
+        run: uv run pytest
+
+  frontend:
+    name: Frontend checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
     defaults:
       run:
         working-directory: frontend
@@ -62,12 +98,46 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run frontend tests
+      - name: Run frontend unit tests
         run: |
           pnpm run test:interview-history
           pnpm run test:question-generation
           pnpm run test:interview-capacity
           pnpm run test:interview-entry
+          pnpm run test:copilot-action
+          pnpm run test:copilot-turn-status
 
       - name: Build frontend
         run: pnpm run build
+
+      - name: Install Playwright browser
+        run: pnpm exec playwright install --with-deps chromium
+
+      # E2E 用例自带 WebSocket stub 与 API route mock，只需前端 dev server，不依赖 Java / DB
+      - name: Run E2E tests
+        run: pnpm run test:e2e
+
+  # 聚合门禁：分支保护只需勾选这一个 check。
+  # 「禁止带失败基线继续累计功能」是 P6-0 的核心约束，故显式阻断。
+  quality-gate:
+    name: Quality gate
+    if: always()
+    needs:
+      - backend
+      - agent
+      - frontend
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Verify all gates are green
+        run: |
+          echo "backend : ${{ needs.backend.result }}"
+          echo "agent   : ${{ needs.agent.result }}"
+          echo "frontend: ${{ needs.frontend.result }}"
+          if [ "${{ needs.backend.result }}" != "success" ] \
+            || [ "${{ needs.agent.result }}" != "success" ] \
+            || [ "${{ needs.frontend.result }}" != "success" ]; then
+            echo "::error::质量门禁未全绿（P6-0），禁止带失败基线继续累计功能"
+            exit 1
+          fi
+          echo "质量门禁全部通过"

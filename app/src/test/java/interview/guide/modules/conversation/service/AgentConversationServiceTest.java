@@ -8,6 +8,7 @@ import interview.guide.modules.conversation.dto.SaveMessagesRequest;
 import interview.guide.modules.conversation.dto.SaveMessagesRequest.MessagePayload;
 import interview.guide.modules.conversation.model.AgentConversationEntity;
 import interview.guide.modules.conversation.model.AgentMessageEntity;
+import interview.guide.modules.conversation.model.AgentMessageEntity.MessageStatus;
 import interview.guide.modules.conversation.repository.AgentConversationRepository;
 import interview.guide.modules.conversation.repository.AgentMessageRepository;
 import java.util.List;
@@ -39,6 +40,15 @@ class AgentConversationServiceTest {
 
   @InjectMocks
   private AgentConversationService conversationService;
+
+  /** 构造一个已存在的会话并让仓储返回它 */
+  private AgentConversationEntity stubConversation(long id) {
+    AgentConversationEntity conversation = new AgentConversationEntity();
+    conversation.setId(id);
+    when(conversationRepository.findByIdAndUserId(id, "default"))
+        .thenReturn(Optional.of(conversation));
+    return conversation;
+  }
 
   @Nested
   @DisplayName("会话创建")
@@ -84,16 +94,13 @@ class AgentConversationServiceTest {
     @Test
     @DisplayName("保存一轮消息并自动生成标题（首条用户消息截断）")
     void saveMessagesGeneratesTitleFromFirstUserMessage() {
-      AgentConversationEntity conversation = new AgentConversationEntity();
-      conversation.setId(10L);
+      AgentConversationEntity conversation = stubConversation(10L);
       conversation.setTitle("新对话");
-      when(conversationRepository.findByIdAndUserId(10L, "default"))
-          .thenReturn(Optional.of(conversation));
       when(conversationRepository.save(any())).thenReturn(conversation);
 
       conversationService.saveMessages(10L, new SaveMessagesRequest(List.of(
-          new MessagePayload("USER", "我准备找 Java 后端实习，帮我看看应该怎么准备。", null),
-          new MessagePayload("ASSISTANT", "好的，让我看看你的简历。", null))));
+          new MessagePayload("USER", "我准备找 Java 后端实习，帮我看看应该怎么准备。", null, null),
+          new MessagePayload("ASSISTANT", "好的，让我看看你的简历。", null, null))));
 
       assertThat(conversation.getTitle()).isEqualTo("我准备找 Java 后端实习，帮我看看应该怎么准备。");
       assertThat(conversation.getMessageCount()).isEqualTo(2);
@@ -103,10 +110,7 @@ class AgentConversationServiceTest {
     @Test
     @DisplayName("空消息列表抛参数错误")
     void saveMessagesWithEmptyListFails() {
-      AgentConversationEntity conversation = new AgentConversationEntity();
-      conversation.setId(10L);
-      when(conversationRepository.findByIdAndUserId(10L, "default"))
-          .thenReturn(Optional.of(conversation));
+      stubConversation(10L);
 
       assertThatThrownBy(() -> conversationService.saveMessages(
           10L, new SaveMessagesRequest(List.of())))
@@ -117,14 +121,11 @@ class AgentConversationServiceTest {
     @Test
     @DisplayName("非法消息角色抛参数错误")
     void saveMessagesWithInvalidRoleFails() {
-      AgentConversationEntity conversation = new AgentConversationEntity();
-      conversation.setId(10L);
-      when(conversationRepository.findByIdAndUserId(10L, "default"))
-          .thenReturn(Optional.of(conversation));
+      stubConversation(10L);
 
       assertThatThrownBy(() -> conversationService.saveMessages(
           10L, new SaveMessagesRequest(List.of(
-              new MessagePayload("SYSTEM", "hello", null)))))
+              new MessagePayload("SYSTEM", "hello", null, null)))))
           .isInstanceOf(BusinessException.class)
           .hasFieldOrPropertyWithValue("code", ErrorCode.CONVERSATION_MESSAGE_INVALID.getCode());
     }
@@ -132,16 +133,165 @@ class AgentConversationServiceTest {
     @Test
     @DisplayName("消息内容为空抛参数错误")
     void saveMessagesWithBlankContentFails() {
-      AgentConversationEntity conversation = new AgentConversationEntity();
-      conversation.setId(10L);
-      when(conversationRepository.findByIdAndUserId(10L, "default"))
-          .thenReturn(Optional.of(conversation));
+      stubConversation(10L);
 
       assertThatThrownBy(() -> conversationService.saveMessages(
           10L, new SaveMessagesRequest(List.of(
-              new MessagePayload("USER", "  ", null)))))
+              new MessagePayload("USER", "  ", null, null)))))
           .isInstanceOf(BusinessException.class)
           .hasFieldOrPropertyWithValue("code", ErrorCode.CONVERSATION_MESSAGE_INVALID.getCode());
+    }
+  }
+
+  @Nested
+  @DisplayName("消息终态（P1 停止生成）")
+  class MessageStatusPersistence {
+
+    @Test
+    @DisplayName("未带 status 时缺省落 COMPLETED")
+    void defaultsToCompleted() {
+      AgentConversationEntity conversation = stubConversation(30L);
+      when(conversationRepository.save(any())).thenReturn(conversation);
+
+      conversationService.saveMessages(30L, new SaveMessagesRequest(List.of(
+          new MessagePayload("USER", "你好", null, null),
+          new MessagePayload("ASSISTANT", "你好，我能帮你什么？", null, null))));
+
+      assertThat(conversation.getMessages())
+          .extracting(AgentMessageEntity::getStatus)
+          .containsExactly(MessageStatus.COMPLETED, MessageStatus.COMPLETED);
+    }
+
+    @Test
+    @DisplayName("停止生成：助手消息落 STOPPED 且保留已生成的部分内容")
+    void persistsStoppedWithPartialContent() {
+      AgentConversationEntity conversation = stubConversation(31L);
+      when(conversationRepository.save(any())).thenReturn(conversation);
+
+      conversationService.saveMessages(31L, new SaveMessagesRequest(List.of(
+          new MessagePayload("USER", "帮我复盘这次面试", null, "COMPLETED"),
+          new MessagePayload("ASSISTANT", "先看整体分数：", null, "STOPPED"))));
+
+      assertThat(conversation.getMessages())
+          .extracting(AgentMessageEntity::getStatus)
+          .containsExactly(MessageStatus.COMPLETED, MessageStatus.STOPPED);
+      assertThat(conversation.getMessages().get(1).getContent()).isEqualTo("先看整体分数：");
+    }
+
+    @Test
+    @DisplayName("未完成状态下助手消息允许空内容：停止且尚未产出内容")
+    void allowsEmptyContentWhenStopped() {
+      AgentConversationEntity conversation = stubConversation(32L);
+      when(conversationRepository.save(any())).thenReturn(conversation);
+
+      conversationService.saveMessages(32L, new SaveMessagesRequest(List.of(
+          new MessagePayload("USER", "帮我复盘这次面试", null, null),
+          new MessagePayload("ASSISTANT", "", null, "STOPPED"))));
+
+      assertThat(conversation.getMessages()).hasSize(2);
+      assertThat(conversation.getMessages().get(1).getStatus()).isEqualTo(MessageStatus.STOPPED);
+      assertThat(conversation.getMessages().get(1).getContent()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("未完成状态下助手消息允许空内容：生成失败且尚未产出内容")
+    void allowsEmptyContentWhenFailed() {
+      AgentConversationEntity conversation = stubConversation(37L);
+      when(conversationRepository.save(any())).thenReturn(conversation);
+
+      conversationService.saveMessages(37L, new SaveMessagesRequest(List.of(
+          new MessagePayload("USER", "帮我复盘这次面试", null, null),
+          new MessagePayload("ASSISTANT", null, null, "FAILED"))));
+
+      assertThat(conversation.getMessages()).hasSize(2);
+      assertThat(conversation.getMessages().get(1).getStatus()).isEqualTo(MessageStatus.FAILED);
+      assertThat(conversation.getMessages().get(1).getContent()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("空内容豁免只对未完成的助手消息生效：用户消息空内容仍被拒绝")
+    void emptyContentStillRejectedForUserMessage() {
+      stubConversation(33L);
+
+      assertThatThrownBy(() -> conversationService.saveMessages(
+          33L, new SaveMessagesRequest(List.of(
+              new MessagePayload("USER", "", null, "STOPPED")))))
+          .isInstanceOf(BusinessException.class)
+          .hasFieldOrPropertyWithValue("code", ErrorCode.CONVERSATION_MESSAGE_INVALID.getCode());
+    }
+
+    @Test
+    @DisplayName("已完成的助手消息空内容仍被拒绝")
+    void emptyContentRejectedForCompletedAssistant() {
+      stubConversation(38L);
+
+      assertThatThrownBy(() -> conversationService.saveMessages(
+          38L, new SaveMessagesRequest(List.of(
+              new MessagePayload("ASSISTANT", "  ", null, "COMPLETED")))))
+          .isInstanceOf(BusinessException.class)
+          .hasFieldOrPropertyWithValue("code", ErrorCode.CONVERSATION_MESSAGE_INVALID.getCode());
+    }
+
+    @Test
+    @DisplayName("生成失败：助手消息落 FAILED")
+    void persistsFailed() {
+      AgentConversationEntity conversation = stubConversation(34L);
+      when(conversationRepository.save(any())).thenReturn(conversation);
+
+      conversationService.saveMessages(34L, new SaveMessagesRequest(List.of(
+          new MessagePayload("USER", "帮我复盘这次面试", null, null),
+          new MessagePayload("ASSISTANT", "先看整体", null, "FAILED"))));
+
+      assertThat(conversation.getMessages().get(1).getStatus()).isEqualTo(MessageStatus.FAILED);
+    }
+
+    @Test
+    @DisplayName("非法 status 抛参数错误")
+    void rejectsInvalidStatus() {
+      stubConversation(35L);
+
+      assertThatThrownBy(() -> conversationService.saveMessages(
+          35L, new SaveMessagesRequest(List.of(
+              new MessagePayload("USER", "你好", null, "CANCELLED")))))
+          .isInstanceOf(BusinessException.class)
+          .hasFieldOrPropertyWithValue("code", ErrorCode.CONVERSATION_MESSAGE_INVALID.getCode());
+    }
+
+    @Test
+    @DisplayName("status 小写也可解析（大小写不敏感）")
+    void acceptsLowerCaseStatus() {
+      AgentConversationEntity conversation = stubConversation(36L);
+      when(conversationRepository.save(any())).thenReturn(conversation);
+
+      conversationService.saveMessages(36L, new SaveMessagesRequest(List.of(
+          new MessagePayload("USER", "你好", null, "completed"))));
+
+      assertThat(conversation.getMessages().get(0).getStatus())
+          .isEqualTo(MessageStatus.COMPLETED);
+    }
+  }
+
+  @Nested
+  @DisplayName("会话详情终态透出")
+  class DetailExposesStatus {
+
+    @Test
+    @DisplayName("详情按消息返回 status，供前端还原「已停止」")
+    void exposesStatusInDetail() {
+      AgentConversationEntity conversation = stubConversation(40L);
+      conversation.setTitle("复盘");
+      AgentMessageEntity stopped = new AgentMessageEntity();
+      stopped.setId(1L);
+      stopped.setRole(AgentMessageEntity.MessageRole.ASSISTANT);
+      stopped.setContent("先看整体分数：");
+      stopped.setStatus(MessageStatus.STOPPED);
+      when(messageRepository.findByConversationIdOrderByMessageOrderAsc(40L))
+          .thenReturn(List.of(stopped));
+
+      var detail = conversationService.getConversationDetail(40L);
+
+      assertThat(detail.messages()).hasSize(1);
+      assertThat(detail.messages().get(0).status()).isEqualTo("STOPPED");
     }
   }
 
@@ -157,7 +307,7 @@ class AgentConversationServiceTest {
 
       assertThatThrownBy(() -> conversationService.saveMessages(
           999L, new SaveMessagesRequest(List.of(
-              new MessagePayload("USER", "hello", null)))))
+              new MessagePayload("USER", "hello", null, null)))))
           .isInstanceOf(BusinessException.class)
           .hasFieldOrPropertyWithValue("code", ErrorCode.CONVERSATION_NOT_FOUND.getCode());
     }
@@ -194,6 +344,8 @@ class AgentConversationServiceTest {
       assertThat(context.messages()).hasSize(2);
       assertThat(context.messages().get(0).role()).isEqualTo("USER");
       assertThat(context.messages().get(1).role()).isEqualTo("ASSISTANT");
+      // 短期记忆不需要终态，避免无谓的 Token 与协议负担
+      assertThat(context.messages().get(0).status()).isNull();
     }
 
     @Test

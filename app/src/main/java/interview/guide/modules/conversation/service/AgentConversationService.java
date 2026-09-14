@@ -12,6 +12,7 @@ import interview.guide.modules.conversation.dto.SaveMessagesRequest.MessagePaylo
 import interview.guide.modules.conversation.model.AgentConversationEntity;
 import interview.guide.modules.conversation.model.AgentMessageEntity;
 import interview.guide.modules.conversation.model.AgentMessageEntity.MessageRole;
+import interview.guide.modules.conversation.model.AgentMessageEntity.MessageStatus;
 import interview.guide.modules.conversation.repository.AgentConversationRepository;
 import interview.guide.modules.conversation.repository.AgentMessageRepository;
 import java.util.List;
@@ -70,6 +71,7 @@ public class AgentConversationService {
             message.getRole().name(),
             message.getContent(),
             message.getBlocks(),
+            message.getStatus() == null ? null : message.getStatus().name(),
             message.getCreatedAt()))
         .toList();
     return new ConversationDetailDTO(
@@ -132,6 +134,7 @@ public class AgentConversationService {
             message.getRole().name(),
             message.getContent(),
             null,
+            null,
             message.getCreatedAt()))
         .toList();
     long totalCount = messageRepository.countByConversationId(conversationId);
@@ -178,14 +181,21 @@ return new ConversationContextDTO(
     int order = conversation.getMessages().size();
     for (MessagePayload payload : payloads) {
       MessageRole role = parseRole(payload.role());
-      if (payload.content() == null || payload.content().isBlank()) {
+      MessageStatus status = parseStatus(payload.status());
+      // 未完成的助手消息允许空内容：用户停止 / 生成失败时可能尚未产出任何内容，
+      // 但「这一轮没答完」本身需要留痕（否则刷新后只剩一条孤零零的用户提问）
+      boolean emptyContentAllowed =
+          MessageRole.ASSISTANT == role && MessageStatus.COMPLETED != status;
+      if (!emptyContentAllowed && (payload.content() == null || payload.content().isBlank())) {
         throw new BusinessException(ErrorCode.CONVERSATION_MESSAGE_INVALID,
             "消息内容不能为空: role=" + payload.role());
       }
       AgentMessageEntity message = new AgentMessageEntity();
       message.setRole(role);
-      message.setContent(payload.content());
+      // content 列 NOT NULL：空内容落库时归一为空串
+      message.setContent(payload.content() == null ? "" : payload.content());
       message.setBlocks(payload.blocks());
+      message.setStatus(status);
       message.setMessageOrder(order++);
       conversation.addMessage(message);
     }
@@ -213,6 +223,19 @@ return new ConversationContextDTO(
     } catch (IllegalArgumentException | NullPointerException e) {
       throw new BusinessException(
           ErrorCode.CONVERSATION_MESSAGE_INVALID, "非法消息角色: " + role);
+    }
+  }
+
+  /** 解析消息终态；缺省按 COMPLETED（兼容未带 status 的调用方与历史客户端） */
+  private MessageStatus parseStatus(String status) {
+    if (status == null || status.isBlank()) {
+      return MessageStatus.COMPLETED;
+    }
+    try {
+      return MessageStatus.valueOf(status.toUpperCase());
+    } catch (IllegalArgumentException e) {
+      throw new BusinessException(
+          ErrorCode.CONVERSATION_MESSAGE_INVALID, "非法消息状态: " + status);
     }
   }
 

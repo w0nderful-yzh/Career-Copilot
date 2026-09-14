@@ -9,8 +9,8 @@ from fastapi import FastAPI
 
 from career_copilot import __version__
 from career_copilot.agent.checkpointer import close_checkpointer, init_checkpointer
+from career_copilot.api.chat import flush_pending_persists, sync_agent_llm_config
 from career_copilot.api.chat import router as chat_router
-from career_copilot.api.chat import sync_agent_llm_config
 from career_copilot.config import settings
 
 # 应用日志落盘：默认只输出到 stderr（uvicorn 接管 stdout），INFO 及以上
@@ -30,6 +30,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 初始化 LangGraph Checkpoint（PostgreSQL）；失败回退无 checkpoint，不阻断启动
     app.state.checkpointer = await init_checkpointer(settings.checkpoint_database_url)
     yield
+    # 优雅关闭：等待在途的「脱手落库」任务结束。
+    # 落库已与请求生命周期解耦（客户端停止生成后仍需写入本轮终态），
+    # 若不在此收敛，进程退出会把已生成的内容丢掉。
+    await flush_pending_persists()
     await close_checkpointer(app.state.checkpointer)
 
 

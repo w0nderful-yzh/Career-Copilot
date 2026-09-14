@@ -3,6 +3,11 @@
 通过依赖覆盖注入 fake 意图路由 / fake 回答器 / Mock 后端，不调用真实 LLM 与 Java 服务。
 """
 
+import asyncio
+import json
+import time
+from collections.abc import Callable
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -14,13 +19,14 @@ from career_copilot.agent.router import (
 )
 from career_copilot.api import chat as chat_module
 from career_copilot.api.chat import (
+    chat_stream,
     get_answerer,
     get_backend_client,
     get_intent_router,
 )
 from career_copilot.clients.backend import BackendClient, BusinessToolError
 from career_copilot.main import app
-from career_copilot.schemas.message import ActionBlock
+from career_copilot.schemas.message import ActionBlock, ChatRequest
 
 
 class FakeIntentRouter:
@@ -441,19 +447,14 @@ def test_chat_stream_knowledge_qa_emits_citations(backend_transport):
     assert "".join(deltas) == "JVM 是 Java 虚拟机。"
 
 
-def test_chat_stream_persists_turn_with_conversation_id():
-    """携带 conversation_id 时，流式结束后应保存本轮消息到 Java。"""
-    saved: list[dict] = []
+def _tracking_handler(saved: list[dict]) -> Callable[[httpx.Request], httpx.Response]:
+    """构造记录 /messages 落库请求的 Mock 后端处理器。"""
 
-    def tracking_handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
         if path.startswith("/api/agent/conversations") and path.endswith("/messages"):
-            import json as _json
-
-            saved.append(_json.loads(request.read().decode()))
-            return httpx.Response(
-                200, json={"code": 200, "data": None, "message": "success"}
-            )
+            saved.append(json.loads(request.read().decode()))
+            return httpx.Response(200, json={"code": 200, "data": None, "message": "success"})
         if path.endswith("/context"):
             return httpx.Response(
                 200,
@@ -464,22 +465,49 @@ def test_chat_stream_persists_turn_with_conversation_id():
                 },
             )
         if path.startswith("/api/agent/conversations"):
-            return httpx.Response(
-                200, json={"code": 200, "data": None, "message": "success"}
-            )
+            return httpx.Response(200, json={"code": 200, "data": None, "message": "success"})
         tool = path.rsplit("/", 1)[-1]
         return httpx.Response(
             200,
-            json={
-                "code": 200,
-                "data": {"tool": tool, "data": []},
-                "message": "success",
-            },
+            json={"code": 200, "data": {"tool": tool, "data": []}, "message": "success"},
         )
 
-    client = setup_overrides(
-        IntentClassification(intent=Intent.GENERAL_CHAT), tracking_handler
+    return handler
+
+
+def _patch_persist_client(monkeypatch: pytest.MonkeyPatch, handler) -> None:
+    """把「脱手落库」自建的客户端替换为带 MockTransport 的实例。
+
+    落库刻意不复用请求作用域的 client（后者在请求结束时被 aclose），
+    因此它不会走 dependency_overrides，必须在此单独注入，否则会打真实后端。
+    """
+    monkeypatch.setattr(
+        chat_module,
+        "_new_persist_client",
+        lambda: BackendClient(base_url="http://test", transport=httpx.MockTransport(handler)),
     )
+
+
+def _wait_until(predicate: Callable[[], bool], timeout: float = 3.0) -> bool:
+    """轮询等待条件成立。
+
+    落库已与响应生命周期解耦，响应结束时落库任务可能仍在进行，故不能立即断言。
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return predicate()
+
+
+def test_chat_stream_persists_turn_with_conversation_id(monkeypatch):
+    """携带 conversation_id 时，流式结束后应保存本轮消息到 Java（终态 COMPLETED）。"""
+    saved: list[dict] = []
+    handler = _tracking_handler(saved)
+    _patch_persist_client(monkeypatch, handler)
+
+    client = setup_overrides(IntentClassification(intent=Intent.GENERAL_CHAT), handler)
     with client.stream(
         "POST",
         "/api/chat/stream",
@@ -488,12 +516,121 @@ def test_chat_stream_persists_turn_with_conversation_id():
         events = _parse_sse("".join(response.iter_text()))
 
     assert events[-1]["type"] == "done"
-    assert len(saved) == 1, "应保存一次消息"
+    assert _wait_until(lambda: len(saved) == 1), "应保存一次消息"
     payload = saved[0]["messages"]
     assert payload[0]["role"] == "USER"
     assert payload[0]["content"] == "你好"
     assert payload[1]["role"] == "ASSISTANT"
     assert payload[1]["content"] == "fake answer"
+    assert payload[1]["status"] == "COMPLETED"
+
+
+async def test_chat_stream_aborted_turn_persists_as_stopped(monkeypatch):
+    """用户点「停止生成」（客户端提前断开）时，本轮仍应落库并标记 STOPPED。
+
+    回归点（P1 待收口）：此前落库写在 SSE 生成器的 finally 中且伴随 yield，
+    客户端断开会让 finally 抛 RuntimeError: async generator ignored GeneratorExit，
+    落库被整体跳过 —— 刷新后用户的问题和已生成的回答一起消失。
+
+    这里直接驱动 StreamingResponse.body_iterator 并 aclose()：
+    TestClient 的 response.close() 并不会真的中断服务端生成器（服务端会跑完），
+    只有 aclose() 才会在挂起点抛出 GeneratorExit，是唯一能复现该缺陷的路径。
+    """
+    saved: list[dict] = []
+    handler = _tracking_handler(saved)
+    _patch_persist_client(monkeypatch, handler)
+
+    backend = BackendClient(base_url="http://test", transport=httpx.MockTransport(handler))
+    response = await chat_stream(
+        ChatRequest(message="你好", conversation_id="7"),
+        None,  # http_request：无 checkpointer 挂载需求，传 None 即可
+        FakeIntentRouter(IntentClassification(intent=Intent.GENERAL_CHAT)),
+        FakeAnswerer(),
+        backend,
+    )
+
+    agen = response.body_iterator
+    await agen.__anext__()  # 取到首帧（run_status RUNNING）后中断，模拟用户点「停止」
+    await agen.aclose()  # 触发 GeneratorExit
+    await chat_module.flush_pending_persists()
+
+    assert saved, "中断轮也必须落库，否则刷新后整轮消失"
+    messages = saved[0]["messages"]
+    assert messages[0]["role"] == "USER"
+    assert messages[0]["content"] == "你好"
+    # 中断轮尚未产出内容，但必须留一条 STOPPED 助手消息作为「已停止」的痕迹
+    assert messages[1]["role"] == "ASSISTANT"
+    assert messages[1]["status"] == "STOPPED"
+
+
+def test_persist_turn_marks_failed_status(monkeypatch):
+    """生成失败轮：助手消息落 FAILED 且保留已产出的部分内容。"""
+    saved: list[dict] = []
+    handler = _tracking_handler(saved)
+    _patch_persist_client(monkeypatch, handler)
+
+    # 直接驱动落库函数覆盖 FAILED 分支（Graph 抛错到 SSE error 事件由上面的用例覆盖）
+    asyncio.run(
+        chat_module._persist_conversation_turn(  # noqa: SLF001
+            BackendClient(base_url="http://test", transport=httpx.MockTransport(handler)),
+            88,
+            "帮我复盘这次面试",
+            "先看整体",
+            [],
+            "FAILED",
+        )
+    )
+
+    assert len(saved) == 1
+    messages = saved[0]["messages"]
+    assert messages[0]["status"] is None
+    assert messages[1]["status"] == "FAILED"
+    assert messages[1]["content"] == "先看整体"
+
+
+def test_persist_turn_stopped_with_empty_content_keeps_marker(monkeypatch):
+    """停止且尚未产出内容时，仍要落一条空内容的 STOPPED 助手消息留痕。"""
+    saved: list[dict] = []
+    handler = _tracking_handler(saved)
+    _patch_persist_client(monkeypatch, handler)
+
+    asyncio.run(
+        chat_module._persist_conversation_turn(  # noqa: SLF001
+            BackendClient(base_url="http://test", transport=httpx.MockTransport(handler)),
+            89,
+            "帮我复盘这次面试",
+            "",
+            [],
+            "STOPPED",
+        )
+    )
+
+    assert len(saved) == 1
+    messages = saved[0]["messages"]
+    assert messages[1]["role"] == "ASSISTANT"
+    assert messages[1]["status"] == "STOPPED"
+    assert messages[1]["content"] == ""
+
+
+def test_persist_turn_completed_with_empty_content_skips_assistant(monkeypatch):
+    """已完成但无内容（无回复可展示）时不应写空助手消息。"""
+    saved: list[dict] = []
+    handler = _tracking_handler(saved)
+    _patch_persist_client(monkeypatch, handler)
+
+    asyncio.run(
+        chat_module._persist_conversation_turn(  # noqa: SLF001
+            BackendClient(base_url="http://test", transport=httpx.MockTransport(handler)),
+            90,
+            "你好",
+            "",
+            [],
+            "COMPLETED",
+        )
+    )
+
+    assert len(saved) == 1
+    assert len(saved[0]["messages"]) == 1
 
 
 def test_chat_stream_skips_persist_without_conversation_id(backend_transport):

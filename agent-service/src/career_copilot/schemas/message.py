@@ -4,11 +4,29 @@
 受控 Block：text / action / choice / resume_summary / interview_summary / knowledge_citations。
 """
 
+from enum import StrEnum
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
 from career_copilot.schemas.action import ActionSelected
+
+
+class TurnStatus(StrEnum):
+    """本轮生成的终态，与 Java ``AgentMessageEntity.MessageStatus`` 逐值对齐。
+
+    随助手消息一起落库（P1 待收口）：
+
+    - ``COMPLETED``：正常跑完；
+    - ``STOPPED``：用户主动「停止生成」或连接中断，content 为已生成的部分内容；
+    - ``FAILED``：生成过程异常（如 LLM 调用失败）。
+
+    非 COMPLETED 时 Java 侧允许助手消息内容为空（尚未产出任何内容也要留痕）。
+    """
+
+    COMPLETED = "COMPLETED"
+    STOPPED = "STOPPED"
+    FAILED = "FAILED"
 
 
 class AttachmentRef(BaseModel):

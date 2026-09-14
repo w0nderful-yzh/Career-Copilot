@@ -57,8 +57,15 @@ public class AgentMessageEntity {
   @Column(name = "message_order", nullable = false)
   private Integer messageOrder;
 
-  @Column(nullable = false)
-  private Boolean completed = true;
+  /**
+   * 本轮生成终态（P1 待收口）。
+   *
+   * <p>用户主动停止（STOPPED）与生成失败（FAILED）时 content 可能为空（尚未产出内容），
+   * 因此非 COMPLETED 状态下助手消息允许空内容；其余情况仍要求内容非空。
+   */
+  @Enumerated(EnumType.STRING)
+  @Column(length = 20, nullable = false)
+  private MessageStatus status = MessageStatus.COMPLETED;
 
   @Column(nullable = false, updatable = false)
   private LocalDateTime createdAt;
@@ -68,6 +75,13 @@ public class AgentMessageEntity {
   public enum MessageRole {
     USER,
     ASSISTANT
+  }
+
+  /** 消息终态：正常完成 / 用户停止 / 生成失败 */
+  public enum MessageStatus {
+    COMPLETED,
+    STOPPED,
+    FAILED
   }
 
   @PrePersist

@@ -9,6 +9,7 @@ import {
   MessagesSquare,
   Send,
   Sparkles,
+  Square,
   User,
 } from 'lucide-react';
 import type { ChoiceOption, CopilotMessage } from '../../types/copilot';
@@ -78,6 +79,13 @@ function AssistantContent({
         <div className="mt-2 flex items-center gap-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600 dark:bg-red-900/30 dark:text-red-300">
           <AlertCircle className="h-3.5 w-3.5 shrink-0" />
           {message.error ?? '处理失败，请稍后重试'}
+        </div>
+      )}
+      {/* 停止生成：中性提示而非错误提示——用户主动中断不是故障（P1 待收口） */}
+      {message.status === 'stopped' && (
+        <div className="mt-2 flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:bg-slate-700/40 dark:text-slate-400">
+          <Square className="h-3 w-3 shrink-0" />
+          {message.content ? '已停止生成，以上为已产出的部分' : '已停止生成，本轮未产出内容'}
         </div>
       )}
     </div>

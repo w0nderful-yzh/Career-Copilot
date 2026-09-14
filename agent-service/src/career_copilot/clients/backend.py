@@ -42,7 +42,9 @@ class BackendClient:
         tool: str,
         arguments: dict[str, Any] | None = None,
         *,
-        timeout: float | None = None,
+        # 该 timeout 不是「等多久」的等待语义，而是透传给 httpx 的单次请求超时覆盖，
+        # 因此不适用 asyncio.timeout（后者无法表达逐请求超时）。
+        timeout: float | None = None,  # noqa: ASYNC109
     ) -> Any:
         """调用 Java Agent Tool 统一入口并解包 Result 信封。
 
@@ -280,9 +282,10 @@ class BackendClient:
         conversation_id: int,
         messages: list[dict[str, Any]],
     ) -> None:
-        """保存一轮消息（USER + ASSISTANT，含 blocks JSON）。
+        """保存一轮消息（USER + ASSISTANT，含 blocks JSON 与终态 status）。
 
         由 Agent 在流式结束后调用；保存失败不影响流式响应（上层仅告警）。
+        status 取 COMPLETED / STOPPED / FAILED，None 表示由 Java 侧按 COMPLETED 处理。
         """
         payload = {
             "messages": [
@@ -290,6 +293,7 @@ class BackendClient:
                     "role": message.get("role"),
                     "content": message.get("content") or "",
                     "blocks": message.get("blocks"),  # JSON 字符串或 None
+                    "status": message.get("status"),
                 }
                 for message in messages
             ]

@@ -187,7 +187,15 @@ export type AgentBlock =
   | InterviewProposalBlock
   | InterviewSessionBlock;
 
-export type MessageStatus = 'streaming' | 'done' | 'error';
+/**
+ * 消息渲染态。
+ *
+ * - streaming：正在流式产出；
+ * - done：正常完成；
+ * - stopped：用户主动「停止生成」或连接中断（与 done 区分，刷新后仍可还原）；
+ * - error：本轮生成失败。
+ */
+export type MessageStatus = 'streaming' | 'done' | 'stopped' | 'error';
 
 /** P1-2 工具执行轨迹步骤（tool_started / tool_completed 驱动） */
 export interface ToolTraceStep {
@@ -221,6 +229,8 @@ export interface ConversationMessage {
   role: 'USER' | 'ASSISTANT';
   content: string;
   blocks: string | null; // JSON 字符串（结构化 Block 数组）
+  /** 本轮生成终态 COMPLETED / STOPPED / FAILED（P1 停止生成留痕；老数据可能为 null） */
+  status?: string | null;
   createdAt: string;
 }
 

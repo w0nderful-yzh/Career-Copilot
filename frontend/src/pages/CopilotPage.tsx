@@ -6,6 +6,7 @@ import ContextPanel from '../components/copilot/ContextPanel';
 import InterviewWorkspace from '../components/copilot/InterviewWorkspace';
 import MessageList from '../components/copilot/MessageList';
 import type { CopilotOutletContext } from '../components/Layout';
+import { FAILED_TURN_HINT, toMessageStatus } from '../utils/copilotTurnStatus';
 import type {
   ActionSelected,
   AgentBlock,
@@ -39,15 +40,20 @@ function parseBlocks(blocksJson: string | null): AgentBlock[] {
   }
 }
 
-/** 历史消息 → 前端消息模型 */
+/** 历史消息 → 前端消息模型（终态由 Java status 还原，缺省按正常完成处理） */
 function toCopilotMessages(detail: ConversationDetail): CopilotMessage[] {
-  return detail.messages.map((message) => ({
-    id: `saved_${message.id}`,
-    role: message.role === 'USER' ? 'user' : 'assistant',
-    content: message.content,
-    blocks: parseBlocks(message.blocks),
-    status: 'done',
-  }));
+  return detail.messages.map((message) => {
+    const status = toMessageStatus(message.status);
+    return {
+      id: `saved_${message.id}`,
+      role: message.role === 'USER' ? 'user' : 'assistant',
+      content: message.content,
+      blocks: parseBlocks(message.blocks),
+      status,
+      // 历史回放没有实时错误详情，失败轮次给兜底文案
+      error: status === 'error' ? FAILED_TURN_HINT : undefined,
+    };
+  });
 }
 
 /** 取消息流里最近一个 interview_session 信号块（Interview Mode 重构：进入 Interview Mode 的信号） */
@@ -278,7 +284,9 @@ export default function CopilotPage() {
         );
       } catch (err) {
         if (controller.signal.aborted) {
-          updateMessage(assistantId, (current) => ({ ...current, status: 'done' }));
+          // 用户主动「停止生成」：标为 stopped 而非 done，
+          // 否则停止后与正常完成无法区分（Java 侧同步落 STOPPED）
+          updateMessage(assistantId, (current) => ({ ...current, status: 'stopped' }));
         } else {
           updateMessage(assistantId, (current) => ({
             ...current,

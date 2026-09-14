@@ -106,6 +106,7 @@ jobs:
           pnpm run test:interview-entry
           pnpm run test:copilot-action
           pnpm run test:copilot-turn-status
+          pnpm run test:code-language
 
       - name: Build frontend
         run: pnpm run build

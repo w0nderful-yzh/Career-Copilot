@@ -297,6 +297,9 @@ Voice Agent 重构（现有语音面试保留原样）
 | **停止生成落库改为「脱手任务」+ 消息三态 status**（2026-09-14） | 落库原在 SSE 生成器 `finally` 中且伴随 `yield`：客户端 abort 时 `finally` 的 yield 触发 `RuntimeError: async generator ignored GeneratorExit`，后续 `await` 落库被整体跳过，整轮对话丢失。三态 status 替代建表后从未被写入的 `completed` 布尔，使「已停止」刷新后可还原 |
 | **未完成的助手消息允许空内容** | 用户停止/生成失败时可能尚未产出任何内容；若仍要求内容非空，只能是丢掉整条助手消息，刷新后无法区分「被停止」与「没人回答」。已完成消息与用户消息仍禁止空白 |
 | **脱手落库独立建 BackendClient，不复用请求作用域** | 请求结束时 `get_backend_client` 会 aclose 连接池，而落库任务生命周期长于请求。单列为 `_new_persist_client()` 兼作测试接缝（模块内直建会绕过 `dependency_overrides`，测试会打真实后端） |
+| **加载失败必须与空态显式区分**（2026-09-14） | 此前拉会话详情失败只 `console.error`、`messages` 保持为空，界面渲染出新会话首屏，用户会以为历史被清空；会话列表失败会显示「还没有对话」；删除失败更是毫无反馈。三处统一改为受控错误态 + 重试入口 |
+| **「重新发送」语义 = 新的一轮，不新增 regenerate 协议** | Java `saveMessages` 会一并落一条用户消息，界面与历史必须与持久化一致（不做无痕重放）。若要「原地续写 / 重新生成」，需在 `ChatRequest` 增加 regenerate 语义以跳过 USER 落库——协议变更成本高于本轮收益，留作后续独立改动 |
+| **代码高亮改 prism-light + 25 种白名单语言** | 默认 prism 构建含 300 种语言语法，异步 chunk 达 697.69 kB；未注册语言直接按纯文本渲染，比对未知语言依赖高亮器兜底更确定，也避免把整包语法拉回来 |
 
 ---
 
@@ -328,6 +331,7 @@ Todo 原始统计为 **32 / 48 项勾选（约 66.7%）**。由于列表中包�
 当前项目定位：**核心技术骨架基本齐备，可进入集成测试和产品打磨阶段，但还未达到完整产品验收标准。**
 
 > **工程基线（2026-09-14 更新）**：P6-0 已完成 —— Java / Python / Frontend 三端质量门禁全部转绿，并已固化到 CI（含原 CI 从未触发的分支配置修复）。后续功能累计不得再引入失败基线。详见「四、验证基线问题」与「五、P6-0」。
+> **P1 待收口进度**：4 项已完成 3 项（Composer 内联错误 / 停止生成三态落库 / 加载与错误态 + 重发入口），仅剩「会话重命名、归档/恢复」。另完成一项主动性能优化（P6-5）。
 > 勾选计数：审计节之前的原始 TodoList 仍为 **32 / 48**；审计节自身为 **31 / 81**（含新增的 P6 打磨项）。
 
 | 模块 | 代码审计状态 | 当前判断 |
@@ -375,7 +379,9 @@ Todo 原始统计为 **32 / 48 项勾选（约 66.7%）**。由于列表中包�
 
 ### P1 待收口
 
-- [ ] 用受控错误状态和重试入口替换 Composer 中的 `window.alert`
+- [x] 用受控错误状态和重试入口替换 Composer 中的 `window.alert`（2026-09-14）
+  - `Composer` 附件类型不合法时改为输入框内联红条提示（带文件名、可关闭），发送/重新选择文件时自动清除；顺带修掉 file input 未重置 `value` 导致「连续选同一个文件不再触发 change」的问题
+  - 说明：`window.alert` 在本仓库其余模块（语音面试、面试记录、日程、简历详情）仍存在，不属 P1 范围，未一并改动
 - [x] 停止生成时由 Java 持久化 `STOPPED/CANCELLED` 状态，避免仅修改前端本地消息（2026-09-14）
   - **实际缺陷比原描述严重**：落库写在 SSE 生成器的 `finally` 中且伴随 `yield`，客户端 abort 会让 `finally` 抛 `RuntimeError: async generator ignored GeneratorExit`，后面的 `await` 落库被整体跳过 —— 即按「停止生成」后**本轮根本没落库**，刷新后用户的问题和已产出的回答一起消失。
   - Java：`V20260914` 迁移把 `agent_messages.completed`（建表后从未被写入/读取的死字段）替换为三态 `status`（COMPLETED/STOPPED/FAILED，含 CHECK 约束与历史回填）；`AgentMessageDTO` 与 `SaveMessagesRequest.MessagePayload` 透出 status；未完成的助手消息允许空内容（停止/失败时可能尚未产出内容，但「本轮未完成」需要留痕），已完成仍禁止空白。
@@ -383,7 +389,14 @@ Todo 原始统计为 **32 / 48 项勾选（约 66.7%）**。由于列表中包�
   - 前端：`MessageStatus` 增加 `stopped`；`cancel()` 不再把中断标成 `done`；历史回放按 Java status 还原 done/stopped/error（缺省不误判为异常）；停止态用中性提示，与 error 红条区分。
   - 已验证：Java 对话服务 20 个单测（含 7 个终态用例）；Python 79 个测试通过，其中 `test_chat_stream_aborted_turn_persists_as_stopped` 直接驱动 `StreamingResponse.body_iterator` 后 `aclose()` 触发 GeneratorExit（TestClient 的 `response.close()` 不会真正中断服务端生成器，服务端会跑完，故无法用它复现；该用例在修复前必然失败）；前端新增 `test:copilot-turn-status` 4 个映射单测 + build + E2E 通过。
 - [ ] 补齐会话重命名、归档/恢复能力；明确"删除"和"归档"的产品语义
-- [ ] 补充 Copilot 主链路的加载、空状态、断网、SSE 中断和 Tool 失败体验
+- [x] 补充 Copilot 主链路的加载、空状态、断网、SSE 中断和 Tool 失败体验（2026-09-14）
+  - **加载失败不再伪装成空态**：`CopilotPage` 拉会话详情失败此前只 `console.error`，`messages` 保持空数组 → 界面渲染出「今天想为求职推进哪一步？」的新会话首屏，用户会以为历史被清空。现在显式记录失败态，展示错误面板 + [重试]（重试走递增 reloadKey 重新触发加载 effect）
+  - **会话列表失败同理**：`Layout` 记录 `conversationError` 并传入 `SessionList`；列表已有内容时作顶部提示（如删除失败——此前删除失败也只有 console，界面毫无反馈），列表为空时提示本身就是主体，两种情况都不退化成「还没有对话」
+  - **统一重发入口**：`CopilotMessage.retry` 保存本轮原始请求（message / userContent / attachments / action），失败与停止态都渲染 [重新发送]，带附件与 Action 提交的轮次无需用户重新输入。附件在「上传失败」时才在载荷里携带原始 `File`（那时资源 id 尚不存在），上传成功的轮次用已有 id 重发不重复上传
+  - **语义说明**：重发是「新的一轮」——后端会一并落一条用户消息，界面与历史里会再出现一次该提问，与持久化结果保持一致（不做无痕重放）。若要「原地续写 / 重新生成」，需要后端支持 regenerate 语义（跳过 USER 落库），属后续独立改动
+  - 残留：断网未单独区分文案（走通用 error + 重发），也没有自动重连；SSE 中断靠 `stopped` 终态体现
+  - 已验证：`e2e/copilot-states.spec.ts` 2 条用例（详情加载失败→错误+重试→恢复后 STOPPED 消息渲染为「已停止生成」；列表加载失败→不显示「还没有对话」→重试恢复）
+  - 踩坑记录：E2E 打桩失败窗口不能用「调用序号」（第 1 次失败、第 2 次成功），应用自身会重新拉取列表，序号式桩会被第二次成功响应覆盖而测不出错误态；须用开关变量控制失败窗口
 
 ### P3 待收口
 
@@ -440,13 +453,13 @@ Todo 原始统计为 **32 / 48 项勾选（约 66.7%）**。由于列表中包�
 ### Frontend
 
 - [x] `pnpm run build` 通过
-- [x] Copilot Action 路由测试 6 个通过
+- [x] 前端单元测试通过（2026-09-14：7 个脚本 29 项通过，含 Copilot Action 路由 6 项）
 - [x] 修复 CSS 语法警告
   - 根因：`@custom-variant dark` 与伪元素选择器上的 `@apply dark:/hover:` 组合，会被重写成空的 `:where()`，产出 `::-webkit-scrollbar-track:where()` 这种非法语法
   - 修复方式：`.scrollbar-thin` 三条规则改为直接声明 + Tailwind 主题变量（`var(--color-slate-*)`），暗色显式写 `.dark` 祖先选择器
   - 已验证：构建产物中 `:where()` 出现 0 次，3 条 `css-syntax-error` 警告消失
-- [ ] 评估并拆分超过 500 KB 的 `syntax-highlighter` 等大 Chunk（当前仅剩此一条构建警告，不阻断门禁）
-- [ ] 补充 Copilot、简历优化、能力画像和文字自适应面试 E2E；当前 E2E 主要覆盖 Voice Interview
+- [x] 评估并拆分超过 500 KB 的 `syntax-highlighter` 等大 Chunk（2026-09-14，见「五、P6-5 性能优化」）
+- [ ] 补充简历优化、能力画像和文字自适应面试 E2E；Copilot 加载/错误/停止态已由 `e2e/copilot-states.spec.ts` 覆盖
 
 ## 五、Phase 6：产品优化与打磨——优先级 P6
 
@@ -454,7 +467,7 @@ Todo 原始统计为 **32 / 48 项勾选（约 66.7%）**。由于列表中包�
 
 - [x] Java 全量测试通过 —— `./gradlew :app:test --no-daemon`：384 测试 / 0 失败 / 0 错误 / 50 跳过（跳过均为显式声明的预期行为）
 - [x] Python pytest、ruff、mypy 全部通过 —— ruff 0 错、mypy 0 错（40 源文件）、pytest 75 通过
-- [x] Frontend build、unit test、E2E 全部通过 —— build 成功且 CSS 语法警告清零、6 个单测脚本 23 项通过、Playwright E2E 3 项通过
+- [x] Frontend build、unit test、E2E 全部通过 —— build 成功且 CSS 语法警告清零、7 个单测脚本 29 项通过、Playwright E2E 5 项通过
 - [x] 将上述命令固化到 CI，禁止带失败基线继续累计功能
   - **关键修复**：`.github/workflows/ci.yml` 原触发分支写的是 `master`，而本仓库真实分支是 `main`（默认）+ `dev`，`master` 只存在于 upstream 父仓库 —— 即原 CI **从未被触发过**。已改为 `main` + `dev`
   - 新增 `agent` job：`uv sync --frozen` → `ruff check src tests` → `mypy src` → `pytest`（原 CI 完全没有 Python 门禁）
@@ -494,8 +507,18 @@ Todo 原始统计为 **32 / 48 项勾选（约 66.7%）**。由于列表中包�
 - [ ] 每条闭环至少包含 happy path、用户取消、刷新恢复、依赖失败和重试场景
 - [ ] 三条闭环均通过自动化 E2E 后，再将 Phase 5 标记为完成
 
-## 六、产品打磨停止标准
+### P6-5 性能优化（记录，不阻塞验收）
 
+> 主动加入的优化项，记录动机与实测数据，便于后续回归时判断是否被抵消。
+
+- [x] 代码高亮异步 chunk 瘦身（2026-09-14）
+  - 问题：`react-syntax-highlighter` 的默认 prism 构建自带 300 种语言语法，`i18n` 之外的整包被打进一个 697.69 kB 的异步 chunk（gzip 235.44 kB），也是构建里最后一条 >500 kB 警告
+  - 做法：高亮器改用 `prism-light` 并只注册 25 种白名单语言；主题从 `styles/prism` 桶导出改为直接引 `styles/prism/one-dark`（桶导出会把 40+ 套主题一起打包）；语言模块写成显式静态字符串的 `import()`（模板字符串形式无法被 Vite 静态分析，会把整包语法拉回来）；未注册语言走纯文本渲染，不依赖高亮器兜底
+  - 配套：`vite.config.ts` 的 `manualChunks` 由对象形式改为函数形式按包路径分组——对象形式只捕获包入口及其静态依赖，按需 `import()` 的语言模块会各自切出 0.12 kB 碎片 chunk（实测 25 个），折回同一 chunk 后碎片归零
+  - 实测：`syntax-highlighter` **697.69 kB → 146.80 kB**（gzip 235.44 → 41.45 kB，-79%）；构建 >500 kB 警告清零；`react-vendor` / `ui-vendor` 体积不变
+  - 已验证：`test:code-language` 6 项单测（别名映射、大小写归一、未知语言返回 null、解析结果必落在白名单内）+ 构建产物核对
+
+## 六、产品打磨停止标准
 满足以下条件后，才将当前阶段定义为“可演示、可稳定回归的产品版本”：
 
 - [ ] P1/P2/P3/P4 无已知 P0/P1 主流程缺陷

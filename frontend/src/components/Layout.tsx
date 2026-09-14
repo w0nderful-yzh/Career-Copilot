@@ -49,13 +49,17 @@ export default function Layout() {
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<number | null>(null);
   const [loadingConversations, setLoadingConversations] = useState(false);
+  // 会话列表加载失败：与「还没有对话」的空态区分，否则失败会被当成空列表展示
+  const [conversationError, setConversationError] = useState<string | null>(null);
 
   const refreshConversations = useCallback(async () => {
     try {
       const list = await conversationApi.list();
       setConversations(list);
+      setConversationError(null);
     } catch (err) {
       console.error('Failed to load conversations:', err);
+      setConversationError(err instanceof Error ? err.message : '会话列表加载失败');
     } finally {
       setLoadingConversations(false);
     }
@@ -83,6 +87,8 @@ export default function Layout() {
         }
       } catch (err) {
         console.error('Failed to delete conversation:', err);
+        // 删除失败此前只有 console：界面无任何反馈，用户会以为删掉了
+        setConversationError(err instanceof Error ? err.message : '删除会话失败，请重试');
       }
     },
     [activeConversationId],
@@ -97,11 +103,14 @@ export default function Layout() {
         const list = await conversationApi.list();
         if (cancelled) return;
         setConversations(list);
+        setConversationError(null);
         if (list.length > 0) {
           setActiveConversationId(list[0].id);
         }
       } catch (err) {
+        if (cancelled) return;
         console.error('Failed to restore conversation:', err);
+        setConversationError(err instanceof Error ? err.message : '会话列表加载失败');
       } finally {
         if (!cancelled) setLoadingConversations(false);
       }
@@ -206,9 +215,11 @@ export default function Layout() {
               conversations={conversations}
               activeConversationId={activeConversationId}
               loading={loadingConversations}
+              error={conversationError}
               onNew={newConversation}
               onSelect={selectConversation}
               onDelete={deleteConversation}
+              onRetry={() => void refreshConversations()}
             />
             <div className="mx-2 mt-3 border-t border-slate-100 pt-4 dark:border-slate-700">
               <p className="mb-2 px-3 text-[11px] font-bold uppercase tracking-[0.16em] text-slate-400 dark:text-slate-500">

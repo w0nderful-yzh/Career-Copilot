@@ -204,6 +204,25 @@ export interface ToolTraceStep {
   pending: boolean;
 }
 
+/**
+ * 「重新发送」所需的原始请求载荷。
+ *
+ * 失败/停止的轮次记下自己是怎么发出的，用户点重发时按同样的参数重跑一轮，
+ * 不必重新输入（尤其是带附件或 Action 提交的轮次）。
+ */
+export interface TurnRetryPayload {
+  message: string;
+  userContent: string;
+  attachments: AttachmentRef[];
+  action?: ActionSelected;
+  /**
+   * 附件轮次在「上传失败」时才携带原始文件：那时资源 id 还不存在，只能按文件重走上传。
+   * 上传成功的轮次改用 attachments 里的 id 重发（不重复上传）。仅在失败轮持有 File 引用，
+   * 避免为每一轮附件对话常驻文件内存。
+   */
+  attachment?: { file: File; kind: 'resume' | 'job_description' };
+}
+
 export interface CopilotMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -213,6 +232,8 @@ export interface CopilotMessage {
   error?: string;
   /** 工具执行轨迹：依次累积，流式结束后整行保留（体现 Agent 实际执行步骤） */
   toolTrace?: ToolTraceStep[];
+  /** 本轮原始请求，供失败/停止后的「重新发送」复用 */
+  retry?: TurnRetryPayload;
 }
 
 // Copilot 对话会话（Java System of Record）

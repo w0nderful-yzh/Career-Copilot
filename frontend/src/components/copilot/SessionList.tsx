@@ -1,4 +1,4 @@
-import { Plus, Trash2 } from 'lucide-react';
+import { AlertCircle, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import type { ConversationItem } from '../../types/copilot';
 
 // Copilot 会话列表面板：渲染在全局 Layout 最左侧栏（/copilot 时），避免双层侧栏
@@ -8,9 +8,12 @@ interface SessionListProps {
   conversations: ConversationItem[];
   activeConversationId: number | null;
   loading: boolean;
+  /** 加载/删除失败提示；非空时优先展示，避免与「还没有对话」的空态混淆 */
+  error?: string | null;
   onNew: () => void;
   onSelect: (conversationId: number) => void;
   onDelete: (conversationId: number) => void;
+  onRetry?: () => void;
 }
 
 function formatRelativeTime(iso: string): string {
@@ -30,9 +33,11 @@ export default function SessionList({
   conversations,
   activeConversationId,
   loading,
+  error,
   onNew,
   onSelect,
   onDelete,
+  onRetry,
 }: SessionListProps) {
   return (
     <div>
@@ -54,11 +59,35 @@ export default function SessionList({
         </div>
         {loading ? (
           <p className="px-3 py-2 text-xs text-slate-400">加载中…</p>
-        ) : conversations.length === 0 ? (
-          <p className="px-3 py-2 text-xs text-slate-400 dark:text-slate-500">
-            还没有对话，开始你的第一段对话吧
-          </p>
         ) : (
+          <>
+            {/* 失败提示：列表已有内容时作为顶部提示（如删除失败），列表为空时提示本身就是
+                主要内容——两种情况都不退化成「还没有对话」的空态 */}
+            {error && (
+              <div className="mx-1 mb-2 rounded-lg bg-red-50 px-3 py-2 dark:bg-red-900/20">
+                <p className="flex items-start gap-1.5 text-xs text-red-600 dark:text-red-300">
+                  <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span className="min-w-0 flex-1 break-words">{error}</span>
+                </p>
+                {onRetry && (
+                  <button
+                    type="button"
+                    onClick={onRetry}
+                    className="mt-2 inline-flex items-center gap-1 rounded-md bg-red-600 px-2 py-1 text-xs font-semibold text-white transition hover:bg-red-700"
+                  >
+                    <RefreshCw className="h-3 w-3" />
+                    重试
+                  </button>
+                )}
+              </div>
+            )}
+            {conversations.length === 0
+              ? !error && (
+                  <p className="px-3 py-2 text-xs text-slate-400 dark:text-slate-500">
+                    还没有对话，开始你的第一段对话吧
+                  </p>
+                )
+              : (
           <ul className="space-y-1">
             {conversations.map((conversation) => {
               const active = conversation.id === activeConversationId;
@@ -98,6 +127,8 @@ export default function SessionList({
               );
             })}
           </ul>
+                )}
+          </>
         )}
       </div>
     </div>

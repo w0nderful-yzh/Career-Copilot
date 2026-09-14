@@ -1,5 +1,13 @@
 import { useRef, useState } from 'react';
-import { BriefcaseBusiness, FileText, Paperclip, Send, Square, X } from 'lucide-react';
+import {
+  AlertCircle,
+  BriefcaseBusiness,
+  FileText,
+  Paperclip,
+  Send,
+  Square,
+  X,
+} from 'lucide-react';
 
 // Copilot 输入栏：发送消息 / 停止（取消）当前流式响应
 // 支持拖入或选择 PDF 附件（简历或 JD，发送前可切换类型），发送时由外层上传到对应库
@@ -39,6 +47,8 @@ export default function Composer({ streaming, onSend, onCancel, disabled }: Comp
   const [attachment, setAttachment] = useState<File | null>(null);
   const [attachmentKind, setAttachmentKind] = useState<AttachmentKind>('resume');
   const [dragging, setDragging] = useState(false);
+  // 附件校验失败就地提示（原为 window.alert：阻塞式弹窗、无法携带文件名、不可关闭）
+  const [fileError, setFileError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const meta = KIND_META[attachmentKind];
@@ -50,14 +60,16 @@ export default function Composer({ streaming, onSend, onCancel, disabled }: Comp
     setValue('');
     setAttachment(null);
     setAttachmentKind('resume');
+    setFileError(null);
   };
 
   const handleFile = (file: File | undefined) => {
     if (!file) return;
     if (!isPdf(file)) {
-      window.alert('暂只支持 PDF 附件（简历或 JD）');
+      setFileError(`「${file.name}」不是 PDF，目前只支持 PDF 附件（简历或 JD）`);
       return;
     }
+    setFileError(null);
     setAttachment(file);
   };
 
@@ -119,13 +131,36 @@ export default function Composer({ streaming, onSend, onCancel, disabled }: Comp
           </div>
         )}
 
+        {/* 附件类型不合法：就地提示并给出文件名，不用阻塞式弹窗 */}
+        {fileError && (
+          <div
+            role="alert"
+            className="mb-2 flex items-start gap-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600 dark:bg-red-900/30 dark:text-red-300"
+          >
+            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span className="min-w-0 flex-1 break-words">{fileError}</span>
+            <button
+              type="button"
+              onClick={() => setFileError(null)}
+              title="关闭提示"
+              className="shrink-0 rounded p-0.5 text-red-400 transition hover:bg-red-100 hover:text-red-600 dark:hover:bg-red-900/50"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
+
         <div className="flex items-end gap-2">
           <input
             ref={fileInputRef}
             type="file"
             accept="application/pdf,.pdf"
             className="hidden"
-            onChange={(event) => handleFile(event.target.files?.[0] ?? undefined)}
+            onChange={(event) => {
+              handleFile(event.target.files?.[0] ?? undefined);
+              // 清空 value：否则连续选同一个文件不会再次触发 change（无法重试）
+              event.target.value = '';
+            }}
           />
           <button
             onClick={() => fileInputRef.current?.click()}

@@ -7,6 +7,7 @@ import {
   FileSearch,
   Loader2,
   MessagesSquare,
+  RefreshCw,
   Send,
   Sparkles,
   Square,
@@ -15,16 +16,40 @@ import {
 import type { ChoiceOption, CopilotMessage } from '../../types/copilot';
 import BlockRenderer from './BlockRenderer';
 
-// Copilot 消息列表：气泡渲染 + 流式光标 + 错误状态
+// Copilot 消息列表：气泡渲染 + 流式光标 + 错误/停止状态与重发入口
+
+/**
+ * 失败/停止后的重发入口。
+ *
+ * 按本轮原始请求再跑一次（复用保存的 retry 载荷，带附件与 Action 提交的轮次
+ * 也不需要用户重新输入）。注意语义是「新的一轮」：后端会同时落一条用户消息，
+ * 因此界面与历史里会再出现一次该提问——与持久化结果保持一致，不做无痕重放。
+ */
+function RetryButton({ disabled, onClick }: { disabled: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title="按同样的内容重新发送这一轮"
+      className="inline-flex shrink-0 items-center gap-1 rounded-md border border-current px-2 py-0.5 font-medium transition hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/10"
+    >
+      <RefreshCw className="h-3 w-3" />
+      重新发送
+    </button>
+  );
+}
 
 function AssistantContent({
   message,
   actionDisabled,
   onActionSelect,
+  onRetry,
 }: {
   message: CopilotMessage;
   actionDisabled: boolean;
   onActionSelect: (option: ChoiceOption) => void;
+  onRetry?: (messageId: string) => void;
 }) {
   return (
     <div className="space-y-1">
@@ -76,16 +101,24 @@ function AssistantContent({
         />
       ))}
       {message.status === 'error' && (
-        <div className="mt-2 flex items-center gap-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600 dark:bg-red-900/30 dark:text-red-300">
+        <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600 dark:bg-red-900/30 dark:text-red-300">
           <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-          {message.error ?? '处理失败，请稍后重试'}
+          <span className="min-w-0 flex-1">{message.error ?? '处理失败，请稍后重试'}</span>
+          {onRetry && message.retry && (
+            <RetryButton disabled={actionDisabled} onClick={() => onRetry(message.id)} />
+          )}
         </div>
       )}
       {/* 停止生成：中性提示而非错误提示——用户主动中断不是故障（P1 待收口） */}
       {message.status === 'stopped' && (
-        <div className="mt-2 flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:bg-slate-700/40 dark:text-slate-400">
+        <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:bg-slate-700/40 dark:text-slate-400">
           <Square className="h-3 w-3 shrink-0" />
-          {message.content ? '已停止生成，以上为已产出的部分' : '已停止生成，本轮未产出内容'}
+          <span className="min-w-0 flex-1">
+            {message.content ? '已停止生成，以上为已产出的部分' : '已停止生成，本轮未产出内容'}
+          </span>
+          {onRetry && message.retry && (
+            <RetryButton disabled={actionDisabled} onClick={() => onRetry(message.id)} />
+          )}
         </div>
       )}
     </div>
@@ -128,11 +161,13 @@ export default function MessageList({
   actionDisabled,
   onActionSelect,
   onQuickPrompt,
+  onRetry,
 }: {
   messages: CopilotMessage[];
   actionDisabled: boolean;
   onActionSelect: (option: ChoiceOption) => void;
   onQuickPrompt: (prompt: string) => void;
+  onRetry?: (messageId: string) => void;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -214,6 +249,7 @@ export default function MessageList({
               message={message}
               actionDisabled={actionDisabled}
               onActionSelect={onActionSelect}
+              onRetry={onRetry}
             />
           </div>
         </div>

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
+import { AlertCircle, RefreshCw } from 'lucide-react';
 import { conversationApi, jobUploadApi, resumeUploadApi, streamChat } from '../api/agentChat';
 import Composer, { type AttachmentKind } from '../components/copilot/Composer';
 import ContextPanel from '../components/copilot/ContextPanel';
@@ -18,6 +19,7 @@ import type {
   InterviewModeState,
   InterviewSessionBlock,
   StreamEvent,
+  TurnRetryPayload,
 } from '../types/copilot';
 
 // Copilot Workspace：Agent 对话工作台
@@ -80,6 +82,10 @@ export default function CopilotPage() {
 
   const [messages, setMessages] = useState<CopilotMessage[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  // 历史加载失败：与「空会话」区分开，否则界面会渲染成新会话首屏，用户以为历史被清空
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  // 失败重试用：递增以重新触发加载 effect
+  const [historyReloadKey, setHistoryReloadKey] = useState(0);
   // 会话绑定的活动 JD（Conversation Memory，P2-5；侧栏活跃资源展示用）
   const [boundJobId, setBoundJobId] = useState<number | null>(null);
   const [streaming, setStreaming] = useState(false);
@@ -103,6 +109,7 @@ export default function CopilotPage() {
     let cancelled = false;
     if (activeConversationId === null) {
       setMessages([]);
+      setHistoryError(null);
       return;
     }
     // 刚创建的新会话：不加载历史，保留本次发送追加的消息
@@ -112,13 +119,20 @@ export default function CopilotPage() {
     }
     (async () => {
       setLoadingHistory(true);
+      // 重试前先清掉上一次的错误，避免旧提示与新加载状态并存
+      setHistoryError(null);
       try {
         const detail = await conversationApi.getDetail(activeConversationId);
         if (cancelled) return;
         setMessages(toCopilotMessages(detail));
         setBoundJobId(detail.activeJobId ?? null);
       } catch (err) {
+        if (cancelled) return;
+        // 明确记录失败态：此前只 console.error，messages 保持为空 →
+        // 渲染出新会话首屏，用户会误以为历史丢了（P1 待收口）
         console.error('Failed to load conversation:', err);
+        setMessages([]);
+        setHistoryError(err instanceof Error ? err.message : '对话加载失败');
       } finally {
         if (!cancelled) setLoadingHistory(false);
       }
@@ -126,7 +140,7 @@ export default function CopilotPage() {
     return () => {
       cancelled = true;
     };
-  }, [activeConversationId]);
+  }, [activeConversationId, historyReloadKey]);
 
   const handleEvent = useCallback(
     (assistantId: string, event: StreamEvent) => {
@@ -262,12 +276,24 @@ export default function CopilotPage() {
       }
 
       const assistantId = existingAssistantId ?? nextId();
+      // 记下本轮原始请求：失败/停止后可原样重发（含附件与 Action 提交）
+      const retryPayload: TurnRetryPayload = { message, userContent, attachments, action };
       if (!existingAssistantId) {
         setMessages((prev) => [
           ...prev,
           { id: nextId(), role: 'user', content: userContent, blocks: [], status: 'done' },
-          { id: assistantId, role: 'assistant', content: '', blocks: [], status: 'streaming' },
+          {
+            id: assistantId,
+            role: 'assistant',
+            content: '',
+            blocks: [],
+            status: 'streaming',
+            retry: retryPayload,
+          },
         ]);
+      } else {
+        // 复用已有气泡（附件上传成功后继续本轮）：同步刷新重发载荷
+        updateMessage(assistantId, (m) => ({ ...m, retry: retryPayload }));
       }
       setStreaming(true);
 
@@ -362,6 +388,13 @@ export default function CopilotPage() {
             ? `附件上传失败：${err.message}`
             : '附件上传失败，请重试',
           toolTrace: [],
+          // 上传失败时资源 id 还不存在，重发需要原始文件（其余轮次用已有 id 即可）
+          retry: {
+            message: text,
+            userContent,
+            attachments: [],
+            attachment: { file: attachment, kind: attachmentKind },
+          },
         }));
         setStreaming(false);
         return;
@@ -395,6 +428,32 @@ export default function CopilotPage() {
       });
     },
     [runTurn],
+  );
+
+  /**
+   * 失败/停止后重发本轮：复用消息上保存的原始请求重跑，用户无需重新输入。
+   *
+   * 语义是「新的一轮」——后端会一并落一条用户消息，界面与历史里会再出现一次该提问，
+   * 与持久化结果保持一致（不做无痕重放）。若要「原地续写/重新生成」，需要后端提供
+   * regenerate 语义（跳过 USER 落库），属后续独立改动。
+   */
+  const retryTurn = useCallback(
+    (messageId: string) => {
+      const payload = messages.find((message) => message.id === messageId)?.retry;
+      if (!payload) return;
+      if (payload.attachment) {
+        // 附件上传失败轮：资源 id 尚不存在，按原始文件重走一遍上传
+        void send(payload.message, payload.attachment.file, payload.attachment.kind);
+        return;
+      }
+      void runTurn({
+        message: payload.message,
+        userContent: payload.userContent,
+        attachments: payload.attachments,
+        action: payload.action,
+      });
+    },
+    [messages, runTurn, send],
   );
 
   const cancel = useCallback(() => {
@@ -481,12 +540,34 @@ export default function CopilotPage() {
                 <div className="flex h-full items-center justify-center text-sm text-slate-400">
                   加载对话中…
                 </div>
+              ) : historyError ? (
+                /* 加载失败必须与「空会话」区分：否则会显示新会话首屏，像是历史被清空 */
+                <div className="flex h-full items-center justify-center px-6">
+                  <div className="w-full max-w-md rounded-2xl border border-red-200 bg-red-50/70 px-5 py-4 text-center dark:border-red-900/50 dark:bg-red-900/20">
+                    <AlertCircle className="mx-auto h-5 w-5 text-red-500" />
+                    <p className="mt-2 text-sm font-medium text-red-700 dark:text-red-300">
+                      对话加载失败
+                    </p>
+                    <p className="mt-1 break-words text-xs text-red-600/80 dark:text-red-300/80">
+                      {historyError}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setHistoryReloadKey((key) => key + 1)}
+                      className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-red-700"
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" />
+                      重试
+                    </button>
+                  </div>
+                </div>
               ) : (
                 <MessageList
                   messages={messages}
                   actionDisabled={streaming}
                   onActionSelect={submitAction}
                   onQuickPrompt={(prompt) => void send(prompt)}
+                  onRetry={retryTurn}
                 />
               )}
             </main>

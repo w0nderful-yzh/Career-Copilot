@@ -146,6 +146,10 @@ class SkillProfileBlock(BaseModel):
         default_factory=list,
         description="技能列表：skill/score/evidenceCount/evidences（已裁剪字段）",
     )
+    declaredSkills: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="简历已列、尚无评分证据的技能（P3 待收口）：无分数，仅表达「待验证」",
+    )
 
 
 class ResumeOptimizationPatch(BaseModel):

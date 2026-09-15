@@ -200,11 +200,15 @@ class BackendClient:
         resume_id: int | None = None,
         resume_text: str | None = None,
         force_create: bool = False,
+        focus_categories: list[str] | None = None,
     ) -> dict[str, Any]:
         """创建模拟面试会话（CONFIRM_WRITE，用户确认后才由 Agent 调用）。
 
         复用 Java Interview Engine 现有创建链路（含 requestId 幂等与未完成会话复用），
         返回 InterviewSessionDTO，sessionId 供前端跳转面试页。
+
+        focus_categories 为重点考察的分类（key 或展示名）：Java 侧据此裁剪该方向的
+        出题范围；未命中任何分类时按原方向全量出题（focus 是"重点"而非"只考这些"）。
         """
         arguments: dict[str, Any] = {
             "skillId": skill_id,
@@ -218,6 +222,8 @@ class BackendClient:
             arguments["resumeText"] = resume_text
         if force_create:
             arguments["forceCreate"] = True
+        if focus_categories:
+            arguments["focusCategories"] = list(focus_categories)
         # LLM 同步出题可达 1-3 分钟：用长超时覆盖客户端默认 30s，
         # 否则 agent 先超时抛「后端服务不可达」，而 Java 仍在后台创建成功（孤儿会话）。
         data = await self.call_tool("create_interview", arguments, timeout=300.0)

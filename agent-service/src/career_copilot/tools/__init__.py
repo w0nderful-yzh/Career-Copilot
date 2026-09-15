@@ -163,25 +163,59 @@ def summarize_skills(skills: list[dict[str, Any]], limit: int = 8) -> str:
 
 
 def summarize_skill_profile(profile: dict[str, Any], limit: int = 8) -> str:
-    """把技能画像裁剪为 Prompt 摘要：聚合分 + 证据来源（支撑可追溯解读）。
+    """把技能画像裁剪为 Prompt 摘要：聚合分 + 证据来源/时间（支撑可追溯解读）。
 
-    证据只保留最近 3 条（sessionId:题号 + 分数），避免完整明细塞入上下文。
+    证据只保留最近 3 条（场次:题号 + 分数 + 时间），避免完整明细塞入上下文。
+
+    简历声明（declaredSkills）单独成行：它们没有分数，但代表「简历列过、还没考过」，
+    是下一场面试最该重点考察的部分，不能被当成空数据处理掉。
     """
     skills = profile.get("skills") or []
-    if not skills:
+    declared = profile.get("declaredSkills") or []
+    if not skills and not declared:
         return "（暂无技能画像数据）"
-    lines = ["用户技能画像（分数=面试证据均值，可追溯）："]
-    for skill in skills[:limit]:
-        evidences = [
-            f"{e.get('sourceId')}={e.get('score')}分"
-            for e in (skill.get("evidences") or [])[:3]
-        ]
-        evidence_txt = f"（证据: {', '.join(evidences)}）" if evidences else ""
-        lines.append(
-            f"- {skill.get('skill')}: {skill.get('score')}分 "
-            f"[{skill.get('evidenceCount')} 条证据]{evidence_txt}"
-        )
+
+    lines: list[str] = []
+    if skills:
+        lines.append("用户技能画像（分数=面试证据均值，可追溯）：")
+        for skill in skills[:limit]:
+            evidences = [
+                f"{_source_label(e)}={e.get('score')}分"
+                + (f" @{str(e.get('occurredAt'))[:10]}" if e.get("occurredAt") else "")
+                for e in (skill.get("evidences") or [])[:3]
+            ]
+            evidence_txt = f"（证据: {', '.join(evidences)}）" if evidences else ""
+            lines.append(
+                f"- {skill.get('skill')}: {skill.get('score')}分 "
+                f"[{skill.get('evidenceCount')} 条证据]{evidence_txt}"
+            )
+    if declared:
+        names = [str(item.get("skill")) for item in declared[:limit] if item.get("skill")]
+        if names:
+            lines.append(
+                "简历已列、尚无评分证据（从未考过，建议优先考察）：" + "、".join(names)
+            )
     return "\n".join(lines)
+
+
+def _source_label(evidence: dict[str, Any]) -> str:
+    """证据来源的可读标签：面试轮次 "sessionId:题号" → "面试 sessionId 第N题"。
+
+    用 sourceType 而不是猜 sourceId 格式——RESUME 的 sourceId 就是 resumeId，
+    与裸 sessionId 同为数字/字符串时无法区分。
+    """
+    source_type = str(evidence.get("sourceType") or "")
+    source_id = str(evidence.get("sourceId") or "")
+    if source_type == "INTERVIEW_TURN":
+        prefix, separator, index = source_id.rpartition(":")
+        if separator and prefix and index.isdigit():
+            return f"面试 {prefix} 第{int(index) + 1}题"
+        return f"面试 {source_id}"
+    if source_type == "INTERVIEW_SESSION":
+        return f"面试 {source_id}"
+    if source_type == "RESUME":
+        return f"简历 {source_id}"
+    return source_id or "未知来源"
 
 
 def summarize_resume_for_interview(resume: dict[str, Any], max_chars: int = 1200) -> str:

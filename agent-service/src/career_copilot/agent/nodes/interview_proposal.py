@@ -24,7 +24,11 @@ from career_copilot.agent.response import interview_proposal_block
 from career_copilot.agent.state import CareerAgentState, RunStatus
 from career_copilot.clients.backend import BusinessToolError
 from career_copilot.config import settings
-from career_copilot.tools import summarize_resume_for_interview, summarize_skills
+from career_copilot.tools import (
+    summarize_resume_for_interview,
+    summarize_skill_profile,
+    summarize_skills,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,10 +45,16 @@ PROPOSAL_SYSTEM_PROMPT = """你是 Career Copilot 的面试配置推荐器。
 规则：
 - direction 必须来自「可选面试方向」列表中的 skillId，优先选择与用户简历/意图最匹配的方向；
 - difficulty：junior（校招）/ mid（中级）/ senior（高级），按用户目标与简历经历推断；
-- focus：从该方向 categories 中选 1-3 个重点考察的分类 key（如 JVM、REDIS、PROJECT）；
+- focus：从**所选方向**的 categories 中选 1-3 个重点考察的分类 key（如 JVM、REDIS、PROJECT）；
 - summary：用一句话说明推荐理由（40 字以内）。
 
-注意：简历内容是可信参考，不得编造简历中不存在的技能方向。"""
+重点考察（focus）的挑选依据：
+- 优先选「画像参考」里分数偏低、以及「简历已列但尚无评分（从未考过）」的技能所对应的分类；
+  从没考过的技能信息量最大，应该被优先安排；
+- focus 只能取自所选方向的 categories，不要臆造分类名；
+- 若画像没有可参考的信息，按简历与用户意图挑最相关、最能拉开区分度的分类。
+
+注意：简历与画像内容是可信参考，不得编造其中不存在的技能方向。"""
 
 # 难度枚举 → 中文展示名
 DIFFICULTY_NAMES_ZH = {
@@ -55,6 +65,15 @@ DIFFICULTY_NAMES_ZH = {
 
 DEFAULT_DIRECTION = "java-backend"
 DEFAULT_DIFFICULTY = "mid"
+
+# 「低分」阈值：与前端画像色阶一致（<60 为待提升），用于把需要补强的技能选进 focus
+LOW_SCORE_THRESHOLD = 60
+
+# focus 上限：与 prompt 里的「1-3 个」保持同量级，留一点冗余
+MAX_FOCUS = 4
+
+# 画像参考注入 Prompt 的技能条数上限（Token 纪律）
+PROFILE_SKILL_LIMIT = 6
 
 
 async def interview_proposal(
@@ -71,7 +90,17 @@ async def interview_proposal(
         skills = []
     emit_tool_completed("list_skills")
 
-    # 2. 目标简历（复用 resolve_context 的活动简历；失败不阻断推荐）
+    # 2. 技能画像（P3 待收口）：低分技能 + 简历已列未考 → 决定重点考察方向。
+    #    失败不阻断推荐：没有画像时退化为「按简历与意图推荐」。
+    emit_tool_started("get_skill_profile")
+    try:
+        profile = await deps.backend.get_skill_profile()
+    except BusinessToolError as exc:
+        logger.info("面试推荐读取技能画像失败，跳过重点考察推荐: code=%s", exc.code)
+        profile = {}
+    emit_tool_completed("get_skill_profile")
+
+    # 3. 目标简历（复用 resolve_context 的活动简历；失败不阻断推荐）
     resume_context: str | None = None
     resume_id: int | None = None
     raw_resume_id = state.get("active_resume_id")
@@ -92,15 +121,18 @@ async def interview_proposal(
 
     emit_tool_completed("interview_proposal")
 
-    # 3. LLM 推导推荐配置（结构化输出；失败回落确定性默认值）
+    # 4. LLM 推导推荐配置（结构化输出；失败回落确定性默认值 + 画像候选）
     proposal = await _derive_proposal(
         deps,
         message=state.get("message") or "",
+        skills=skills,
         skills_summary=summarize_skills(skills),
         resume_context=resume_context,
+        profile=profile,
+        profile_summary=summarize_skill_profile(profile, limit=PROFILE_SKILL_LIMIT),
     )
 
-    # 4. 产出提案确认块（Interview Mode 重构：手动调整由前端内联面板完成，
+    # 5. 产出提案确认块（Interview Mode 重构：手动调整由前端内联面板完成，
     #    不再下发「重新推荐」Choice 触发聊天消息；自然语言调整直接在 Composer 输入，
     #    由 LLM 结合本条消息（含用户调整诉求）重新推荐）
     emit_run_status(RunStatus.WAITING_USER.value)
@@ -130,19 +162,27 @@ async def _derive_proposal(
     deps: GraphDeps,
     *,
     message: str,
+    skills: list[dict[str, Any]],
     skills_summary: str,
     resume_context: str | None,
+    profile: dict[str, Any],
+    profile_summary: str,
 ) -> dict[str, Any]:
     """调用 Answerer 底层模型做结构化推荐，失败回落默认值。
 
     复用 answerer 注入的模型（与回答同模型），不新建结构化输出器：
     通过 json_mode 风格提示约束输出，并做基础校验与白名单兜底。
+
+    focus 遵循「LLM 判语义、代码控边界」：模型负责把画像里的技能名（如 JVM）
+    语义映射到方向的分类，但只有**确实存在于该方向 categories** 的分类才会下发，
+    否则用户会看到一个永远不会被考到的重点。
     """
     prompt = (
         "用户消息：\n"
         f"{message}\n\n"
         f"{skills_summary}\n"
         + (f"{resume_context}\n" if resume_context else "（用户当前没有可用的简历内容）\n")
+        + f"{profile_summary}\n"
         + "请给出推荐的面试配置。"
     )
     try:
@@ -163,7 +203,13 @@ async def _derive_proposal(
         if difficulty not in DIFFICULTY_NAMES_ZH:
             difficulty = DEFAULT_DIFFICULTY
         focus_raw = parsed.get("focus") or []
-        focus = [str(item) for item in focus_raw if isinstance(item, str)][:4]
+        categories = _direction_categories(skills, direction)
+        focus = _sanitize_focus(
+            [str(item) for item in focus_raw if isinstance(item, str)], categories
+        )
+        if not focus:
+            # 模型没给出可用分类（或全被白名单拦掉）时，用画像的确定性候选兜底
+            focus = _profile_focus_hints(profile, categories)
         summary = str(parsed.get("summary") or "")[:80]
         return {
             "direction": direction,
@@ -172,14 +218,102 @@ async def _derive_proposal(
             "summary": summary,
         }
     except Exception:
-        # 模型异常不应阻断面试发起：回落确定性默认推荐
+        # 模型异常不应阻断面试发起：回落确定性默认推荐（focus 仍尽量取画像候选）
         logger.exception("面试推荐配置推导失败，回落默认值")
         return {
             "direction": DEFAULT_DIRECTION,
             "difficulty": DEFAULT_DIFFICULTY,
-            "focus": [],
+            "focus": _profile_focus_hints(
+                profile, _direction_categories(skills, DEFAULT_DIRECTION)
+            ),
             "summary": "按 Java 后端 · 中级难度推荐",
         }
+
+
+def _direction_categories(skills: list[dict[str, Any]], direction: str) -> list[dict[str, str]]:
+    """所选方向的分类清单（key + label）；方向不存在时返回空。"""
+    for skill in skills:
+        if skill.get("id") != direction:
+            continue
+        return [
+            {
+                "key": str(category.get("key")),
+                "label": str(category.get("label") or category.get("key")),
+            }
+            for category in (skill.get("categories") or [])
+            if category.get("key")
+        ]
+    return []
+
+
+def _sanitize_focus(
+    raw_focus: list[str], categories: list[dict[str, str]]
+) -> list[str]:
+    """把 focus 收进该方向真实存在的分类，返回分类 key 列表。
+
+    匹配顺序：key 精确 → label 精确 → 双向子串（容忍「SQL」对上「MySQL」这类表述）。
+    三条都不中说明该分类不存在于本方向，直接丢弃——把不存在的分类下发给 Java
+    只会得到「未命中、按原方向全量出题」，等于白算一轮。
+    """
+    if not categories or not raw_focus:
+        return []
+    by_key = {category["key"].lower(): category["key"] for category in categories}
+    by_label = {category["label"].lower(): category["key"] for category in categories}
+
+    matched: list[str] = []
+    for item in raw_focus:
+        name = str(item).strip().lower()
+        if not name:
+            continue
+        target = by_key.get(name) or by_label.get(name)
+        if target is None:
+            target = next(
+                (
+                    category["key"]
+                    for category in categories
+                    if name in category["label"].lower()
+                    or category["label"].lower() in name
+                ),
+                None,
+            )
+        if target and target not in matched:
+            matched.append(target)
+        if len(matched) >= MAX_FOCUS:
+            break
+    return matched
+
+
+def _profile_focus_hints(
+    profile: dict[str, Any], categories: list[dict[str, str]]
+) -> list[str]:
+    """画像 → 该方向的 focus 候选（确定性，不依赖 LLM）。
+
+    优先级：**简历已列但从未考过**（信息量最大）> 已考但低分。
+    两类都只保留能匹配到本方向分类的技能；匹配不上的技能名无法安全映射
+    （例如 JVM 之于 java-backend 的分类体系），交给 LLM 的语义判断去处理。
+    """
+    if not categories or not profile:
+        return []
+
+    ordered: list[str] = [
+        str(item.get("skill") or "")
+        for item in (profile.get("declaredSkills") or [])
+        if isinstance(item, dict)
+    ]
+    low_scores = sorted(
+        (
+            skill
+            for skill in (profile.get("skills") or [])
+            if isinstance(skill, dict) and isinstance(skill.get("score"), int)
+        ),
+        key=lambda skill: skill["score"],
+    )
+    ordered.extend(
+        str(skill.get("skill") or "")
+        for skill in low_scores
+        if skill["score"] < LOW_SCORE_THRESHOLD
+    )
+    return _sanitize_focus(ordered, categories)
 
 
 def _direction_name(skills: list[dict[str, Any]], direction: str) -> str:

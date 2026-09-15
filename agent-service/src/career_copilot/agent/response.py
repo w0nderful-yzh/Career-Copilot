@@ -99,7 +99,17 @@ def skill_profile_block(profile: dict[str, Any], skill_limit: int = 6) -> SkillP
                 "evidences": evidences,
             }
         )
-    return SkillProfileBlock(skills=skills)
+    # 简历已列、从未考过的技能：没有分数，单独返回（P3 待收口）
+    declared = [
+        {
+            "skill": item.get("skill"),
+            "resumeId": item.get("resumeId"),
+            "declaredAt": item.get("declaredAt"),
+        }
+        for item in (profile.get("declaredSkills") or [])[:skill_limit]
+        if isinstance(item, dict)
+    ]
+    return SkillProfileBlock(skills=skills, declaredSkills=declared)
 
 
 def resume_optimization_block(

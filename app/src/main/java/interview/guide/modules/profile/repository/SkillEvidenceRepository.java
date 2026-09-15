@@ -29,4 +29,11 @@ public interface SkillEvidenceRepository extends JpaRepository<SkillEvidenceEnti
   /** 会话级联清理用：轮次证据 sourceId 形如 "sessionId:questionIndex"，按前缀匹配 */
   List<SkillEvidenceEntity> findBySourceTypeAndSourceIdStartingWith(
       EvidenceSourceType sourceType, String sourceIdPrefix);
+
+  /** 声明型证据的整体替换/清理用：RESUME 证据的 sourceId 即 resumeId */
+  List<SkillEvidenceEntity> findBySourceTypeAndSourceId(
+      EvidenceSourceType sourceType, String sourceId);
+
+  /** 声明型证据查询：某技能下按来源类型过滤（区分「有分」与「仅简历声明」） */
+  List<SkillEvidenceEntity> findByUserIdAndSourceType(String userId, EvidenceSourceType sourceType);
 }

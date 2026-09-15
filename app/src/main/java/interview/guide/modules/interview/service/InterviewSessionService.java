@@ -127,7 +127,7 @@ public class InterviewSessionService {
         List<HistoricalQuestion> historicalQuestions =
             persistenceService.getHistoricalQuestions(skillId, request.resumeId());
 
-        // 基于 Skill 生成面试问题
+        // 基于 Skill 生成面试问题（focusCategories 为提案依据画像给出的重点考察方向）
         List<InterviewQuestionDTO> questions = questionService.generateQuestionsBySkill(
             request.llmProvider(),
             skillId,
@@ -136,7 +136,8 @@ public class InterviewSessionService {
             request.questionCount(),
             historicalQuestions,
             request.customCategories(),
-            request.jdText()
+            request.jdText(),
+            request.focusCategories()
         );
 
         if (requestId != null) {

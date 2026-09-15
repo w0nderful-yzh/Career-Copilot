@@ -299,7 +299,7 @@ class AgentToolServiceTest {
     @Test
     @DisplayName("get_skill_profile 返回画像与证据明细")
     void getSkillProfileDelegates() {
-      SkillProfileResponse expected = new SkillProfileResponse(List.of());
+      SkillProfileResponse expected = new SkillProfileResponse(List.of(), List.of());
       when(skillProfileQueryService.getProfileWithEvidence()).thenReturn(expected);
 
       ToolResponse response = agentToolService.execute("get_skill_profile", Map.of());
@@ -389,7 +389,8 @@ class AgentToolServiceTest {
       assertThat(response.data()).isSameAs(expected);
       verify(interviewSessionService).createSession(
           new CreateInterviewRequest(
-              null, 8, null, false, null, "java-backend", "mid", null, null, null, true));
+              null, 8, null, false, null, "java-backend", "mid", null, null, null, true,
+              List.of()));
     }
 
     @Test

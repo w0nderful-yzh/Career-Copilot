@@ -110,13 +110,14 @@ class InterviewSessionIdempotencyTest {
         null,
         null,
         requestId,
-        false
+        false,
+        List.of()
     );
 
     InterviewSessionDTO result = service.createSession(request);
 
     assertThat(result.sessionId()).isEqualTo(existingSessionId);
     verify(questionService, never()).generateQuestionsBySkill(
-        any(), anyString(), anyString(), any(), anyInt(), any(), any(), any());
+        any(), anyString(), anyString(), any(), anyInt(), any(), any(), any(), any());
   }
 }

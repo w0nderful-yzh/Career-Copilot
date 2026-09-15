@@ -66,7 +66,8 @@ public class AgentToolService {
       Map.entry(AgentToolName.CREATE_INTERVIEW,
           "{\"skillId\": String, \"difficulty\": String, \"questionCount\": Integer, "
               + "optional, \"resumeId\": Long, optional, \"resumeText\": String, optional, "
-              + "\"forceCreate\": Boolean, optional, \"requestId\": String, optional}"),
+              + "\"forceCreate\": Boolean, optional, \"requestId\": String, optional, "
+              + "\"focusCategories\": List[String], optional（重点考察分类 key，按维度缩小出题范围）}"),
       Map.entry(AgentToolName.APPLY_RESUME_PATCHES,
           "{\"proposalId\": Long, \"patchIds\": List[String], optional}"),
       Map.entry(AgentToolName.GET_JOB, "{\"jobId\": Long}"));
@@ -276,6 +277,10 @@ public class AgentToolService {
     String requestId = arguments.containsKey("requestId")
         ? requireString(arguments, "requestId")
         : null;
+    // P3 待收口：提案依据技能画像给出的重点考察方向（按分类 key 或 label 匹配）
+    List<String> focusCategories = arguments.containsKey("focusCategories")
+        ? requireStringList(arguments, "focusCategories")
+        : List.of();
 
     CreateInterviewRequest request = new CreateInterviewRequest(
         resumeText,
@@ -288,7 +293,8 @@ public class AgentToolService {
         null,
         null,
         requestId,
-        true  // P4-3：Agent 发起的面试默认开启逐题评估+自适应选题
+        true,  // P4-3：Agent 发起的面试默认开启逐题评估+自适应选题
+        focusCategories
     );
     InterviewSessionDTO session = interviewSessionService.createSession(request);
     return new ToolResponse(AgentToolName.CREATE_INTERVIEW.getName(), session);

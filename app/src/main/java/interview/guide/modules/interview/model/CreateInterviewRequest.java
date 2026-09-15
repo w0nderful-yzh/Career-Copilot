@@ -34,5 +34,14 @@ public record CreateInterviewRequest(
 
     String requestId,                      // 创建请求幂等键，刷新/重试时复用同一会话
 
-    Boolean adaptive                       // P4-3 是否启用逐题评估+自适应选题；null=false
+    Boolean adaptive,                      // P4-3 是否启用逐题评估+自适应选题；null=false
+
+    /**
+     * 重点考察方向（P3 待收口）：按分类 key 或 label 匹配，裁剪该方向的出题分类。
+     *
+     * <p>由面试提案 Agent 依据技能画像（低分技能 + 简历已列未考）给出。
+     * 空/未命中任何分类时按原方向全量出题（focus 是「重点」而非「只考这些」）。
+     * 仅对预设方向生效；JD 自定义方向本身就是 focus，不叠加。
+     */
+    List<String> focusCategories
 ) {}

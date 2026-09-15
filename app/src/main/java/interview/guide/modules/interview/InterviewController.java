@@ -44,6 +44,7 @@ public class InterviewController {
     private final InterviewSessionService sessionService;
     private final InterviewHistoryService historyService;
     private final InterviewPersistenceService persistenceService;
+    private final interview.guide.modules.profile.service.SkillProfileImpactService profileImpactService;
     
     /**
      * 列出所有面试会话（用于面试记录页）
@@ -153,6 +154,18 @@ public class InterviewController {
     public Result<InterviewDetailDTO> getInterviewDetail(@PathVariable String sessionId) {
         InterviewDetailDTO detail = historyService.getInterviewDetail(sessionId);
         return Result.success(detail);
+    }
+
+    /**
+     * 本场面试带来的画像变化（P3 待收口）。
+     *
+     * <p>结果卡展示「这场让我哪项变了」，每条变化都带可追溯的逐题证据与时间；
+     * 差分由证据重算，无额外存储。P4-6b 的 Copilot 建议话术将来也消费同一端点。
+     */
+    @GetMapping("/api/interview/sessions/{sessionId}/profile-impact")
+    public Result<interview.guide.modules.profile.dto.SkillProfileImpactResponse> getProfileImpact(
+            @PathVariable String sessionId) {
+        return Result.success(profileImpactService.impactOf(sessionId));
     }
     
     /**

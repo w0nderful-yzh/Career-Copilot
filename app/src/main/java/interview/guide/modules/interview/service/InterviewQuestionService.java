@@ -141,9 +141,10 @@ public class InterviewQuestionService {
             int questionCount,
             List<HistoricalQuestion> historicalQuestions,
             List<CategoryDTO> customCategories,
-            String jdText) {
+            String jdText,
+            List<String> focusCategories) {
 
-        SkillDTO skill = resolveSkill(skillId, customCategories, jdText);
+        SkillDTO skill = resolveSkill(skillId, customCategories, jdText, focusCategories);
         String difficultyDesc = resolveDifficulty(difficulty);
         int difficultyBase = DIFFICULTY_BASE.getOrDefault(
             difficulty != null ? difficulty : InterviewDefaults.DIFFICULTY, 3);
@@ -320,12 +321,19 @@ public class InterviewQuestionService {
         return merged;
     }
 
-    private SkillDTO resolveSkill(String skillId, List<CategoryDTO> customCategories, String jdText) {
+    /**
+     * 解析出题所用的 Skill。
+     *
+     * <p>focus 只对预设方向生效：JD 自定义方向的分类本身就是用户给定的考察范围，
+     * 再叠加 focus 只会把范围收得更窄，语义上没有必要。
+     */
+    private SkillDTO resolveSkill(String skillId, List<CategoryDTO> customCategories, String jdText,
+                                  List<String> focusCategories) {
         if (InterviewSkillService.CUSTOM_SKILL_ID.equals(skillId)
                 && customCategories != null && !customCategories.isEmpty()) {
             return skillService.buildCustomSkill(customCategories, jdText != null ? jdText : "");
         }
-        return skillService.getSkill(skillId);
+        return skillService.focusOn(skillService.getSkill(skillId), focusCategories);
     }
 
     private String resolveDifficulty(String difficulty) {

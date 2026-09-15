@@ -32,7 +32,10 @@ public class ResumeOptimizationProposalService {
   /**
    * 创建提案（Python 子图调用）。
    *
-   * @param patches Patch 列表（结构已由 Python 校验器把关；此处只做基本校验）
+   * @param optimizationType 优化模式（GENERAL / TARGET_DIRECTION / JD_TARGETED）
+   * @param targetJobId      JD_TARGETED 时的目标 JD（其余模式为 null）
+   * @param targetDirection  TARGET_DIRECTION 时的方向描述（其余模式为 null）
+   * @param patches          Patch 列表（结构已由 Python 校验器把关；此处只做基本校验）
    * @return 已持久化的提案（含 id）
    */
   @Transactional(rollbackFor = Exception.class)
@@ -40,6 +43,8 @@ public class ResumeOptimizationProposalService {
       Long resumeId,
       Long sourceVersionId,
       ResumeOptimizationProposalEntity.OptimizationType optimizationType,
+      Long targetJobId,
+      String targetDirection,
       String summary,
       List<ResumePatchItem> patches) {
     if (patches == null || patches.isEmpty()) {
@@ -56,13 +61,15 @@ public class ResumeOptimizationProposalService {
     proposal.setResumeId(resumeId);
     proposal.setSourceVersionId(sourceVersionId);
     proposal.setOptimizationType(optimizationType);
+    proposal.setTargetJobId(targetJobId);
+    proposal.setTargetDirection(targetDirection);
     proposal.setStatus(ResumeOptimizationProposalEntity.ProposalStatus.PENDING);
     proposal.setSummary(summary);
     proposal.setPatchesJson(serialize(patches));
 
     ResumeOptimizationProposalEntity saved = proposalRepository.save(proposal);
-    log.info("简历优化提案已创建: proposalId={}, resumeId={}, patches={}",
-        saved.getId(), resumeId, patches.size());
+    log.info("简历优化提案已创建: proposalId={}, resumeId={}, mode={}, targetJobId={}, patches={}",
+        saved.getId(), resumeId, optimizationType, targetJobId, patches.size());
     return saved;
   }
 
@@ -100,9 +107,11 @@ public class ResumeOptimizationProposalService {
   /**
    * 状态流转（仅 PENDING → APPLIED / REJECTED 两个出口；非 PENDING 拒绝）。
    * 由 apply/reject 链路调用，保证幂等决策（重复应用直接报错）。
+   *
+   * @return 流转后的提案（供调用方直接回显决策结果）
    */
   @Transactional(rollbackFor = Exception.class)
-  public void transitionFromPending(
+  public ResumeOptimizationProposalEntity transitionFromPending(
       Long proposalId, ResumeOptimizationProposalEntity.ProposalStatus target) {
     ResumeOptimizationProposalEntity proposal = getProposal(proposalId);
     if (proposal.getStatus() != ResumeOptimizationProposalEntity.ProposalStatus.PENDING) {
@@ -112,7 +121,7 @@ public class ResumeOptimizationProposalService {
     }
     proposal.setStatus(target);
     proposal.setDecidedAt(java.time.LocalDateTime.now());
-    proposalRepository.save(proposal);
+    return proposalRepository.save(proposal);
   }
 
   private String serialize(List<ResumePatchItem> patches) {

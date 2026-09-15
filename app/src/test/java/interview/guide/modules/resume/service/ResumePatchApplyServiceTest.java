@@ -97,6 +97,46 @@ class ResumePatchApplyServiceTest {
     }
 
     @Test
+    @DisplayName("新版本继承提案的优化模式与目标 JD（不再硬编码 GENERAL）")
+    void inheritsOptimizationModeFromProposal() {
+      proposal.setOptimizationType(
+          ResumeOptimizationProposalEntity.OptimizationType.JD_TARGETED);
+      proposal.setTargetJobId(42L);
+      when(proposalService.getProposal(77L)).thenReturn(proposal);
+      when(proposalService.parsePatches(proposal)).thenReturn(List.of(
+          new ResumePatchItem("p1", ResumePatchItem.PatchType.REPLACE,
+              "projects[0].bullets[0]", "负责后端开发工作", "主导后端开发工作", "r")));
+      when(versionService.getVersion(5L)).thenReturn(sourceVersion);
+      when(versionRepository.findByResumeIdAndVersion(1L, 2)).thenReturn(Optional.empty());
+      when(versionRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+      ResumeVersionEntity newVersion = applyService.applyPatches(77L, List.of());
+
+      assertThat(newVersion.getOptimizationType()).isEqualTo("JD_TARGETED");
+      assertThat(newVersion.getTargetJobId()).isEqualTo(42L);
+    }
+
+    @Test
+    @DisplayName("定向方向提案：新版本继承 TARGET_DIRECTION 与方向描述")
+    void inheritsTargetDirectionFromProposal() {
+      proposal.setOptimizationType(
+          ResumeOptimizationProposalEntity.OptimizationType.TARGET_DIRECTION);
+      proposal.setTargetDirection("Java 后端实习");
+      when(proposalService.getProposal(77L)).thenReturn(proposal);
+      when(proposalService.parsePatches(proposal)).thenReturn(List.of(
+          new ResumePatchItem("p1", ResumePatchItem.PatchType.REPLACE,
+              "projects[0].bullets[0]", "负责后端开发工作", "主导后端开发工作", "r")));
+      when(versionService.getVersion(5L)).thenReturn(sourceVersion);
+      when(versionRepository.findByResumeIdAndVersion(1L, 2)).thenReturn(Optional.empty());
+      when(versionRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+      ResumeVersionEntity newVersion = applyService.applyPatches(77L, List.of());
+
+      assertThat(newVersion.getOptimizationType()).isEqualTo("TARGET_DIRECTION");
+      assertThat(newVersion.getTargetDirection()).isEqualTo("Java 后端实习");
+    }
+
+    @Test
     @DisplayName("只应用用户勾选的 patchIds")
     void appliesOnlySelectedPatches() {
       when(proposalService.getProposal(77L)).thenReturn(proposal);

@@ -52,6 +52,7 @@ class ResumeOptimizationProposalServiceTest {
       ResumeOptimizationProposalEntity saved = proposalService.createProposal(
           1L, 5L,
           ResumeOptimizationProposalEntity.OptimizationType.GENERAL,
+          null, null,
           "强化项目职责",
           List.of(patch(ResumePatchItem.PatchType.REPLACE)));
 
@@ -63,11 +64,47 @@ class ResumeOptimizationProposalServiceTest {
     }
 
     @Test
+    @DisplayName("JD 定向提案持久化 JD_TARGETED 与 targetJobId（不再统一写 GENERAL）")
+    void persistsJdTargetedMode() {
+      when(proposalRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+      ResumeOptimizationProposalEntity saved = proposalService.createProposal(
+          1L, 5L,
+          ResumeOptimizationProposalEntity.OptimizationType.JD_TARGETED,
+          42L, null,
+          "按 JD 突出匹配点",
+          List.of(patch(ResumePatchItem.PatchType.REPLACE)));
+
+      assertThat(saved.getOptimizationType())
+          .isEqualTo(ResumeOptimizationProposalEntity.OptimizationType.JD_TARGETED);
+      assertThat(saved.getTargetJobId()).isEqualTo(42L);
+    }
+
+    @Test
+    @DisplayName("定向方向提案持久化 TARGET_DIRECTION 与方向描述")
+    void persistsTargetDirectionMode() {
+      when(proposalRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+      ResumeOptimizationProposalEntity saved = proposalService.createProposal(
+          1L, 5L,
+          ResumeOptimizationProposalEntity.OptimizationType.TARGET_DIRECTION,
+          null, "Java 后端实习",
+          "按目标方向优化",
+          List.of(patch(ResumePatchItem.PatchType.REPLACE)));
+
+      assertThat(saved.getOptimizationType())
+          .isEqualTo(ResumeOptimizationProposalEntity.OptimizationType.TARGET_DIRECTION);
+      assertThat(saved.getTargetDirection()).isEqualTo("Java 后端实习");
+      assertThat(saved.getTargetJobId()).isNull();
+    }
+
+    @Test
     @DisplayName("空 patch 列表拒绝创建")
     void rejectsEmptyPatches() {
       assertThatThrownBy(() -> proposalService.createProposal(
           1L, 5L,
           ResumeOptimizationProposalEntity.OptimizationType.GENERAL,
+          null, null,
           "无修改", List.of()))
           .isInstanceOf(BusinessException.class)
           .hasFieldOrPropertyWithValue(
@@ -80,6 +117,7 @@ class ResumeOptimizationProposalServiceTest {
       assertThatThrownBy(() -> proposalService.createProposal(
           1L, 5L,
           ResumeOptimizationProposalEntity.OptimizationType.GENERAL,
+          null, null,
           "调序", List.of(patch(ResumePatchItem.PatchType.REORDER))))
           .isInstanceOf(BusinessException.class)
           .hasFieldOrPropertyWithValue(
@@ -122,6 +160,26 @@ class ResumeOptimizationProposalServiceTest {
       assertThat(captor.getValue().getStatus())
           .isEqualTo(ResumeOptimizationProposalEntity.ProposalStatus.APPLIED);
       assertThat(captor.getValue().getDecidedAt()).isNotNull();
+    }
+
+    @Test
+    @DisplayName("PENDING → REJECTED 流转返回落库提案（拒绝入口的审计状态）")
+    void transitionsPendingToRejected() {
+      ResumeOptimizationProposalEntity proposal = new ResumeOptimizationProposalEntity();
+      proposal.setStatus(ResumeOptimizationProposalEntity.ProposalStatus.PENDING);
+      proposal.setResumeId(3L);
+      when(proposalRepository.findById(9L)).thenReturn(Optional.of(proposal));
+      when(proposalRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+      ResumeOptimizationProposalEntity rejected = proposalService.transitionFromPending(
+          9L, ResumeOptimizationProposalEntity.ProposalStatus.REJECTED);
+
+      assertThat(rejected.getStatus())
+          .isEqualTo(ResumeOptimizationProposalEntity.ProposalStatus.REJECTED);
+      assertThat(rejected.getDecidedAt()).isNotNull();
+      assertThat(rejected.getResumeId()).isEqualTo(3L);
+      // 拒绝不改动简历内容：patches 保持原样供审计追溯
+      assertThat(rejected.getPatchesJson()).isEqualTo(proposal.getPatchesJson());
     }
 
     @Test

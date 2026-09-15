@@ -77,7 +77,7 @@ public class ResumePatchApplyService {
       log.error("序列化新版本内容失败", e);
       throw new BusinessException(ErrorCode.RESUME_OPTIMIZATION_INVALID, "保存新版本失败");
     }
-    ResumeVersionEntity newVersion = createNewVersion(sourceVersion, newContentJson);
+    ResumeVersionEntity newVersion = createNewVersion(sourceVersion, newContentJson, proposal);
     proposalService.transitionFromPending(
         proposalId, ResumeOptimizationProposalEntity.ProposalStatus.APPLIED);
     log.info("优化提案已应用: proposalId={}, 新版本 resumeId={} v{}", proposalId,
@@ -216,8 +216,15 @@ public class ResumePatchApplyService {
     return value == null ? "" : value.trim();
   }
 
-  /** 在源版本之后追加新版本（version+1，AI_OPTIMIZE） */
-  private ResumeVersionEntity createNewVersion(ResumeVersionEntity source, String contentJson) {
+  /**
+   * 在源版本之后追加新版本（version+1，AI_OPTIMIZE）。
+   *
+   * <p>优化模式与目标 JD 从提案继承（不再硬编码 GENERAL）：否则「按这份 JD 优化」
+   * 生成的版本在审计上会退化成通用优化，版本表的 target_job_id 也永远为空。
+   */
+  private ResumeVersionEntity createNewVersion(
+      ResumeVersionEntity source, String contentJson,
+      ResumeOptimizationProposalEntity proposal) {
     int nextVersion = source.getVersion() + 1;
     // 并发保护：同版本号已存在（极小概率并发应用）→ 明确报错
     versionRepository.findByResumeIdAndVersion(source.getResumeId(), nextVersion)
@@ -230,7 +237,11 @@ public class ResumePatchApplyService {
     created.setResumeId(source.getResumeId());
     created.setVersion(nextVersion);
     created.setSourceVersionId(source.getId());
-    created.setOptimizationType("GENERAL");
+    created.setOptimizationType(
+        proposal.getOptimizationType() != null
+            ? proposal.getOptimizationType().name() : "GENERAL");
+    created.setTargetJobId(proposal.getTargetJobId());
+    created.setTargetDirection(proposal.getTargetDirection());
     created.setSource(ResumeVersionEntity.VersionSource.AI_OPTIMIZE);
     created.setConfirmationStatus(ResumeVersionEntity.ConfirmationStatus.ACTIVE);
     created.setContentJson(contentJson);

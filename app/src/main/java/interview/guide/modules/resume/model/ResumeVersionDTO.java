@@ -10,7 +10,8 @@ import tools.jackson.databind.ObjectMapper;
  * 简历版本 DTO（P2-0）：对外暴露的版本信息。
  *
  * <p>contentJson 已反序列化为结构化对象（前端直接消费，无需二次解析）；
- * 仅导入/确认链路使用，AI 优化产物的展示字段在 P2-2 扩展。
+ * optimizationType/targetJobId/targetDirection 透出优化坐标系（P2 待修正：
+ * 让「通用 / 定向方向 / JD 定向」在版本列表上可分辨，而不是一律显示为通用）。
  */
 public record ResumeVersionDTO(
     Long id,
@@ -18,6 +19,9 @@ public record ResumeVersionDTO(
     int version,
     String source,
     String confirmationStatus,
+    String optimizationType,
+    Long targetJobId,
+    String targetDirection,
     ResumeContentJson content,
     List<String> missingFields,
     LocalDateTime sourceCreatedAt,
@@ -32,6 +36,9 @@ public record ResumeVersionDTO(
         entity.getVersion(),
         entity.getSource() != null ? entity.getSource().name() : null,
         entity.getConfirmationStatus() != null ? entity.getConfirmationStatus().name() : null,
+        entity.getOptimizationType(),
+        entity.getTargetJobId(),
+        entity.getTargetDirection(),
         content,
         parseMissingFields(entity.getMissingFieldsJson(), objectMapper),
         entity.getSourceCreatedAt(),

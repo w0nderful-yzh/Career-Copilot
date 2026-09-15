@@ -1,8 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Bot, Clock, Loader2, RotateCcw, User, X } from 'lucide-react';
+import { Bot, Clock, Loader2, RotateCcw, Sparkles, User, X } from 'lucide-react';
 import { interviewApi } from '../../api/interview';
 import type { InterviewModeState } from '../../types/copilot';
-import type { InterviewQuestion, InterviewSession } from '../../types/interview';
+import type { InterviewQuestion } from '../../types/interview';
+import {
+  deriveInterviewView,
+  interviewProgress,
+  toInterviewerTurn,
+  type InterviewTurn as Turn,
+} from '../../utils/interviewTurns';
 
 // Interview Mode 主工作区（Interview Mode 重构）：
 // - 顶部轻量状态栏：方向 · 题号进度 · 计时 · [结束面试]
@@ -22,29 +28,27 @@ function formatSeconds(total: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-interface Turn {
-  role: 'interviewer' | 'user';
-  questionIndex?: number;
-  question?: string;
-  category?: string;
-  isFollowUp?: boolean;
-  answer?: string;
-}
-
 export default function InterviewWorkspace({
   mode,
   onChangeStatus,
   onExit,
+  onReview,
 }: {
   mode: InterviewModeState;
   /** 顶层状态变化（completed/error 时退出 Interview Mode 前回调） */
   onChangeStatus: (next: InterviewModeState) => void;
   /** 用户点「完成并返回对话」：由上层写入面试完成摘要 artifact 并退出 Interview Mode */
   onExit?: () => void;
+  /** 用户点「让 Copilot 复盘」：由上层退出 Interview Mode 并发送 REVIEW_INTERVIEW action */
+  onReview?: () => void;
 }) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [current, setCurrent] = useState<InterviewQuestion | null>(null);
-  const [sessionMeta, setSessionMeta] = useState<Pick<InterviewSession, 'totalQuestions'> | null>(null);
+  // 主题（主问题）在题库中的索引；自适应进度分母用它，绝不用 totalQuestions（含候选择问，会虚高）
+  const [mainIndexes, setMainIndexes] = useState<number[]>([]);
+  // 非自适应会话按线性题单顺序全问，题库总数即真实总题数，可作为分母
+  const [poolTotal, setPoolTotal] = useState(0);
+  const [adaptive, setAdaptive] = useState(false);
   const [answer, setAnswer] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [elapsed, setElapsed] = useState(0);
@@ -60,39 +64,22 @@ export default function InterviewWorkspace({
     pollRef.current = null;
   }, []);
 
-  // 从 Java 会话构建「已发生」的题/答流（权威渲染）
-  const buildTurns = useCallback((s: InterviewSession): Turn[] => {
-    const list: Turn[] = [];
-    for (let i = 0; i <= s.currentQuestionIndex && i < s.questions.length; i++) {
-      const q = s.questions[i];
-      list.push({
-        role: 'interviewer',
-        questionIndex: i,
-        question: q.question,
-        category: q.category,
-        isFollowUp: q.isFollowUp,
-      });
-      if (q.userAnswer) {
-        list.push({ role: 'user', answer: q.userAnswer });
-      }
-    }
-    return list;
-  }, []);
-
-  // 恢复/拉取会话（权威）：重建已答流 + 定位当前题
+  // 恢复/拉取会话（权威）：重建「已发生」的题答流 + 定位当前题
   const load = useCallback(async () => {
     try {
       const s = await interviewApi.getSession(mode.sessionId);
-      setSessionMeta({ totalQuestions: s.totalQuestions });
-      setTurns(buildTurns(s));
-      const idx = Math.min(s.currentQuestionIndex, s.questions.length - 1);
-      const q = s.questions[idx] ?? null;
-      setCurrent(q);
+      // 恢复规则（只重放已作答轮次 + 定位当前题 + 进度分母）统一在 deriveInterviewView 里，可单测
+      const view = deriveInterviewView(s);
+      setTurns(view.turns);
+      setCurrent(view.current);
+      setMainIndexes(view.mainIndexes);
+      setPoolTotal(view.poolTotal);
+      setAdaptive(view.adaptive);
       if (s.status === 'COMPLETED' || s.status === 'EVALUATED') {
         onChangeStatus({ ...mode, status: 'evaluating' });
         if (pollRef.current) window.clearInterval(pollRef.current);
         pollRef.current = window.setInterval(() => void pollEvaluation(), 3000);
-      } else if (q) {
+      } else if (view.current) {
         onChangeStatus({ ...mode, status: 'running' });
         if (timerRef.current === null) {
           timerRef.current = window.setInterval(() => setElapsed((e) => e + 1), 1000);
@@ -122,16 +109,7 @@ export default function InterviewWorkspace({
       const next = res.hasNextQuestion ? res.nextQuestion : null;
       if (next) {
         setCurrent(next);
-        setTurns((prev) => [
-          ...prev,
-          {
-            role: 'interviewer',
-            questionIndex: next.questionIndex,
-            question: next.question,
-            category: next.category,
-            isFollowUp: next.isFollowUp,
-          },
-        ]);
+        setTurns((prev) => [...prev, toInterviewerTurn(next, next.questionIndex)]);
       } else {
         // 面试结束 → 异步整场评估轮询
         setCurrent(null);
@@ -162,7 +140,7 @@ export default function InterviewWorkspace({
         stopTimers();
         onChangeStatus({ ...mode, status: 'completed' });
       } else if (s.status === 'COMPLETED') {
-        setSessionMeta({ totalQuestions: s.totalQuestions });
+        // 仍在评估中：进度已由本地 turns/mainIndexes 推导，无需同步题库总数
       } else {
         // 意外回到未完成（理论不发生），继续轮询
       }
@@ -200,7 +178,12 @@ export default function InterviewWorkspace({
 
   const isEvaluating = mode.status === 'evaluating';
   const isDone = mode.status === 'completed';
-  const total = sessionMeta?.totalQuestions ?? 0;
+  // 进度从「已发生的 turns + 当前题」推导，不用 totalQuestions（含候选择问，会虚高）
+  const { answeredCount, mainOrdinal, mainCount } = interviewProgress(
+    mainIndexes,
+    current,
+    turns.filter((turn) => turn.role === 'user').length,
+  );
 
   return (
     <div className="flex h-full min-w-0 flex-col overflow-hidden">
@@ -217,7 +200,15 @@ export default function InterviewWorkspace({
         </div>
         <div className="flex shrink-0 items-center gap-3 text-xs text-slate-400">
           {!isDone && !isEvaluating && current && (
-            <span className="tabular-nums">第 {current.questionIndex + 1} / {total} 题</span>
+            adaptive ? (
+              // 自适应：题数会随作答质量浮动（追问按需、也可能提前结束），
+              // 显示「已答 N 题 + 主题进度」才是真实进度
+              <span className="tabular-nums">
+                已答 {answeredCount} 题 · 主题 {mainOrdinal}/{mainCount}
+              </span>
+            ) : (
+              <span className="tabular-nums">第 {current.questionIndex + 1} / {poolTotal} 题</span>
+            )
           )}
           {!isDone && !isEvaluating && (
             <span className="inline-flex items-center gap-1 tabular-nums"><Clock className="h-3.5 w-3.5" />{formatSeconds(elapsed)}</span>
@@ -309,14 +300,25 @@ export default function InterviewWorkspace({
                   </span>
                 ))}
               </div>
-              {onExit && (
-                <button
-                  onClick={onExit}
-                  className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-primary-600 dark:bg-white dark:text-slate-900 dark:hover:bg-primary-400"
-                >
-                  完成并返回对话
-                </button>
-              )}
+              <div className="mt-4 flex flex-wrap justify-center gap-2">
+                {onReview && (
+                  <button
+                    onClick={onReview}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-primary-600 dark:bg-white dark:text-slate-900 dark:hover:bg-primary-400"
+                  >
+                    <Sparkles className="h-4 w-4" />
+                    让 Copilot 复盘
+                  </button>
+                )}
+                {onExit && (
+                  <button
+                    onClick={onExit}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700"
+                  >
+                    完成并返回对话
+                  </button>
+                )}
+              </div>
             </div>
           )}
           <div ref={bottomRef} />

@@ -5,12 +5,20 @@ import type { CategoryDTO } from '../api/skill';
 export interface InterviewSession {
   sessionId: string;
   resumeText: string;
+  /**
+   * 题库总数（含**候选择问**）。
+   *
+   * 注意：**不要**拿它当进度分母——自适应会话会跳过部分候选追问，用它做分母会让总进度虚高
+   * （用户只答了 3 题却显示「第 10 / 12 题」）。进度请用 answeredCount + 主问题数推导。
+   */
   totalQuestions: number;
   currentQuestionIndex: number;
   questions: InterviewQuestion[];
   status: 'CREATED' | 'IN_PROGRESS' | 'COMPLETED' | 'EVALUATED';
   knowledgeBaseId?: number | null;
   interviewCategory?: string | null;
+  /** 自适应会话（P4-3）：逐题决策、会跳过候选追问、提前结束 */
+  adaptive?: boolean;
 }
 
 export interface InterviewQuestion {

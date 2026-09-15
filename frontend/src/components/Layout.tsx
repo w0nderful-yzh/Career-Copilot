@@ -14,6 +14,9 @@ export interface CopilotOutletContext {
   conversations: ConversationItem[];
   activeConversationId: number | null;
   loadingConversations: boolean;
+  /** 会话列表是否至少完成过一次加载（含失败）。用于区分「还没加载」与「加载完确实为空」，
+   *  避免依赖它的页面在首次挂载就误判（例如携 action 跳转过来时误建新会话）。 */
+  conversationsLoaded: boolean;
   refreshConversations: () => Promise<void>;
   selectConversation: (conversationId: number) => void;
   newConversation: () => void;
@@ -49,6 +52,8 @@ export default function Layout() {
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<number | null>(null);
   const [loadingConversations, setLoadingConversations] = useState(false);
+  // 「是否至少加载过一次」与「是否正在加载」是两件事：前者用于区分「还没加载」和「加载完确实为空」
+  const [conversationsLoaded, setConversationsLoaded] = useState(false);
   // 会话列表加载失败：与「还没有对话」的空态区分，否则失败会被当成空列表展示
   const [conversationError, setConversationError] = useState<string | null>(null);
   // 归档视图：归档在数据层早已生效（列表只查 ACTIVE），但此前没有任何归档入口，
@@ -67,6 +72,7 @@ export default function Layout() {
       setConversationError(err instanceof Error ? err.message : '会话列表加载失败');
     } finally {
       setLoadingConversations(false);
+      setConversationsLoaded(true);
     }
   }, []);
 
@@ -215,7 +221,10 @@ export default function Layout() {
         console.error('Failed to restore conversation:', err);
         setConversationError(err instanceof Error ? err.message : '会话列表加载失败');
       } finally {
-        if (!cancelled) setLoadingConversations(false);
+        if (!cancelled) {
+          setLoadingConversations(false);
+          setConversationsLoaded(true);
+        }
       }
     })();
     return () => {
@@ -393,6 +402,7 @@ export default function Layout() {
             conversations,
             activeConversationId,
             loadingConversations,
+            conversationsLoaded,
             refreshConversations,
             selectConversation,
             newConversation,

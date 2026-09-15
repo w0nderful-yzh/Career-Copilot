@@ -34,6 +34,7 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
+  Sparkles,
   Tag,
   Trash2,
   TrendingUp,
@@ -856,6 +857,20 @@ export default function InterviewHistoryPage({
                             ) : (
                               <RefreshCw className="w-4 h-4" />
                             )}
+                          </button>
+                        )}
+                        {isEvaluateCompleted(item) && item.type === 'text' && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              // 带上 sessionId 跳到 /copilot，由该页发起 REVIEW_INTERVIEW：
+                              // 支持复盘「指定的这一场」而不只是最近一场（P4 待修正）
+                              navigate('/copilot', { state: { reviewSessionId: item.sessionId } });
+                            }}
+                            className="p-2 text-slate-400 hover:text-violet-500 hover:bg-violet-50 dark:hover:bg-violet-900/30 rounded-lg transition-colors"
+                            title="让 Copilot 复盘这场面试"
+                          >
+                            <Sparkles className="w-4 h-4" />
                           </button>
                         )}
                         <button

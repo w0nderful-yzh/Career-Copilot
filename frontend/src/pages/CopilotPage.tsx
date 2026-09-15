@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useOutletContext } from 'react-router-dom';
+import { useLocation, useNavigate, useOutletContext } from 'react-router-dom';
 import { AlertCircle, RefreshCw } from 'lucide-react';
 import { conversationApi, jobUploadApi, resumeUploadApi, streamChat } from '../api/agentChat';
 import Composer, { type AttachmentKind } from '../components/copilot/Composer';
@@ -7,6 +7,7 @@ import ContextPanel from '../components/copilot/ContextPanel';
 import InterviewWorkspace from '../components/copilot/InterviewWorkspace';
 import MessageList from '../components/copilot/MessageList';
 import type { CopilotOutletContext } from '../components/Layout';
+import { ROUTES } from '../constants/routes';
 import { FAILED_TURN_HINT, toMessageStatus } from '../utils/copilotTurnStatus';
 import type {
   ActionSelected,
@@ -78,7 +79,10 @@ export default function CopilotPage() {
     refreshConversations,
     selectConversation,
     onConversationCreated,
+    conversationsLoaded,
   } = useOutletContext<CopilotOutletContext>();
+  const location = useLocation();
+  const navigate = useNavigate();
 
   const [messages, setMessages] = useState<CopilotMessage[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
@@ -92,6 +96,10 @@ export default function CopilotPage() {
   // Interview Mode（Interview Mode 重构）：null = 普通聊天；有值 = 中间区进入面试模式
   const [interviewMode, setInterviewMode] = useState<InterviewModeState | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // 已主动退出的面试会话：不再被旧的 interview_session 信号块自动拉回 Interview Mode。
+  // 退出时会向会话追加一条「面试完成摘要」artifact，messages 因此变化，
+  // 下面的自动进入 effect 会重新扫描到那个信号块 —— 不记录就会把用户又拽回面试模式（P4 待修正）。
+  const closedInterviewSessionsRef = useRef<Set<string>>(new Set());
   // 新建会话首次触发历史加载时跳过（保留刚追加的流式消息，避免被空历史覆盖）
   const skipHistoryLoadRef = useRef<number | null>(null);
 
@@ -460,10 +468,69 @@ export default function CopilotPage() {
     abortRef.current?.abort();
   }, []);
 
+  /**
+   * 让 Copilot 复盘指定面试会话（REVIEW_INTERVIEW action）。
+   *
+   * 这是该 action 的真实前端入口：此前 Python 侧已实现 REVIEW_INTERVIEW 处理（读 Java
+   * /interview/sessions/{id}/details 做逐题复盘），但前端从来没有地方触发它（P4 待修正）。
+   * 复盘面向「已结束」的会话，因此先退出 Interview Mode 并登记为已退出。
+   */
+  const reviewInterview = useCallback(
+    async (sessionId: string, title: string) => {
+      closedInterviewSessionsRef.current.add(sessionId);
+      setInterviewMode(null);
+      // 同时留下完成摘要 artifact：与「完成并返回对话」保持一致的历史回放记录
+      if (activeConversationId !== null) {
+        const summaryContent = `✅ 模拟面试完成（${title}）。表现已写入能力画像，下面为你复盘。`;
+        const assistantId = `interview_done_${Date.now()}`;
+        setMessages((prev) => [
+          ...prev,
+          { id: assistantId, role: 'assistant', content: summaryContent, blocks: [], status: 'done' },
+        ]);
+        try {
+          await fetch(`/api/agent/conversations/${activeConversationId}/messages`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              messages: [{ role: 'ASSISTANT', content: summaryContent, blocks: JSON.stringify([]) }],
+            }),
+          });
+        } catch (err) {
+          console.error('保存面试完成摘要失败:', err);
+        }
+      }
+      await runTurn({
+        message: '帮我复盘这次面试',
+        userContent: '让 Copilot 复盘这次面试',
+        action: {
+          type: 'ACTION_SELECTED',
+          action: 'REVIEW_INTERVIEW',
+          payload: { sessionId },
+        },
+      });
+    },
+    [activeConversationId, runTurn],
+  );
+
+  // 面试记录页点「让 Copilot 复盘」会带 reviewSessionId 跳到 /copilot：
+  // 等会话列表就绪后再发起（否则 activeConversationId 还是 null，runTurn 会误建新会话）。
+  const pendingReviewSessionId =
+    (location.state as { reviewSessionId?: string } | null)?.reviewSessionId ?? null;
+
+  useEffect(() => {
+    if (!pendingReviewSessionId || !conversationsLoaded) return;
+    // 处理一次即清 state，避免重渲染/刷新重复发起
+    navigate(ROUTES.copilot, { replace: true, state: null });
+    void reviewInterview(pendingReviewSessionId, '指定面试');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingReviewSessionId, conversationsLoaded]);
+
   // 面试信号块到达 → 进入 Interview Mode（若已是同会话 mode 则保持，避免重复进入）
   useEffect(() => {
     const signal = latestInterviewSignal(messages);
     if (!signal) return;
+    // 已退出的会话不再自动进入（面试已结束，不应把用户拽回面试模式）
+    if (closedInterviewSessionsRef.current.has(signal.session_id)) return;
     setInterviewMode((prev) => {
       if (prev && prev.sessionId === signal.session_id) return prev;
       const title = signal.direction_name || signal.skill_id || '模拟面试';
@@ -483,8 +550,11 @@ export default function CopilotPage() {
 
   // 面试完成 → 退出 Interview Mode，向会话写入一条轻量「面试完成摘要」artifact
   // （领域隔离：过程不写 conversation，只写结果；供历史回放与复盘）
-  const exitInterviewWithSummary = useCallback(async (title: string) => {
-    const summaryContent = `✅ 模拟面试完成（${title}）。表现已写入能力画像，可让我复盘本次面试或再来一场。`;
+  const exitInterviewWithSummary = useCallback(async (mode: InterviewModeState) => {
+    // 先登记已退出：追加摘要会让 messages 变化并重新扫描到信号块，
+    // 不登记就会被自动拉回面试模式（见 closedInterviewSessionsRef 注释）
+    closedInterviewSessionsRef.current.add(mode.sessionId);
+    const summaryContent = `✅ 模拟面试完成（${mode.title}）。表现已写入能力画像，可让我复盘本次面试或再来一场。`;
     if (activeConversationId !== null) {
       const assistantId = `interview_done_${Date.now()}`;
       setMessages((prev) => [
@@ -531,7 +601,8 @@ export default function CopilotPage() {
           <InterviewWorkspace
             mode={interviewMode}
             onChangeStatus={setInterviewMode}
-            onExit={() => void exitInterviewWithSummary(interviewMode.title)}
+            onExit={() => void exitInterviewWithSummary(interviewMode)}
+            onReview={() => void reviewInterview(interviewMode.sessionId, interviewMode.title)}
           />
         ) : (
           <>

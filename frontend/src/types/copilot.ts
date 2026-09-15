@@ -178,6 +178,9 @@ export interface ResumeOptimizationBlock {
   summary: string;
   patches: ResumeOptimizationPatch[];
   rejectedNote?: string | null;
+  /** 优化模式（P2 待修正）：让「通用 / 定向方向」在卡片上可分辨 */
+  optimizationType?: 'GENERAL' | 'TARGET_DIRECTION' | 'JD_TARGETED' | null;
+  targetDirection?: string | null;
 }
 
 export type AgentBlock =

@@ -8,6 +8,7 @@ import {
   ChevronDown,
   FileSearch,
   FileStack,
+  Loader2,
   MessagesSquare,
   Minus,
   Plus,
@@ -16,6 +17,7 @@ import {
   Square,
   Target,
   Users,
+  X,
 } from 'lucide-react';
 import type {
   AgentBlock,
@@ -35,6 +37,11 @@ import type {
 import type { ResumeContentJson } from '../../api/history';
 import { historyApi } from '../../api/history';
 import { resolveActionRoute } from '../../constants/routes';
+import {
+  isAllPatchesSelected,
+  toggleAllPatchSelection,
+  togglePatchSelection,
+} from '../../utils/resumePatchSelection';
 import InterviewConfigPanel from './InterviewConfigPanel';
 
 // Copilot 受控 Block 渲染器：只渲染白名单类型，未知类型静默忽略。
@@ -467,6 +474,23 @@ const PATCH_TYPE_META: Record<ResumeOptimizationPatch['type'], { label: string; 
   DELETE: { label: '删除', className: 'bg-red-50 text-red-600 dark:bg-red-900/40 dark:text-red-300' },
 };
 
+/** 优化模式标签（P2 待修正）：让「通用 / 定向方向 / JD 定向」在卡片上可分辨 */
+function optimizationModeLabel(
+  type: ResumeOptimizationBlock['optimizationType'],
+  direction?: string | null,
+): string | null {
+  switch (type) {
+    case 'JD_TARGETED':
+      return 'JD 定向';
+    case 'TARGET_DIRECTION':
+      return direction ? `定向 · ${direction}` : '定向方向';
+    case 'GENERAL':
+      return null; // 通用优化是默认语义，不额外加徽标
+    default:
+      return null;
+  }
+}
+
 /** path → 可读位置描述 */
 function patchPathLabel(path: string): string {
   const segmentNames: Record<string, string> = {
@@ -496,6 +520,31 @@ function ResumeOptimizationBlockView({
     () => new Set(block.patches.map((patch) => patch.id)),
   );
   const [applied, setApplied] = useState(false);
+  // 提案决策（P2 待修正）：拒绝入口 + 刷新回放时的权威状态回显。
+  // 历史消息块只存 patches，不回显状态的话已应用/已忽略的提案刷新后仍显示成可操作。
+  const [rejected, setRejected] = useState(false);
+  const [rejecting, setRejecting] = useState(false);
+  const [decisionError, setDecisionError] = useState('');
+  const [decidedStatus, setDecidedStatus] = useState<'APPLIED' | 'REJECTED' | null>(null);
+  const locked = applied || rejected || decidedStatus !== null;
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const proposal = await historyApi.getResumeOptimizationProposal(block.proposalId);
+        if (cancelled) return;
+        if (proposal.status === 'APPLIED' || proposal.status === 'REJECTED') {
+          setDecidedStatus(proposal.status);
+        }
+      } catch {
+        // 状态回显失败不阻断操作：仍可点击应用，Java 侧状态机会拒绝重复决策
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [block.proposalId]);
 
   // ===== Preview PDF（P2-4 勾选即重渲）=====
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -553,22 +602,28 @@ function ResumeOptimizationBlockView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const toggle = (id: string) => {
+  const patchIds = block.patches.map((patch) => patch.id);
+  const allSelected = isAllPatchesSelected(selectedIds, patchIds);
+
+  // 单条勾选与全选/全不选共用同一条路径：改状态 + 调度重渲。
+  // 两者若各写一份，极易只改状态而漏掉预览（全选/全不选曾因此与预览不一致）。
+  // 应用/拒绝后锁定不再重渲。
+  const updateSelection = (compute: (prev: Set<string>) => Set<string>) => {
     setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      // 应用后锁定不再重渲
-      if (!applied) schedulePreview(next);
+      const next = compute(prev);
+      if (!locked) schedulePreview(next);
       return next;
     });
   };
 
+  const toggle = (id: string) =>
+    updateSelection((prev) => togglePatchSelection(prev, id));
+
+  const toggleAll = () =>
+    updateSelection((prev) => toggleAllPatchSelection(prev, patchIds));
+
   const selectedCount = selectedIds.size;
-  const canApply = !actionDisabled && !applied && selectedCount > 0;
+  const canApply = !actionDisabled && !locked && selectedCount > 0;
 
   const handleApply = () => {
     if (!canApply || !onActionSelect) return;
@@ -583,6 +638,28 @@ function ResumeOptimizationBlockView({
     });
   };
 
+  /** 放弃本轮全部建议：不动简历内容，只落 Java 审计状态（REJECTED） */
+  const handleReject = async () => {
+    if (locked || rejecting) return;
+    setRejecting(true);
+    setDecisionError('');
+    try {
+      await historyApi.rejectResumeOptimizationProposal(block.proposalId);
+      setRejected(true);
+    } catch (error) {
+      setDecisionError(error instanceof Error ? error.message : '操作失败，请稍后重试');
+    } finally {
+      setRejecting(false);
+    }
+  };
+
+  const decisionNote =
+    rejected || decidedStatus === 'REJECTED'
+      ? '已忽略本次优化建议，简历内容未改动'
+      : decidedStatus === 'APPLIED' || applied
+        ? '本提案已应用并生成新版本，简历内容已更新'
+        : '';
+
   return (
     <div className="mt-4 overflow-hidden rounded-2xl border border-primary-200/70 bg-gradient-to-br from-primary-50/60 to-indigo-50/40 dark:border-primary-800/40 dark:from-primary-950/30 dark:to-indigo-950/20">
       <div className="flex items-center justify-between px-4 pt-4">
@@ -592,20 +669,19 @@ function ResumeOptimizationBlockView({
           <span className="rounded-full bg-white/80 px-2 py-0.5 text-xs font-semibold text-primary-600 dark:bg-slate-800/80 dark:text-primary-300">
             {block.patches.length} 条
           </span>
+          {optimizationModeLabel(block.optimizationType, block.targetDirection) && (
+            <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-semibold text-indigo-600 dark:bg-indigo-900/40 dark:text-indigo-300">
+              {optimizationModeLabel(block.optimizationType, block.targetDirection)}
+            </span>
+          )}
         </div>
         <button
           type="button"
-          onClick={() =>
-            setSelectedIds(
-              selectedCount === block.patches.length
-                ? new Set()
-                : new Set(block.patches.map((patch) => patch.id)),
-            )
-          }
-          disabled={applied}
+          onClick={toggleAll}
+          disabled={locked}
           className="text-xs font-medium text-primary-600 hover:underline disabled:opacity-50 dark:text-primary-300"
         >
-          {selectedCount === block.patches.length ? '全不选' : '全选'}
+          {allSelected ? '全不选' : '全选'}
         </button>
       </div>
 
@@ -617,6 +693,11 @@ function ResumeOptimizationBlockView({
       {block.rejectedNote && (
         <p className="mx-4 mt-2 text-xs text-amber-600 dark:text-amber-400">
           ⚠ {block.rejectedNote}（不合规建议已自动剔除）
+        </p>
+      )}
+      {decisionNote && (
+        <p className="mx-4 mt-2 rounded-xl bg-slate-100/80 px-3 py-2 text-xs text-slate-500 dark:bg-slate-800/60 dark:text-slate-400">
+          {decisionNote}
         </p>
       )}
 
@@ -640,10 +721,10 @@ function ResumeOptimizationBlockView({
                   aria-checked={selected}
                   onClick={(e) => {
                     e.preventDefault();
-                    if (!applied) toggle(patch.id);
+                    if (!locked) toggle(patch.id);
                   }}
                   className="mt-0.5 shrink-0 text-primary-500 disabled:opacity-50"
-                  disabled={applied}
+                  disabled={locked}
                 >
                   {selected ? (
                     <CheckSquare className="h-4.5 w-4.5" />
@@ -679,19 +760,34 @@ function ResumeOptimizationBlockView({
       </div>
 
       <div className="px-4 pb-4 pt-3">
-        <button
-          type="button"
-          disabled={!canApply || !onActionSelect}
-          onClick={handleApply}
-          className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-primary-500 to-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:-translate-y-0.5 hover:from-primary-600 hover:to-indigo-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-55"
-        >
-          <CheckSquare className="h-4 w-4" />
-          {applied
-            ? '已提交应用'
-            : `应用勾选修改（${selectedCount}/${block.patches.length}）`}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            disabled={!canApply || !onActionSelect}
+            onClick={handleApply}
+            className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-primary-500 to-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:-translate-y-0.5 hover:from-primary-600 hover:to-indigo-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-55"
+          >
+            <CheckSquare className="h-4 w-4" />
+            {applied || decidedStatus === 'APPLIED'
+              ? '已提交应用'
+              : `应用勾选修改（${selectedCount}/${block.patches.length}）`}
+          </button>
+          {/* 与「应用」对称的决策出口：拒绝只落审计状态，不改动简历内容 */}
+          <button
+            type="button"
+            disabled={locked || rejecting}
+            onClick={() => void handleReject()}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-medium text-slate-500 transition hover:border-slate-300 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-55 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
+          >
+            {rejecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <X className="h-4 w-4" />}
+            {rejected || decidedStatus === 'REJECTED' ? '已忽略' : '全部忽略'}
+          </button>
+        </div>
+        {decisionError && (
+          <p className="mt-2 text-[11px] text-red-500">操作失败：{decisionError}</p>
+        )}
         <p className="mt-2 text-[11px] text-slate-400">
-          应用后生成新版本，原版本保持不变
+          应用后生成新版本，原版本保持不变；忽略则不改动任何内容
         </p>
 
         {/* Preview PDF：勾选即重渲（防抖 600ms）；桌面渲染区，排版不满意时原上传件仍是退路 */}

@@ -1554,12 +1554,12 @@ async def test_patch_validator_rejects_reorder_and_bad_path():
         rp("a", "REORDER", "skills"),
         rp("b", "REPLACE", "unknown[0]", old="x", new="y"),
         rp("c", "DELETE", "skills[0]"),
-        rp("d", "REPLACE", "skills[0].content", old="熟悉 Java", new="精通 Java 与 Spring 生态"),
+        rp("d", "REPLACE", "skills[0].content", old="熟悉 Java", new="熟练掌握 Java"),
     ]
     result = validate_patches(patches, "原文：熟悉 Java")
 
     rejected_ids = {patches[i].id for i, _ in result.rejected}
-    # d 的 newValue 无新增数字（Java/Spring 原文已有）→ 数字校验放行
+    # d 的 newValue 未引入原文没有的数字/技术名 → 放行
     assert rejected_ids == {"a", "b", "c"}, "REORDER/非法path/缺oldValue 被拒，合规改写放行"
 
     ok = validate_patches(
@@ -1568,6 +1568,440 @@ async def test_patch_validator_rejects_reorder_and_bad_path():
         "原文：熟悉 Java",
     )
     assert not ok.has_rejection
+
+
+async def test_patch_validator_rejects_fabricated_tech_stack():
+    """真实性扩展（P2 待修正）：newValue 引入原文没有的技术名词被拒。"""
+    from career_copilot.agent.nodes.patch_validator import validate_patches
+    from career_copilot.schemas.resume_patch import ResumePatch
+
+    def rp(pid, path, old, new):
+        return ResumePatch(id=pid, type="REPLACE", path=path,
+                           oldValue=old, newValue=new, reason="r")
+
+    # Kafka 未在原文出现 → 疑似编造技术栈
+    fabricated = validate_patches(
+        [rp("a", "skills[0].content", "熟悉 Java", "熟悉 Java 与 Kafka")],
+        "原文：熟悉 Java",
+    )
+    assert fabricated.has_rejection
+    reason = fabricated.rejected[0][1]
+    assert "技术名词" in reason and "Kafka" in reason
+
+    # 原文已出现的技术名词（Spring Boot）→ 放行
+    allowed = validate_patches(
+        [rp("b", "skills[0].content", "熟悉 Java", "熟练掌握 Java 与 Spring Boot")],
+        "原文：熟悉 Java 与 Spring Boot",
+    )
+    assert not allowed.has_rejection, "原文已有技术名不得误判"
+
+
+async def test_patch_validator_rejects_fabricated_company():
+    """真实性扩展：newValue 引入原文没有的公司实体被拒，描述性短语不误报。"""
+    from career_copilot.agent.nodes.patch_validator import validate_patches
+    from career_copilot.schemas.resume_patch import ResumePatch
+
+    resume = "在某某科技有限公司负责后端开发"
+    fabricated = validate_patches(
+        [ResumePatch(id="a", type="REPLACE", path="projects[0].bullets[0]",
+                     oldValue="负责后端开发", newValue="在腾讯科技有限公司负责后端开发",
+                     reason="r")],
+        resume,
+    )
+    assert fabricated.has_rejection
+    assert "公司" in fabricated.rejected[0][1]
+
+    # 原文已有的公司实体 → 放行
+    allowed = validate_patches(
+        [ResumePatch(id="b", type="REPLACE", path="projects[0].bullets[0]",
+                     oldValue="在某某科技有限公司负责后端开发",
+                     newValue="主导某某科技有限公司后端开发", reason="r")],
+        resume,
+    )
+    assert not allowed.has_rejection
+
+    # 「负责公司核心系统」是描述而非公司名 → 不误报
+    descriptive = validate_patches(
+        [ResumePatch(id="c", type="REPLACE", path="projects[0].bullets[0]",
+                     oldValue="负责后端开发", newValue="负责公司核心系统的后端开发",
+                     reason="r")],
+        resume,
+    )
+    assert not descriptive.has_rejection
+
+
+async def test_patch_validator_rejects_new_or_deleted_experience_entry():
+    """真实性扩展：整段经历（项目/工作/教育）不得由 AI 新增或删除。"""
+    from career_copilot.agent.nodes.patch_validator import validate_patches
+    from career_copilot.schemas.resume_patch import ResumePatch
+
+    resume = "项目：Demo（Spring Boot）负责后端开发工作"
+    new_project = ResumePatch(id="a", type="ADD", path="projects",
+                              newValue="某新项目", reason="r")
+    delete_project = ResumePatch(id="b", type="DELETE", path="projects[0]",
+                                 oldValue="Demo", reason="r")
+    add_bullet = ResumePatch(id="c", type="ADD", path="projects[0].bullets",
+                             newValue="主导接口性能优化", reason="r")
+
+    result = validate_patches([new_project, delete_project, add_bullet], resume)
+    rejected_ids = {[new_project, delete_project, add_bullet][i].id
+                    for i, _ in result.rejected}
+    assert rejected_ids == {"a", "b"}, "整段经历增删被拒，条目内追加 bullet 放行"
+
+
+async def test_patch_validator_rejects_identity_field_rewrite():
+    """真实性扩展：公司/岗位/项目名/学历/时间等关键事实字段不得由 AI 改写。"""
+    from career_copilot.agent.nodes.patch_validator import validate_patches
+    from career_copilot.schemas.resume_patch import ResumePatch
+
+    patches = [
+        ResumePatch(id="a", type="REPLACE", path="experience[0].company",
+                    oldValue="甲公司", newValue="乙公司", reason="r"),
+        ResumePatch(id="b", type="REPLACE", path="projects[0].name",
+                    oldValue="旧项目", newValue="新项目", reason="r"),
+        ResumePatch(id="c", type="REPLACE", path="projects[0].bullets[0]",
+                    oldValue="负责后端开发", newValue="主导后端开发", reason="r"),
+    ]
+    result = validate_patches(patches, "甲公司 旧项目 负责后端开发")
+    rejected_ids = {patches[i].id for i, _ in result.rejected}
+    assert rejected_ids == {"a", "b"}, "事实字段改写被拒，表达改写放行"
+
+
+# ===== 配置化自评审（P2 待修正，默认关闭） =====
+
+
+class SequencedPatchModel:
+    """按调用顺序返回预设 payload 的模型（生成提案 → 自评审）。"""
+
+    def __init__(self, payloads: list[dict]) -> None:
+        self._payloads = payloads
+        self.calls = 0
+
+    async def ainvoke(self, messages):
+        from langchain_core.messages import AIMessage
+
+        payload = self._payloads[min(self.calls, len(self._payloads) - 1)]
+        self.calls += 1
+        return AIMessage(content=json.dumps(payload, ensure_ascii=False))
+
+
+def _optimization_deps_with_model(transport, model) -> GraphDeps:
+    from career_copilot.agent.answerer import Answerer
+
+    class ModelAnswerer(Answerer):
+        def __init__(self) -> None:
+            super().__init__(model)
+
+    return GraphDeps(
+        intent_router=FakeIntentRouter(
+            IntentClassification(intent=Intent.GENERAL_CHAT)
+        ),
+        answerer=ModelAnswerer(),
+        backend=BackendClient(
+            base_url="http://test", transport=httpx.MockTransport(transport)
+        ),
+    )
+
+
+_TWO_PATCH_PAYLOAD = {
+    "summary": "精炼项目与技能描述",
+    "patches": [
+        {
+            "id": "patch_1",
+            "type": "REPLACE",
+            "path": "projects[0].bullets[0]",
+            "oldValue": "负责后端开发工作",
+            "newValue": "主导后端开发工作",
+            "reason": "动词开头突出职责",
+        },
+        {
+            "id": "patch_2",
+            "type": "REPLACE",
+            "path": "skills[0].content",
+            "oldValue": "熟悉 Java",
+            "newValue": "熟练掌握 Java",
+            "reason": "规范熟练度表述",
+        },
+    ],
+}
+
+
+async def _run_optimization(deps) -> dict:
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None, message="优化简历", attachments=[],
+        action={"type": "ACTION_SELECTED", "action": "OPTIMIZE_RESUME",
+                "payload": {"resumeId": 1}},
+    )
+    return await graph.ainvoke(state)
+
+
+async def test_self_review_disabled_by_default_makes_no_extra_model_call(monkeypatch):
+    """默认 rounds=0：自评审不产生额外 LLM 调用（一期默认最小）。"""
+    from career_copilot.config import settings
+
+    monkeypatch.setattr(settings, "resume_self_review_rounds", 0)
+    model = SequencedPatchModel([
+        _VALID_PATCH_PAYLOAD,
+        {"keep": [], "drop": [{"id": "patch_1", "reason": "不该被调用"}]},
+    ])
+    result = await _run_optimization(
+        _optimization_deps_with_model(_optimization_transport(), model)
+    )
+
+    assert model.calls == 1, "关闭自评审时不应多调一次模型"
+    block = next(b for b in result["plan"].blocks if b.type == "resume_optimization")
+    assert [p.id for p in block.patches] == ["patch_1"]
+    assert not block.rejectedNote
+
+
+async def test_self_review_enabled_drops_patches_and_reports_reason(monkeypatch):
+    """开启自评审：模型淘汰的建议被剔除并如实告知（只淘汰不新增）。"""
+    from career_copilot.config import settings
+
+    monkeypatch.setattr(settings, "resume_self_review_rounds", 1)
+    model = SequencedPatchModel([
+        _TWO_PATCH_PAYLOAD,
+        {"keep": ["patch_2"], "drop": [{"id": "patch_1", "reason": "与原文重复"}]},
+    ])
+    result = await _run_optimization(
+        _optimization_deps_with_model(_optimization_transport(), model)
+    )
+
+    assert model.calls == 2, "开启后应追加一次评审调用"
+    block = next(b for b in result["plan"].blocks if b.type == "resume_optimization")
+    assert [p.id for p in block.patches] == ["patch_2"], "被淘汰的建议不得进入提案"
+    assert block.rejectedNote and "自评审" in block.rejectedNote
+
+
+async def test_self_review_ignores_fabricated_patch_ids(monkeypatch):
+    """模型臆造不存在的 patch id：忽略该决定，不空转、不改动建议集合。"""
+    from career_copilot.config import settings
+
+    monkeypatch.setattr(settings, "resume_self_review_rounds", 3)
+    model = SequencedPatchModel([
+        _TWO_PATCH_PAYLOAD,
+        {"keep": [], "drop": [{"id": "patch_999", "reason": "臆造 id"}]},
+    ])
+    result = await _run_optimization(
+        _optimization_deps_with_model(_optimization_transport(), model)
+    )
+
+    # 无有效淘汰 → 首轮即终止（不会跑满 3 轮）
+    assert model.calls == 2
+    block = next(b for b in result["plan"].blocks if b.type == "resume_optimization")
+    assert [p.id for p in block.patches] == ["patch_1", "patch_2"]
+    assert not block.rejectedNote
+
+
+# ===== 优化模式判定与澄清（P2 待修正） =====
+
+
+def test_determine_mode_rules():
+    """确定性模式判定：显式方向 > JD 信号 > 会话绑定 JD > 通用。"""
+    from career_copilot.agent.nodes.resume_optimization import determine_mode
+
+    # 无方向、无 JD → 通用
+    assert determine_mode("帮我优化一下简历", False) == ("GENERAL", None)
+    # 显式方向
+    assert determine_mode("按照 Java 后端方向优化我的简历", False) == (
+        "TARGET_DIRECTION", "Java 后端")
+    assert determine_mode("针对 JVM 优化我的简历", False) == ("TARGET_DIRECTION", "JVM")
+    # JD 信号（「这份 JD」是指代而非方向）
+    assert determine_mode("按这份 JD 优化简历", False) == ("JD_TARGETED", None)
+    assert determine_mode("按照这个岗位的要求改简历", False) == ("JD_TARGETED", None)
+    # 命中方向句式但没给具体方向 → 待澄清
+    assert determine_mode("按目标方向优化一下", False) == ("TARGET_DIRECTION", None)
+    # 会话已绑定 JD：沿用 P2-5 行为，默认对这份 JD 定向
+    assert determine_mode("优化简历", True) == ("JD_TARGETED", None)
+    # 显式方向优先于会话绑定的 JD
+    assert determine_mode("按 Java 方向优化", True) == ("TARGET_DIRECTION", "Java")
+
+
+async def test_optimize_jd_targeted_without_jd_clarifies(backend_transport):
+    """JD_TARGETED 但拿不到 JD → 澄清块，不生成也不落库提案。"""
+    calls: list[str] = []
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == "/internal/agent/resume-optimization/proposals":
+            return httpx.Response(200, json={"code": 200, "data": 77, "message": "success"})
+        tool = request.url.path.rsplit("/", 1)[-1]
+        return httpx.Response(
+            200, json={"code": 200, "data": {"get_skill_profile": {"skills": []}}.get(tool, []),
+                       "message": "success"}
+        )
+
+    deps = _optimization_deps(transport, _VALID_PATCH_PAYLOAD)
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None, message="按这份 JD 优化我的简历", attachments=[],
+        action={"type": "ACTION_SELECTED", "action": "OPTIMIZE_RESUME",
+                "payload": {"resumeId": 1}},
+    )
+    result = await graph.ainvoke(state)
+
+    plan = result["plan"]
+    choice = next((b for b in plan.blocks if b.type == "choice"), None)
+    assert choice is not None, "缺少 JD 时应给出澄清选择块"
+    assert any(
+        option.payload.get("mode") == "GENERAL" for option in choice.options
+    ), "应提供「先按通用优化」的确定性出口"
+    assert "/internal/agent/resume-optimization/proposals" not in calls, "澄清阶段不得落库提案"
+
+
+async def test_optimize_direction_unclear_offers_skill_choices(backend_transport):
+    """TARGET_DIRECTION 但方向未明 → 用 Java 技能方向给出确定性选项，不落库提案。"""
+    transport = _optimization_transport({
+        "list_skills": [
+            {"id": "JAVA", "name": "Java 后端", "categories": []},
+            {"id": "MYSQL", "name": "MySQL", "categories": []},
+        ]
+    })
+    deps = _optimization_deps(transport, _VALID_PATCH_PAYLOAD)
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None, message="按目标方向优化一下我的简历", attachments=[],
+        action={"type": "ACTION_SELECTED", "action": "OPTIMIZE_RESUME",
+                "payload": {"resumeId": 1}},
+    )
+    result = await graph.ainvoke(state)
+
+    plan = result["plan"]
+    assert not any(b.type == "resume_optimization" for b in plan.blocks), "澄清阶段不应产出提案"
+    choice = next((b for b in plan.blocks if b.type == "choice"), None)
+    assert choice is not None
+    directions = [
+        option.payload.get("direction")
+        for option in choice.options
+        if option.payload.get("mode") == "TARGET_DIRECTION"
+    ]
+    assert directions == ["Java 后端", "MySQL"], "方向选项来自 list_skills，不臆造"
+
+
+async def test_optimize_target_direction_persists_mode_and_direction(backend_transport):
+    """TARGET_DIRECTION：模式与目标方向随提案落库，并透传到卡片。"""
+    captured: dict = {}
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/internal/agent/resume-optimization/proposals":
+            captured.update(json.loads(request.content.decode()))
+            return httpx.Response(200, json={"code": 200, "data": 77, "message": "success"})
+        tool = request.url.path.rsplit("/", 1)[-1]
+        data = {
+            "get_resume_version": {
+                "id": 5, "resumeId": 1, "version": 1, "confirmationStatus": "ACTIVE",
+                "content": {"basicInfo": {"name": "张三"}, "education": [], "experience": [],
+                            "projects": [{"name": "Demo", "techStack": "Spring Boot",
+                                          "bullets": ["负责后端开发工作"]}],
+                            "skills": [{"category": "", "content": "熟悉 Java"}],
+                            "customSections": []},
+            },
+            "get_resume": {"id": 1, "resumeText": "项目：Demo（Spring Boot）负责后端开发工作"},
+            "get_skill_profile": {"skills": []},
+        }
+        return httpx.Response(
+            200, json={"code": 200, "data": data.get(tool, []), "message": "success"}
+        )
+
+    deps = _optimization_deps(transport, _VALID_PATCH_PAYLOAD)
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None, message="按照 Java 后端方向优化我的简历", attachments=[],
+        action={"type": "ACTION_SELECTED", "action": "OPTIMIZE_RESUME",
+                "payload": {"resumeId": 1}},
+    )
+    result = await graph.ainvoke(state)
+
+    assert captured["optimizationType"] == "TARGET_DIRECTION"
+    assert captured["targetDirection"] == "Java 后端"
+    assert captured["targetJobId"] is None
+    block = next(b for b in result["plan"].blocks if b.type == "resume_optimization")
+    assert block.optimizationType == "TARGET_DIRECTION"
+    assert block.targetDirection == "Java 后端"
+    text = "".join([c async for c in result["plan"].text])
+    assert "Java 后端" in text
+
+
+async def test_optimize_jd_targeted_persists_job_id(backend_transport):
+    """JD_TARGETED：目标 JD id 随提案落库（不再统一写 GENERAL）。"""
+    captured: dict = {}
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/internal/agent/resume-optimization/proposals":
+            captured.update(json.loads(request.content.decode()))
+            return httpx.Response(200, json={"code": 200, "data": 77, "message": "success"})
+        tool = request.url.path.rsplit("/", 1)[-1]
+        data = {
+            "get_resume_version": {
+                "id": 5, "resumeId": 1, "version": 1, "confirmationStatus": "ACTIVE",
+                "content": {"basicInfo": {"name": "张三"}, "education": [], "experience": [],
+                            "projects": [{"name": "Demo", "techStack": "Spring Boot",
+                                          "bullets": ["负责后端开发工作"]}],
+                            "skills": [], "customSections": []},
+            },
+            "get_resume": {"id": 1, "resumeText": "项目：Demo（Spring Boot）负责后端开发工作"},
+            "get_skill_profile": {"skills": []},
+            "get_job": {"id": 42, "title": "Java 后端实习", "company": "某公司",
+                        "contentText": "熟悉 Spring Boot 与 MySQL"},
+        }
+        return httpx.Response(
+            200, json={"code": 200, "data": data.get(tool, []), "message": "success"}
+        )
+
+    deps = _optimization_deps(transport, _VALID_PATCH_PAYLOAD)
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None, message="按这份 JD 优化我的简历", attachments=[],
+        action={"type": "ACTION_SELECTED", "action": "OPTIMIZE_RESUME",
+                "payload": {"resumeId": 1, "jobId": 42}},
+    )
+    result = await graph.ainvoke(state)
+
+    assert captured["optimizationType"] == "JD_TARGETED"
+    assert captured["targetJobId"] == 42
+    block = next(b for b in result["plan"].blocks if b.type == "resume_optimization")
+    assert block.optimizationType == "JD_TARGETED"
+
+
+async def test_optimize_clarification_choice_forces_mode(backend_transport):
+    """澄清选项回传 mode=GENERAL → 跳过模式判定，按通用优化直接出提案。"""
+    captured: dict = {}
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/internal/agent/resume-optimization/proposals":
+            captured.update(json.loads(request.content.decode()))
+            return httpx.Response(200, json={"code": 200, "data": 77, "message": "success"})
+        tool = request.url.path.rsplit("/", 1)[-1]
+        data = {
+            "get_resume_version": {
+                "id": 5, "resumeId": 1, "version": 1, "confirmationStatus": "ACTIVE",
+                "content": {"basicInfo": {"name": "张三"}, "education": [], "experience": [],
+                            "projects": [{"name": "Demo", "techStack": "Spring Boot",
+                                          "bullets": ["负责后端开发工作"]}],
+                            "skills": [], "customSections": []},
+            },
+            "get_resume": {"id": 1, "resumeText": "项目：Demo（Spring Boot）负责后端开发工作"},
+            "get_skill_profile": {"skills": []},
+        }
+        return httpx.Response(
+            200, json={"code": 200, "data": data.get(tool, []), "message": "success"}
+        )
+
+    deps = _optimization_deps(transport, _VALID_PATCH_PAYLOAD)
+    graph = build_graph(deps)
+    # 消息本身指向 JD，但用户点了「先按通用优化」→ 以用户选择为准
+    state = build_initial_state(
+        conversation_id=None, message="按这份 JD 优化", attachments=[],
+        action={"type": "ACTION_SELECTED", "action": "OPTIMIZE_RESUME",
+                "payload": {"resumeId": 1, "mode": "GENERAL"}},
+    )
+    result = await graph.ainvoke(state)
+
+    assert captured["optimizationType"] == "GENERAL"
+    assert captured["targetJobId"] is None
+    block = next(b for b in result["plan"].blocks if b.type == "resume_optimization")
+    assert block.optimizationType == "GENERAL"
 
 
 # ===== APPLY_RESUME_PATCHES action（P2-1c） =====

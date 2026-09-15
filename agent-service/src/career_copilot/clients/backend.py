@@ -156,9 +156,13 @@ class BackendClient:
         optimization_type: str,
         summary: str,
         patches: list[dict[str, Any]],
+        target_job_id: int | None = None,
+        target_direction: str | None = None,
     ) -> int:
         """创建优化提案（HITL：提案先落 Java 审计，返回提案 id）。
 
+        优化坐标系（模式 + 目标 JD / 目标方向）随提案落库：否则「按这份 JD 优化」
+        在审计上退化成通用优化，应用生成的新版本也无法追溯来源。
         用户在前端确认后经 apply_resume_patches Tool 应用。
         """
         data = await self._post_plain(
@@ -167,6 +171,8 @@ class BackendClient:
                 "resumeId": resume_id,
                 "sourceVersionId": source_version_id,
                 "optimizationType": optimization_type,
+                "targetJobId": target_job_id,
+                "targetDirection": target_direction,
                 "summary": summary,
                 "patches": patches,
             },

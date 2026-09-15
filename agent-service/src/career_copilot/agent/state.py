@@ -45,6 +45,11 @@ class CareerAgentState(TypedDict, total=False):
     active_job_id: int | None
     active_plan_id: int | None
 
+    # 简历优化坐标系（P2 待修正）：determine_mode 确定性判定产出；
+    # 澄清 ChoiceBlock 通过 OPTIMIZE_RESUME payload 回传（mode / direction）
+    optimization_mode: str | None
+    target_direction: str | None
+
     # 短期记忆：会话历史（load_history 每轮从 Java 重载，权威来源）
     history: list[dict[str, str]]  # 最近 N 轮 {role, content}
     history_summary: str | None  # 窗口之外早期轮次的滚动摘要

@@ -30,8 +30,10 @@ TOOL_LABELS_ZH: dict[str, str] = {
     "create_interview": "创建面试会话",
     "resume_version": "读取简历结构化版本",
     "generate_patch": "生成简历优化建议",
+    "review_patches": "自评审优化建议",
     "save_proposal": "保存优化提案",
     "apply_patches": "应用简历修改",
+    "job_query": "读取目标 JD",
 }
 
 

@@ -181,6 +181,13 @@ class ResumeOptimizationBlock(BaseModel):
     rejectedNote: str | None = Field(
         default=None, description="被校验器剔除的建议说明（如实告知）"
     )
+    optimizationType: str | None = Field(
+        default=None,
+        description="优化模式 GENERAL / TARGET_DIRECTION / JD_TARGETED（P2 待修正）",
+    )
+    targetDirection: str | None = Field(
+        default=None, description="TARGET_DIRECTION 时的目标方向描述"
+    )
 
 
 class ChoiceOption(BaseModel):

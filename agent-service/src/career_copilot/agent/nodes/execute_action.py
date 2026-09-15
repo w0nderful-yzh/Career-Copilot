@@ -41,7 +41,8 @@ async def execute_action(state: CareerAgentState, deps: GraphDeps) -> dict[str, 
 
     if action_name == AgentAction.OPTIMIZE_RESUME.value:
         # 简历优化：走优化子图（生成 Patch 提案，待用户确认后应用）。
-        # payload.resumeId / payload.jobId（ChoiceBlock 回传）优先，回退会话活动资源。
+        # payload.resumeId / payload.jobId（ChoiceBlock 回传）优先，回退会话活动资源；
+        # payload.mode / payload.direction 来自「上下文不足」澄清块，用于锁定用户已选定的模式。
         optimize_state: CareerAgentState = {**state}
         payload_resume_id = _as_int(payload.get("resumeId"))
         if payload_resume_id is not None:
@@ -49,6 +50,12 @@ async def execute_action(state: CareerAgentState, deps: GraphDeps) -> dict[str, 
         payload_job_id = _as_int(payload.get("jobId"))
         if payload_job_id is not None:
             optimize_state["active_job_id"] = payload_job_id
+        payload_mode = payload.get("mode")
+        if isinstance(payload_mode, str) and payload_mode:
+            optimize_state["optimization_mode"] = payload_mode
+        payload_direction = payload.get("direction")
+        if isinstance(payload_direction, str) and payload_direction.strip():
+            optimize_state["target_direction"] = payload_direction.strip()
         return await resume_optimization(optimize_state, deps)
 
     if action_name == AgentAction.START_INTERVIEW.value:

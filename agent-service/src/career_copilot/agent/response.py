@@ -120,8 +120,14 @@ def resume_optimization_block(
     summary: str,
     patches: list[Any],
     rejected_note: str | None = None,
+    optimization_type: str | None = None,
+    target_direction: str | None = None,
 ) -> ResumeOptimizationBlock:
-    """简历优化提案块：Patch Diff 卡片（P2-1 HITL 确认入口）。"""
+    """简历优化提案块：Patch Diff 卡片（P2-1 HITL 确认入口）。
+
+    optimizationType/targetDirection 让「通用 / 定向方向 / JD 定向」在卡片上可分辨
+    （P2 待修正：此前一律显示为通用优化）。
+    """
     items = [
         ResumeOptimizationPatch(
             id=patch.id,
@@ -140,6 +146,8 @@ def resume_optimization_block(
         summary=summary,
         patches=items,
         rejectedNote=rejected_note,
+        optimizationType=optimization_type,
+        targetDirection=target_direction,
     )
 
 

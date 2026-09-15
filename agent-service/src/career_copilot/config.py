@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     # JD 内容注入上限（P2-5 JD_TARGETED 定向优化，Token 纪律）
     jd_context_max_chars: int = 4000
 
+    # 简历优化自评审轮次（P2 待修正，配置化，默认关闭）。
+    # 评估结论：暂无质量证据支撑开启——每轮追加 1 次 LLM 调用与数秒等待，而真实性
+    # 已由确定性校验器（数字/技术栈/公司/项目事实）兜底，不依赖 LLM review。
+    # 0 = 关闭（一期默认最小）；>0 时在提案落库前做至多 N 轮「只淘汰不新增」的评审。
+    resume_self_review_rounds: int = 0
+
     # 面试发起（P1-4）：Agent 推荐的默认题目数量（与前端创建面试默认一致）
     interview_default_question_count: int = 8
 

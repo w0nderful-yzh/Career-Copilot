@@ -2,13 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Bot, Clock, Loader2, RotateCcw, Sparkles, User, X } from 'lucide-react';
 import { interviewApi } from '../../api/interview';
 import type { InterviewModeState } from '../../types/copilot';
-import type { InterviewQuestion } from '../../types/interview';
+import type { InterviewQuestion, ProfileImpact } from '../../types/interview';
 import {
   deriveInterviewView,
   interviewProgress,
   toInterviewerTurn,
   type InterviewTurn as Turn,
 } from '../../utils/interviewTurns';
+import ProfileImpactCard from './ProfileImpactCard';
 
 // Interview Mode 主工作区（Interview Mode 重构）：
 // - 顶部轻量状态栏：方向 · 题号进度 · 计时 · [结束面试]
@@ -33,6 +34,7 @@ export default function InterviewWorkspace({
   onChangeStatus,
   onExit,
   onReview,
+  onViewSession,
 }: {
   mode: InterviewModeState;
   /** 顶层状态变化（completed/error 时退出 Interview Mode 前回调） */
@@ -41,6 +43,8 @@ export default function InterviewWorkspace({
   onExit?: () => void;
   /** 用户点「让 Copilot 复盘」：由上层退出 Interview Mode 并发送 REVIEW_INTERVIEW action */
   onReview?: () => void;
+  /** 追溯入口（P3 待收口）：跳到面试记录页并定位该场次 */
+  onViewSession?: (sessionId: string) => void;
 }) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [current, setCurrent] = useState<InterviewQuestion | null>(null);
@@ -53,6 +57,8 @@ export default function InterviewWorkspace({
   const [submitting, setSubmitting] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [summary, setSummary] = useState<{ overallScore: number; categoryScores: Array<{ category: string; score: number }> } | null>(null);
+  // 本场带来的画像变化（P3 待收口）；拉取失败静默降级（结果卡本身不依赖它）
+  const [impact, setImpact] = useState<ProfileImpact | null>(null);
   const timerRef = useRef<number | null>(null);
   const pollRef = useRef<number | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -137,6 +143,11 @@ export default function InterviewWorkspace({
           overallScore: report.overallScore,
           categoryScores: report.categoryScores,
         });
+        // 画像变化是旁路增强：拉不到就降级为只显示报告分，不阻塞结果卡
+        interviewApi
+          .getProfileImpact(mode.sessionId)
+          .then((result) => setImpact(result))
+          .catch((err) => console.error('拉取画像变化失败:', err));
         stopTimers();
         onChangeStatus({ ...mode, status: 'completed' });
       } else if (s.status === 'COMPLETED') {
@@ -300,6 +311,10 @@ export default function InterviewWorkspace({
                   </span>
                 ))}
               </div>
+              {/* P3 待收口：不止展示最新静态分，还要说清「这场让画像变了什么、凭什么」 */}
+              {impact && impact.skills.length > 0 && onViewSession && (
+                <ProfileImpactCard impact={impact} onViewSession={onViewSession} />
+              )}
               <div className="mt-4 flex flex-wrap justify-center gap-2">
                 {onReview && (
                   <button

@@ -12,6 +12,7 @@ import type { CopilotMessage } from '../../types/copilot';
 import {
   jobApi,
   skillProfileApi,
+  type DeclaredSkill,
   type SkillProfileSkill,
 } from '../../api/agentChat';
 
@@ -60,7 +61,7 @@ type ProfileState =
   | { status: 'loading' }
   | { status: 'error' }
   | { status: 'empty' }
-  | { status: 'ready'; skills: SkillProfileSkill[] };
+  | { status: 'ready'; skills: SkillProfileSkill[]; declared: DeclaredSkill[] };
 
 /** 会话绑定 JD 的标题（activeJobId 存在时拉详情；失败静默，回落附件文件名展示） */
 function useBoundJobTitle(activeJobId: number | null | undefined): string | null {
@@ -93,7 +94,12 @@ function ProfileSection() {
         const profile = await skillProfileApi.get();
         if (cancelled) return;
         const skills = profile.skills ?? [];
-        setState(skills.length > 0 ? { status: 'ready', skills } : { status: 'empty' });
+        const declared = profile.declaredSkills ?? [];
+        setState(
+          skills.length > 0 || declared.length > 0
+            ? { status: 'ready', skills, declared }
+            : { status: 'empty' },
+        );
       } catch {
         if (!cancelled) setState({ status: 'error' });
       }
@@ -139,6 +145,26 @@ function ProfileSection() {
               </span>
             </div>
           ))}
+        {state.status === 'ready' && state.declared.length > 0 && (
+          <div className="border-t border-dashed border-slate-200 pt-2 dark:border-slate-600">
+            <p
+              className="text-[11px] font-semibold text-slate-400 dark:text-slate-500"
+              title="结构化简历里列出了这些技能，但还没有面试证据可以评分"
+            >
+              简历已列 · 待验证
+            </p>
+            <div className="mt-1.5 flex flex-wrap gap-1">
+              {state.declared.map((item) => (
+                <span
+                  key={item.skill}
+                  className="rounded bg-slate-50 px-1.5 py-0.5 text-[11px] text-slate-500 dark:bg-slate-700/50 dark:text-slate-300"
+                >
+                  {item.skill}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </section>
   );

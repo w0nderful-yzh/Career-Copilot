@@ -468,6 +468,14 @@ export default function CopilotPage() {
     abortRef.current?.abort();
   }, []);
 
+  /** 画像变化的追溯入口（P3 待收口）：跳到面试记录页并定位该场次 */
+  const viewInterviewSession = useCallback(
+    (sessionId: string) => {
+      navigate(ROUTES.interviewHistory, { state: { highlightSessionId: sessionId } });
+    },
+    [navigate],
+  );
+
   /**
    * 让 Copilot 复盘指定面试会话（REVIEW_INTERVIEW action）。
    *
@@ -603,6 +611,7 @@ export default function CopilotPage() {
             onChangeStatus={setInterviewMode}
             onExit={() => void exitInterviewWithSummary(interviewMode)}
             onReview={() => void reviewInterview(interviewMode.sessionId, interviewMode.title)}
+            onViewSession={viewInterviewSession}
           />
         ) : (
           <>

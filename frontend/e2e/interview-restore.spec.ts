@@ -273,4 +273,88 @@ test.describe('Interview Mode 刷新恢复', () => {
     await expect(page.getByRole('button', { name: '结束面试' })).toHaveCount(0);
     await expect(page.getByText('本场复盘：Java 72 分。')).toBeVisible();
   });
+
+  test('结果卡展示本场画像变化，并提供可用的场次追溯入口', async ({ page }) => {
+    await mockConversation(page);
+    await page.route(
+      /\/api\/agent\/conversations\/\d+\/messages$/,
+      (route) => route.fulfill(result(200, 'success', null)),
+    );
+
+    let finished = false;
+    await page.route(sessionUrl, (route) =>
+      route.fulfill(
+        result(200, 'success', {
+          sessionId: SESSION_ID,
+          resumeText: '',
+          totalQuestions: sessionQuestions.length,
+          currentQuestionIndex: finished ? 4 : 2,
+          questions: sessionQuestions,
+          status: finished ? 'EVALUATED' : 'IN_PROGRESS',
+          adaptive: true,
+        }),
+      ),
+    );
+    await page.route(completeUrl, (route) => {
+      finished = true;
+      return route.fulfill(result(200, 'success', null));
+    });
+    await page.route(reportUrl, (route) =>
+      route.fulfill(
+        result(200, 'success', {
+          overallScore: 72,
+          categoryScores: [{ category: 'Java', score: 72 }],
+        }),
+      ),
+    );
+    // 差分来自 Java 的证据重算；这里给一条「涨」与一条「本场新增」
+    await page.route(new RegExp(`/api/interview/sessions/${SESSION_ID}/profile-impact$`), (route) =>
+      route.fulfill(
+        result(200, 'success', {
+          sessionId: SESSION_ID,
+          skills: [
+            {
+              skill: 'Java',
+              beforeScore: 60,
+              afterScore: 72,
+              delta: 12,
+              sessionEvidences: [
+                { sourceId: `${SESSION_ID}:0`, questionIndex: 0, score: 80, occurredAt: '2026-09-15T10:05:00' },
+                { sourceId: `${SESSION_ID}:2`, questionIndex: 2, score: 64, occurredAt: '2026-09-15T10:12:00' },
+              ],
+            },
+            {
+              skill: 'Kafka',
+              beforeScore: null,
+              afterScore: 55,
+              delta: 0,
+              sessionEvidences: [
+                { sourceId: `${SESSION_ID}:1`, questionIndex: 1, score: 55, occurredAt: '2026-09-15T10:09:00' },
+              ],
+            },
+          ],
+        }),
+      ),
+    );
+
+    await page.goto('/copilot');
+    await expect(page.getByText('Q1: JVM 内存模型？')).toBeVisible();
+
+    await page.getByRole('button', { name: '结束面试' }).click();
+    await expect(page.getByText('本场画像变化')).toBeVisible({ timeout: 15000 });
+
+    // 有变化的排前：Java（|12|）在 Kafka（新增）之前
+    const card = page.locator('text=本场画像变化').locator('xpath=ancestor::div[1]');
+    await expect(card.getByText('60 → 72')).toBeVisible();
+    await expect(card.getByText('+12')).toBeVisible();
+    await expect(card.getByText('本场新增')).toBeVisible();
+
+    // 展开 → 证据落回具体题号与时间，并可跳转到面试记录页定位该场次
+    await card.getByRole('button', { name: /Java/ }).first().click();
+    await expect(card.getByText('面试 · 第 1 题')).toBeVisible();
+    await expect(card.getByText('2026-09-15 10:05')).toBeVisible();
+
+    await card.getByRole('button', { name: '查看该场面试 →' }).first().click();
+    await expect(page).toHaveURL(/\/interviews/);
+  });
 });

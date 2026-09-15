@@ -216,7 +216,7 @@
 
 - [ ] **P4-4b 动态行为集扩展**：Follow-up 类型扩展（SCENARIO/WHY 等）+ 候选池无合适题时 LLM 动态生题（fallback，结构化输出 + 写回池）
 - [ ] **P4-5 报告增强（P4 侧）**：逐题评估可携带 difficulty/expectedPoints → 报告生成时若已有逐题数据可补充 per-skill 引用（Profile 聚合链路 P3 已通，闭环二右半段依赖核心三）
-- [ ] **P4-6b 画像联动增强**：面试后 Copilot 按新画像给下一步建议（"JVM 54→61"，需 Java 报告/画像差分数据可用后接入）
+- [ ] **P4-6b 画像联动增强**：面试后 Copilot 按新画像给下一步建议（"JVM 54→61"）——**差分数据已就绪**（`GET /api/interview/sessions/{id}/profile-impact`，P3 待收口产出），仅剩接入与话术
 - [ ] **P4-7 /interview-hub 重定位（可选收尾）**：默认最近面试列表，仅点「创建自定义面试」展开完整配置
 
 **验收**（对齐 Inline §28 MVP 十项 + §30 四个 Case）：自然语言发起 → 推荐 → 确认创建 → 内嵌答题 → 同主题追问不重复、难度可升降 → 结果卡 → Evidence 更新画像 → Copilot 给出下一步建议；全程停留在 /copilot。
@@ -309,6 +309,11 @@ Voice Agent 重构（现有语音面试保留原样）
 | **已主动退出的面试会话不再被旧信号块拉回**（2026-09-15） | 退出时追加「面试完成摘要」会让 messages 变化，自动进入 Interview Mode 的 effect 会重新扫描到那个旧 `interview_session` 块。用 `closedInterviewSessionsRef` 记录已退出的 session 来阻断 |
 | **AI 面试复盘走「指定 session」而非「最近一场」**（2026-09-15） | 面试记录页的「让 Copilot 复盘这场面试」带 `reviewSessionId` 跳 `/copilot`，由该页发起 `REVIEW_INTERVIEW` action（payload `{sessionId}`），实现对指定场次的逐题复盘。为此 `CopilotOutletContext` 增加 `conversationsLoaded`，区分「还没加载」与「加载完确实为空」，避免带 action 跳转时误建新会话 |
 | **集成测试用内存 store 代替 Redis**（2026-09-15） | 「缓存失效 → 按 DB 重建」是恢复路径的核心。若用「依次返回两个 stub」的写法，等于把预期结果直接塞回被测代码；让 `saveSession` 真写入、`getSession` 真读出，答案回填逻辑才真正被验证 |
+| **简历来源以「声明型证据」入画像，不参与聚合**（2026-09-15） | 简历侧没有逐技能分（结构化 skills 只有技能名，分析只有四个维度分）。给未验证的技能编分会破坏 Core-4「画像分必须能由证据逐条还原」；声明证据（score=NULL）只表达「简历列过、还没考过」，恰好是 focus 选择与画像展示最需要的信息 |
+| **简历声明的同步时机 = 用户确认结构化简历之后，且整体替换**（2026-09-15） | 解析结果未经确认不算权威；增量写入会在重新解析/纠正后留下永远清不掉的幽灵技能，故按 resumeId 整体替换 |
+| **focus 必须真正影响出题，而不是展示**（2026-09-15） | 此前 focus 从未进 Java（纯装饰）——用户会看到「重点考察 JVM」然后照样被问 MySQL。透传后在 `focusOn` 按 key/label 大小写不敏感裁剪分类；**未命中任何分类时返回原方向全量分类**：空分类会让出题 prompt 失去依据，比没聚焦严重得多 |
+| **focus 白名单遵循「LLM 判语义、代码控边界」**（2026-09-15） | 技能名到分类的映射是语义问题（JVM→Java），交给 LLM；但只有确实存在于该方向 categories 的分类才下发（key 精确 → label 精确 → 双向子串容忍 "SQL"→"MySQL"），全被拦掉时用画像的确定性候选兜底（简历已列未考 > 低分 <60，阈值与前端色阶一致） |
+| **画像差分零新增存储，before/after 都由证据重算**（2026-09-15） | before = 排除本场证据的均值、after = 含本场证据的均值，与聚合器同口径；证据表已带来源/分数/时间，差分与追溯都能从它还原。本场首次考到的技能 before=null 且 delta=0——不报一个虚高的「涨幅」 |
 
 ---
 
@@ -342,11 +347,12 @@ Todo 原始统计为 **32 / 48 项勾选（约 66.7%）**。由于列表中包�
 > **工程基线（2026-09-14 更新）**：P6-0 已完成 —— Java / Python / Frontend 三端质量门禁全部转绿，并已固化到 CI（含原 CI 从未触发的分支配置修复）。后续功能累计不得再引入失败基线。详见「四、验证基线问题」与「五、P6-0」。
 > **P1 待收口进度**：**4 项全部完成**（Composer 内联错误 / 停止生成三态落库 / 加载与错误态 + 重发入口 / 会话重命名与归档恢复）。另完成一项主动性能优化（P6-5）。
 > **P4 待修正进度**：**6 项全部完成**（合并元数据 / 按实际已提问轮次恢复 / 退出不被拉回 / 进度分母 / REVIEW_INTERVIEW 真实入口 / 四项集成测试）。P4 二期四项按原计划未动。
+> **P3 待收口进度**：**4 项全部完成**（简历声明型证据 / 提案读画像选 focus 并真正生效 / 结果卡画像变化 / 场次追溯入口）。三个设计决定（声明型证据不参与聚合、focus 透传到 Java、结果卡展示）已与 boss 确认。
 
 | 模块 | 代码审计状态 | 当前判断 |
 |---|---|---|
 | P1 Copilot 主链路 | 基本完成 | Agent、SSE、会话持久化和 Checkpoint 已实现；异常反馈、停止状态和会话管理仍需收口 |
-| P3 能力画像 | 基本完成 | Evidence、聚合、查询和展示已实现；画像驱动下一场专项面试尚未闭环 |
+| P3 能力画像 | 基本完成 | Evidence、聚合、查询、展示已实现；简历声明证据、提案 focus 画像化、画像变化与追溯已补齐（2026-09-15）；「描述强度约束」并入 P2-1 |
 | P2 简历优化 | 部分完成 | 结构化版本、Proposal、Patch、预览和导出已实现；解析纠错、模式语义和真实性校验仍不完整 |
 | P4 自适应面试 | 基本完成 | Turn Evaluation、决策策略、报告回流已实现；题目元数据、恢复、退出、复盘四处断点已修（2026-09-15）；二期四项待做 |
 | P5 三条产品闭环 | 未完成 | 尚无一条达到稳定端到端验收及自动化回归标准 |
@@ -415,10 +421,29 @@ Todo 原始统计为 **32 / 48 项勾选（约 66.7%）**。由于列表中包�
 
 ### P3 待收口
 
-- [ ] 将 Resume Analysis 等可信来源接入 Evidence；当前主要证据仍是 `INTERVIEW_TURN`
-- [ ] 面试提案读取 Skill Profile，自动将低分技能转换为 focusSkills
-- [ ] 面试完成后展示画像变化及对应 Evidence，而不只展示最新静态分数
-- [ ] 为分数变化提供来源、时间和面试场次追溯入口
+> **进度（2026-09-15）**：四项全部完成，P3 待收口清零。三个设计决定已与 boss 确认：简历来源走「声明型证据」、focus 透传到 Java 真正生效、画像变化展示在面试结果卡。
+
+- [x] 将 Resume Analysis 等可信来源接入 Evidence；当前主要证据仍是 `INTERVIEW_TURN`
+  - **关键侦察**：简历侧没有逐技能分可用——结构化简历的 `skills[]` 只有 category/content（技能名、无分），简历分析只有四个维度分（内容/结构/技能匹配/表达/项目），都不是技能分
+  - 设计（boss 确认）：**声明型证据**——`V20260915` 让 `skill_evidence.score` 可空，RESUME 来源以 `score=NULL` 写入，表达「简历列过这项技能」；聚合器只取有分证据算均值，画像分仍完全由可量化的面试证据决定（忠于 Core-4「分必须能由证据逐条还原」，不给未验证的技能编分）
+  - 技能名归一化：`ResumeSkillNormalizer` 确定性拆分（分隔符/连接词/修饰词/尾部泛化词/截断上限），不引入 LLM——技能名会进 focus 与画像展示，不应由模型即席生成；刻意不按空格拆（Spring Boot 是一个技能）、不做同义词归并（交给提案节点的语义判断）
+  - 同步时机：**用户确认结构化简历**之后（`ResumeVersionService.confirmVersion`，未确认的解析不算权威），整体替换该简历的旧声明（防幽灵技能）；简历删除时级联清理
+  - 查询侧：`SkillProfileResponse` 新增 `declaredSkills`（简历已列、尚无评分证据的技能）；已考过的技能按大小写不敏感排除，不会同时出现在两个列表
+  - 已验证：`ResumeSkillNormalizerTest` 9 项、`ResumeEvidenceExtractorTest` 3 项、`SkillProfileAggregatorTest` 新增 4 项、`SkillProfileQueryServiceTest` 3 项；迁移在真库由集成测试链路执行
+- [x] 面试提案读取 Skill Profile，自动将低分技能转换为 focusSkills
+  - **关键侦察**：focus 此前是**纯装饰**——`_create_interview_action` 调 Java 时只传 skillId/difficulty/questionCount/resumeId，focus 从未进 Java，且 Java `create_interview` Tool 也没有该参数；用户会看到「重点考察 JVM」然后照样被问 MySQL
+  - 修复（boss 确认透传生效）：`CreateInterviewRequest` 新增 `focusCategories`；`InterviewSkillService.focusOn` 按分类 key 或 label 大小写不敏感裁剪该方向的出题分类，**一个都没命中时返回原方向全量分类**（focus 是「重点考察」而非「只考这些」，空分类会让出题 prompt 失去依据）；Agent Tool 参数表同步透出
+  - 提案节点：读画像（失败降级）→ prompt 注入画像参考（含低分技能与简历已列未考）→ LLM 返回的 focus 按 `_sanitize_focus` 白名单收进该方向真实分类（key 精确 → label 精确 → 双向子串容忍 "SQL"→"MySQL"）→ 全被拦掉时用 `_profile_focus_hints` 确定性候选兜底（简历已列未考 > 低分 <60，与前端色阶阈值一致）；模型异常的回落路径同样取画像候选
+  - 已验证：`tests/test_interview_proposal.py` 9 项（含「LLM 臆造分类被拦掉后落到画像候选」「模型缺失时默认方向仍取画像候选」）
+- [x] 面试完成后展示画像变化及对应 Evidence，而不只展示最新静态分数
+  - 新增 `GET /api/interview/sessions/{sessionId}/profile-impact`（`SkillProfileImpactService`）：**差分是派生的、零新增存储**——before = 排除本场证据的均值、after = 含本场证据的均值，与聚合器同口径；声明型证据不参与
+  - 本场首次考到的技能 `beforeScore=null` 且 `delta=0`（不报虚高涨幅，前端渲染为「本场新增」）；结果卡新增 `ProfileImpactCard`：前后分、分数条（与侧栏同色阶）、变化徽标，展开后是本场逐题证据
+  - 已验证：`SkillProfileImpactServiceTest` 5 项；P4-6b（Copilot 建议话术）可消费同一端点，本轮按计划未做
+- [x] 为分数变化提供来源、时间和面试场次追溯入口
+  - 每条变化的展开区显示 `面试 · 第 N 题 · 分数 · 时间`（题号由 evidence.sourceId 解析，解析失败降级为「场次记录」）
+  - 追溯入口：每条变化提供「查看该场面试 →」跳转面试记录页，按 sessionId 定位并高亮该行（标注「画像变化来源」）；同一场多条证据去重后只留一个入口
+  - Agent 侧同步补齐：`summarize_skill_profile` 的证据摘要此前丢弃了来源类型与时间，现改为 `面试 {sessionId} 第N题 = X分 @日期`，并单列简历声明行
+  - 已验证：`utils/profileImpact.ts` 7 项单测 + E2E `interview-restore.spec.ts`「结果卡展示本场画像变化，并提供可用的场次追溯入口」（真实点击跳转断言 URL）
 
 ### P2 待修正
 
@@ -502,9 +527,9 @@ Todo 原始统计为 **32 / 48 项勾选（约 66.7%）**。由于列表中包�
 
 ### P6-0 先恢复工程质量门禁 ✅（2026-09-14 完成）
 
-- [x] Java 全量测试通过 —— `./gradlew :app:test --no-daemon`：**410 测试 / 0 失败 / 0 错误 / 49 跳过**（跳过均为显式声明的预期行为；DB 在线时画像集成用例真跑，故比离线条目少 1 个跳过）
-- [x] Python pytest、ruff、mypy 全部通过 —— ruff 0 错、mypy 0 错（40 源文件）、pytest 79 通过
-- [x] Frontend build、unit test、E2E 全部通过 —— build 成功且 CSS 语法警告清零、**8 个单测脚本 37 项通过**、Playwright E2E **10 项通过**
+- [x] Java 全量测试通过 —— `./gradlew :app:test --no-daemon`：**442 测试 / 0 失败 / 0 错误 / 49 跳过**（跳过均为显式声明的预期行为；DB 在线时画像集成用例真跑，故比离线条目少 1 个跳过）
+- [x] Python pytest、ruff、mypy 全部通过 —— ruff 0 错、mypy 0 错（40 源文件）、pytest **88** 通过
+- [x] Frontend build、unit test、E2E 全部通过 —— build 成功且 CSS 语法警告清零、**9 个单测脚本 44 项通过**、Playwright E2E **11 项通过**
 - [x] 将上述命令固化到 CI，禁止带失败基线继续累计功能
   - **关键修复**：`.github/workflows/ci.yml` 原触发分支写的是 `master`，而本仓库真实分支是 `main`（默认）+ `dev`，`master` 只存在于 upstream 父仓库 —— 即原 CI **从未被触发过**。已改为 `main` + `dev`
   - 新增 `agent` job：`uv sync --frozen` → `ruff check src tests` → `mypy src` → `pytest`（原 CI 完全没有 Python 门禁）

@@ -1,5 +1,5 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {useNavigate} from 'react-router-dom';
+import {useLocation, useNavigate} from 'react-router-dom';
 import {AnimatePresence, motion} from 'framer-motion';
 import {CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis} from 'recharts';
 import {historyApi} from '../api/history';
@@ -223,6 +223,7 @@ export default function InterviewHistoryPage({
   knowledgeBaseId,
 }: InterviewHistoryPageProps) {
   const navigate = useNavigate();
+  const location = useLocation();
   const knowledgeBaseFilterId = knowledgeBaseId ?? null;
   const isKnowledgeBaseView = knowledgeBaseFilterId !== null && !Number.isNaN(knowledgeBaseFilterId);
   const [items, setItems] = useState<UnifiedInterviewItem[]>([]);
@@ -236,11 +237,32 @@ export default function InterviewHistoryPage({
   const [deleteItem, setDeleteItem] = useState<UnifiedInterviewItem | null>(null);
   const [exporting, setExporting] = useState<string | null>(null);
   const [retryingVoiceSessionId, setRetryingVoiceSessionId] = useState<number | null>(null);
+  // P3 待收口：画像变化卡的「查看该场面试」带 sessionId 跳转过来，定位并高亮该场次
+  const highlightSessionId =
+    (location.state as { highlightSessionId?: string } | null)?.highlightSessionId ?? null;
+  const highlightRowRef = useRef<HTMLTableRowElement | null>(null);
   const pollingRef = useRef<number | null>(null);
   const skillsRef = useRef<SkillDTO[]>([]);
   const skillsLoadedRef = useRef(false);
 
   const hasActiveKbFilters = categoryFilter !== 'all' || timeFilter !== 'all' || completionFilter !== 'all';
+
+  // 定位被追溯的场次：列表是异步加载的，等 items 就绪后再滚动
+  useEffect(() => {
+    if (!highlightSessionId) return;
+    const timer = window.setTimeout(() => {
+      highlightRowRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [highlightSessionId, items.length]);
+
+  /** 命中被追溯场次：文字面试的 sessionId 与行 id 一致，语音面试则匹配 voiceSessionId */
+  const isHighlightedRow = useCallback(
+    (item: UnifiedInterviewItem) =>
+      highlightSessionId !== null &&
+      (item.sessionId === highlightSessionId || item.id === highlightSessionId),
+    [highlightSessionId],
+  );
 
   const resetKbFilters = () => {
     setCategoryFilter('all');
@@ -719,7 +741,12 @@ export default function InterviewHistoryPage({
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: index * 0.05 }}
                     onClick={() => handleRowClick(item)}
-                    className="border-b border-slate-50 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50 cursor-pointer transition-colors group"
+                    ref={isHighlightedRow(item) ? highlightRowRef : undefined}
+                    className={`border-b border-slate-50 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50 cursor-pointer transition-colors group ${
+                      isHighlightedRow(item)
+                        ? 'bg-primary-50/60 ring-2 ring-inset ring-primary-400 dark:bg-primary-900/20'
+                        : ''
+                    }`}
                   >
                     <td className="px-6 py-4">
                       <TypeBadge item={item} />
@@ -734,6 +761,15 @@ export default function InterviewHistoryPage({
                         <div>
                           <div className="flex items-center gap-2 flex-wrap">
                             <p className="font-medium text-slate-800 dark:text-white">{item.title}</p>
+                            {isHighlightedRow(item) && (
+                              <span
+                                className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-primary-50 dark:bg-primary-900/30 text-primary-600 dark:text-primary-300 rounded text-xs font-medium"
+                                title="画像变化来自这一场面试"
+                              >
+                                <Sparkles className="w-3 h-3" />
+                                画像变化来源
+                              </span>
+                            )}
                             {isKnowledgeBaseView && item.type === 'text' && (
                               <span
                                 className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 rounded text-xs font-medium"

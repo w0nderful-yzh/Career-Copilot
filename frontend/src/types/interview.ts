@@ -38,6 +38,32 @@ export interface InterviewQuestion {
   sourceContext?: string | null;
 }
 
+// ===== 本场面试的画像变化（P3 待收口） =====
+
+/** 本场贡献的一条证据：题号由 sourceId（"sessionId:questionIndex"）解析而来 */
+export interface ImpactEvidence {
+  sourceId: string;
+  questionIndex: number | null;
+  score: number;
+  occurredAt?: string | null;
+}
+
+/** 单个技能的前后分与差值 */
+export interface SkillImpact {
+  skill: string;
+  /** null = 该技能本场首次被考到（此前无任何有分证据） */
+  beforeScore: number | null;
+  afterScore: number;
+  /** 0 表示无变化；beforeScore 为 null（首次考到）时也是 0，由前端渲染成「新增」 */
+  delta: number;
+  sessionEvidences: ImpactEvidence[];
+}
+
+export interface ProfileImpact {
+  sessionId: string;
+  skills: SkillImpact[];
+}
+
 export interface CreateInterviewRequest {
   resumeText: string;
   questionCount: number;

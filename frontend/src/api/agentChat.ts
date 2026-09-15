@@ -109,21 +109,34 @@ export const conversationApi = {
 
 // ===== 技能画像（Java Profile 模块，P3-2） =====
 
+export type ProfileEvidenceSource = 'RESUME' | 'INTERVIEW_SESSION' | 'INTERVIEW_TURN';
+
+export interface ProfileEvidence {
+  sourceType: ProfileEvidenceSource;
+  sourceId: string;
+  /** null = 声明型证据（简历列出的技能，尚无评分，不参与聚合） */
+  score: number | null;
+  occurredAt?: string | null;
+}
+
 export interface SkillProfileSkill {
   skill: string;
   score: number;
   evidenceCount: number;
   updatedAt?: string | null;
-  evidences?: Array<{
-    sourceType: 'RESUME' | 'INTERVIEW_SESSION' | 'INTERVIEW_TURN';
-    sourceId: string;
-    score: number;
-    occurredAt?: string | null;
-  }>;
+  evidences?: ProfileEvidence[];
+}
+
+/** 简历已列、尚无评分证据的技能（P3 待收口："待验证"） */
+export interface DeclaredSkill {
+  skill: string;
+  resumeId: string;
+  declaredAt?: string | null;
 }
 
 export interface SkillProfileResponse {
   skills: SkillProfileSkill[];
+  declaredSkills?: DeclaredSkill[];
 }
 
 export const skillProfileApi = {

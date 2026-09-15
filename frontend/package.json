@@ -15,7 +15,8 @@
     "test:copilot-action": "tsx --test src/constants/copilotAction.test.ts",
     "test:copilot-turn-status": "tsx --test src/utils/copilotTurnStatus.test.ts",
     "test:code-language": "tsx --test src/utils/codeLanguage.test.ts",
-    "test:interview-turns": "tsx --test src/utils/interviewTurns.test.ts"
+    "test:interview-turns": "tsx --test src/utils/interviewTurns.test.ts",
+    "test:profile-impact": "tsx --test src/utils/profileImpact.test.ts"
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4.1.18",

@@ -151,6 +151,12 @@ export interface SkillProfileBlock {
     evidenceCount?: number | null;
     evidences?: SkillEvidence[] | null;
   }>;
+  /** 简历已列、尚无评分证据的技能（P3 待收口）：无分数，仅表达「待验证」 */
+  declaredSkills?: Array<{
+    skill?: string | null;
+    resumeId?: string | null;
+    declaredAt?: string | null;
+  }>;
 }
 
 /** 单条简历优化建议（P2-1）：JSON-path 定位的 Diff */

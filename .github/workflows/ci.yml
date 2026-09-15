@@ -135,6 +135,7 @@ jobs:
           pnpm run test:copilot-turn-status
           pnpm run test:code-language
           pnpm run test:interview-turns
+          pnpm run test:profile-impact
 
       - name: Build frontend
         run: pnpm run build

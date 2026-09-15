@@ -4,6 +4,7 @@ import type {
   CurrentQuestionResponse,
   InterviewReport,
   InterviewSession,
+  ProfileImpact,
   SubmitAnswerRequest,
   SubmitAnswerResponse
 } from '../types/interview';
@@ -76,6 +77,18 @@ export const interviewApi = {
     return request.get<InterviewReport>(`/api/interview/sessions/${sessionId}/report`, {
       timeout: 180000, // 3分钟超时，AI评估需要时间
     });
+  },
+
+  /**
+   * 本场面试带来的画像变化（P3 待收口）。
+   *
+   * 差分由 Java 按证据重算（before = 排除本场 / after = 含本场），无额外存储；
+   * 每条变化带逐题证据（题号 + 时间）供追溯。失败由调用方自行降级（不阻塞结果卡）。
+   */
+  async getProfileImpact(sessionId: string): Promise<ProfileImpact> {
+    return request.get<ProfileImpact>(
+      `/api/interview/sessions/${sessionId}/profile-impact`
+    );
   },
 
   /**

@@ -424,7 +424,8 @@ function SkillProfileRow({
 }
 
 function SkillProfileBlockView({ block }: { block: SkillProfileBlock }) {
-  if (block.skills.length === 0) return null;
+  const declared = block.declaredSkills ?? [];
+  if (block.skills.length === 0 && declared.length === 0) return null;
   return (
     <div className="mt-3 space-y-2 rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-800">
       <div className="flex items-center gap-2 text-xs font-semibold text-slate-500 dark:text-slate-400">
@@ -437,6 +438,24 @@ function SkillProfileBlockView({ block }: { block: SkillProfileBlock }) {
       {block.skills.map((skill) => (
         <SkillProfileRow key={skill.skill ?? 'unknown'} skill={skill} />
       ))}
+      {declared.length > 0 && (
+        <div className="border-t border-dashed border-slate-200 pt-2 dark:border-slate-600">
+          <p className="text-xs font-semibold text-slate-400 dark:text-slate-500">
+            简历已列 · 待验证
+            <span className="ml-1 font-normal">（还没有面试证据，建议优先考察）</span>
+          </p>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {declared.map((item) => (
+              <span
+                key={item.skill ?? 'unknown'}
+                className="rounded-lg bg-slate-50 px-2 py-1 text-xs text-slate-500 dark:bg-slate-700/50 dark:text-slate-300"
+              >
+                {item.skill ?? '未知技能'}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

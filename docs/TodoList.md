@@ -18,7 +18,9 @@
 ./scripts/dev.sh logs [java|agent|web]
 ```
 
-⚠️ 已知问题：bash 会话被杀会连带杀掉后台子进程（建议启动用 `setsid`/`start_new_session` 脱离进程组）。`wait_java` 的 curl 无超时会挂起与「Agent 先于 Java 启动导致配置同步失败」两问题已修复（curl 加 `-m 2`；启动顺序改为 Java 就绪后再启动 Agent，2026-08-31）。
+根目录 `.env` 由脚本自动加载（数据库 / 存储 / 模型密钥），**已导出的环境变量优先**——`SERVER_PORT=... ./scripts/dev.sh start` 这类显式传参不会被 `.env` 覆盖（2026-09-15）。此前 `.env` 不注入 Java 进程，而 `application.yml` 的密码默认值是 `123456`、compose 实际用的是 `.env` 里的值，导致 `dev.sh start` 必然连库失败，且报错与「数据库没起」难以区分。
+
+⚠️ 已知问题：bash 会话被杀会连带杀掉后台子进程（建议启动用 `setsid`/`start_new_session` 脱离进程组；实测 `start` 后 5173 曾因进程组回收被带走，稍后复查自行恢复）。`wait_java` 的 curl 无超时会挂起与「Agent 先于 Java 启动导致配置同步失败」两问题已修复（curl 加 `-m 2`；启动顺序改为 Java 就绪后再启动 Agent，2026-08-31）。`status` 在 `start` 末尾立刻执行，Agent/Web 尚未监听端口时会显示「未运行」，属抢跑而非故障。
 
 ---
 
@@ -314,6 +316,14 @@ Voice Agent 重构（现有语音面试保留原样）
 | **focus 必须真正影响出题，而不是展示**（2026-09-15） | 此前 focus 从未进 Java（纯装饰）——用户会看到「重点考察 JVM」然后照样被问 MySQL。透传后在 `focusOn` 按 key/label 大小写不敏感裁剪分类；**未命中任何分类时返回原方向全量分类**：空分类会让出题 prompt 失去依据，比没聚焦严重得多 |
 | **focus 白名单遵循「LLM 判语义、代码控边界」**（2026-09-15） | 技能名到分类的映射是语义问题（JVM→Java），交给 LLM；但只有确实存在于该方向 categories 的分类才下发（key 精确 → label 精确 → 双向子串容忍 "SQL"→"MySQL"），全被拦掉时用画像的确定性候选兜底（简历已列未考 > 低分 <60，阈值与前端色阶一致） |
 | **画像差分零新增存储，before/after 都由证据重算**（2026-09-15） | before = 排除本场证据的均值、after = 含本场证据的均值，与聚合器同口径；证据表已带来源/分数/时间，差分与追溯都能从它还原。本场首次考到的技能 before=null 且 delta=0——不报一个虚高的「涨幅」 |
+| **优化模式判定用确定性规则，不用 LLM**（2026-09-16） | 模式直接决定落库的优化坐标系与 prompt 分支，判错会让「按 JD 优化」退化成通用优化；规则是代码边界（显式方向 > JD 信号 > 会话绑定 JD > 通用），可单测可复现，且不额外消耗一次模型调用。语义模糊时宁可澄清（ChoiceBlock）也不猜 |
+| **「按这份 JD」是指代不是方向**（2026-09-16） | 方向句式会把「这份 JD」抽成候选方向；若直接采信，JD 定向会被误判为 TARGET_DIRECTION 并把「这份 JD」当方向写进 prompt。故方向候选先过「指代/泛指」判定（指示词前缀 + JD 信号词），命中则按 JD 信号收敛 |
+| **澄清只在影响方向时发生，且澄清期间不落库**（2026-09-16） | 澄清是为数不多会打断用户的操作，只问「JD 缺失」「方向未明」两类真正改变结果的问题；拿不到候选（如技能方向列表不可用）就不追问，直接按通用优化继续。提案在澄清阶段零副作用，避免悬挂 PENDING 提案污染 `getLatestPending` |
+| **优化坐标系必须随提案与版本落库**（2026-09-16） | `optimization_type` 与 `target_job_id`/`target_direction` 是「这条建议是相对什么坐标系提的」的唯一凭据。此前提案恒写 GENERAL、版本表的 `target_job_id` 从未被写入，导致 JD 定向在审计上不可追溯、用户也无法分辨两个版本的差别 |
+| **真实性校验以「原文出现过即放行」为判据**（2026-09-16） | 确定性校验的失败模式是误伤合规改写（把原文已有技术名/公司判成编造）。故所有检测都做大小写不敏感的原文存在性比对，公司实体再叠加虚词剥离与描述性短语拦截；宁可漏判也不误杀，漏判由 HITL 勾选与用户判断兜底 |
+| **经历事实由代码硬拦，表达改写才交给模型**（2026-09-16） | 「新增一段项目经历」「把公司名改掉」不是优化而是改事实，用户能在解析确认页自行修改，AI 提案不应越权。代码拦 `ADD/DELETE` 整段经历与身份字段改写，模型只做表达层重组 |
+| **解析纠错与确认同屏，不新开页面**（2026-09-16） | 解析错则 Patch/Preview/导出全错，所以纠错必须发生在「确认」这个门槛上；拆成独立页面会让同一决策出现两个入口，且用户可能在未修正的情况下从另一条路径确认 |
+| **self-review 配置化但默认关闭**（2026-09-16） | 风险与收益不对称：多一轮 LLM 只提升「表达/冗余」判断，真实性由确定性校验器保证；每轮却要多花一次调用和数秒等待。代码实现但默认 `rounds=0`，并限制为「只淘汰不新增」，等有质量证据再开 |
 
 ---
 
@@ -348,12 +358,13 @@ Todo 原始统计为 **32 / 48 项勾选（约 66.7%）**。由于列表中包�
 > **P1 待收口进度**：**4 项全部完成**（Composer 内联错误 / 停止生成三态落库 / 加载与错误态 + 重发入口 / 会话重命名与归档恢复）。另完成一项主动性能优化（P6-5）。
 > **P4 待修正进度**：**6 项全部完成**（合并元数据 / 按实际已提问轮次恢复 / 退出不被拉回 / 进度分母 / REVIEW_INTERVIEW 真实入口 / 四项集成测试）。P4 二期四项按原计划未动。
 > **P3 待收口进度**：**4 项全部完成**（简历声明型证据 / 提案读画像选 focus 并真正生效 / 结果卡画像变化 / 场次追溯入口）。三个设计决定（声明型证据不参与聚合、focus 透传到 Java、结果卡展示）已与 boss 确认。
+> **P2 待修正进度**：**7 项全部完成**（2026-09-16，见「三、P2 待修正」）。模式枚举经确认沿用设计文档 §24 与 DB CHECK 的 `TARGET_DIRECTION`（审计区原文写作 STRUCTURE，二者指同一意图）。
 
 | 模块 | 代码审计状态 | 当前判断 |
 |---|---|---|
 | P1 Copilot 主链路 | 基本完成 | Agent、SSE、会话持久化和 Checkpoint 已实现；异常反馈、停止状态和会话管理仍需收口 |
 | P3 能力画像 | 基本完成 | Evidence、聚合、查询、展示已实现；简历声明证据、提案 focus 画像化、画像变化与追溯已补齐（2026-09-15）；「描述强度约束」并入 P2-1 |
-| P2 简历优化 | 部分完成 | 结构化版本、Proposal、Patch、预览和导出已实现；解析纠错、模式语义和真实性校验仍不完整 |
+| P2 简历优化 | 基本完成 | 结构化版本、Proposal、Patch、预览和导出已实现；解析纠错、模式语义、真实性校验与拒绝入口已补齐（2026-09-16）；JD Gap 分析属 P5 闭环一，未做 |
 | P4 自适应面试 | 基本完成 | Turn Evaluation、决策策略、报告回流已实现；题目元数据、恢复、退出、复盘四处断点已修（2026-09-15）；二期四项待做 |
 | P5 三条产品闭环 | 未完成 | 尚无一条达到稳定端到端验收及自动化回归标准 |
 
@@ -447,13 +458,72 @@ Todo 原始统计为 **32 / 48 项勾选（约 66.7%）**。由于列表中包�
 
 ### P2 待修正
 
-- [ ] 增加简历解析纠错/补录页面；当前前端明确不提供结构化补录表单
-- [ ] 落实 GENERAL、STRUCTURE、JD_TARGETED 模式判定及上下文不足时的澄清流程
-- [ ] JD 定向优化时持久化 `JD_TARGETED` 和 `targetJobId`；禁止仍统一写为 `GENERAL`
-- [ ] 扩展确定性真实性校验：除新增数字外，还要识别新增技术栈、公司、项目和经历事实
-- [ ] “全选/全不选”后重新生成 Preview，保证选择状态与预览一致
-- [ ] 明确 Proposal 的 REJECTED 操作入口及审计状态流转
-- [ ] 评估是否启用配置化 self-review；没有质量证据前保持默认关闭
+> **进度（2026-09-16）**：七项全部完成。两个需要拍板的口径已确认：① 模式枚举沿用设计文档 §24 与 DB CHECK 的
+> `TARGET_DIRECTION`（审计区原文「STRUCTURE」与之指同一意图，不为命名新增迁移）；② 七项按 A（快赢）→ B（主链）
+> → C（前端大件）三批推进，每批跑通三端门禁。
+
+- [x] 增加简历解析纠错/补录表单；此前前端明确不提供结构化补录
+  - 新增 `ResumeContentEditor`：基本信息 + 教育/工作/项目/技能/自定义段的增删改，挂在简历详情页版本卡的
+    「解析确认」处——`[修改后再确认]` 展开表单，保存即调用 `confirmResumeVersion(id, correctedContent)`
+    （后端 P2-0 早已支持该请求体，缺的只是前端入口）
+  - 缺失字段按 `missingFields` 红框高亮 + 「未解析到，请补录」；姓名/联系方式不完整时如实提示
+    「可先保存，但补齐后导出的简历才完整」；bullets 与自定义段按「一行一条」编辑，空行落库前丢弃
+  - 未新增独立路由：纠错是「确认」这一步的一部分，拆成页面会让同一个门槛出现两个入口
+  - 已验证：`resumeContentEdit` 7 项纯函数单测（不可变增删改 / 组合缺失项 `experience/projects` 命中 /
+    关键字段门槛）+ build
+- [x] 落实 GENERAL、TARGET_DIRECTION、JD_TARGETED 模式判定及上下文不足时的澄清流程
+  - `determine_mode` 用**确定性规则**（不额外消耗一次模型调用，模式直接决定落库坐标系与 prompt 分支，
+    判错代价高）：显式方向 > JD 信号 > 会话绑定 JD > 通用；「按这份 JD 优化」里的「这份 JD」是指代而非方向，
+    按 JD 信号收敛为 JD_TARGETED；「按目标方向优化」这类只说方向不给具体值的输入留给澄清
+  - `context_check`：JD_TARGETED 但拿不到 JD → 澄清块（含「先按通用优化」确定性出口，**不落库提案**）；
+    TARGET_DIRECTION 但方向未明 → 用 Java 技能方向列表给出选项（拿不到列表就不追问，直接按通用优化走）
+  - 澄清选项经 `OPTIMIZE_RESUME` payload 回传 `mode`/`direction` 锁定用户选择，复用 P1-1/P1-4 的无状态 HITL 模式
+  - 已验证：`determine_mode` 规则测试 8 例 + graph 3 例（缺 JD 澄清且不落库 / TARGET_DIRECTION 落库模式与方向 /
+    澄清回传 mode 生效）
+- [x] JD 定向优化持久化 JD_TARGETED 与 targetJobId；不再统一写 GENERAL
+  - `V20260916`：`resume_optimization_proposals` 加 `target_job_id`/`target_direction`，
+    `resume_versions` 加 `target_direction`（纯加列，无外键——JD 删除不级联，与 `active_job_id` 悬挂兜底一致）
+  - `ResumePatchApplyService` 生成新版本时从提案继承 `optimizationType/targetJobId/targetDirection`：
+    此前硬编码 `"GENERAL"`，版本表那个 P2-0 就建好的 `target_job_id` 列**从未被写入过**
+  - 前端版本卡与 Copilot 优化卡片显示「定向 · Java 后端 / JD 定向」徽标，让模式在版本列表上可分辨
+  - 已验证：提案服务 2 例 + 应用服务 2 例，`ResumePatchApplyServiceTest` 全绿
+  - **真库验证（2026-09-15，Docker 环境）**：
+    - 增量路径：对已应用 15 条迁移的既有开发库 `interview_guide` 启动后端，日志确认
+      `Current version: 20260915 → Migrating to 20260916 → Successfully applied`，随后 Hibernate
+      `validate` 通过（证明新实体字段与迁移列一致），应用 6.2s 正常启动
+    - 空库路径：`POSTGRES_DB=cc_migration_check ./gradlew :app:cleanTest :app:test` 在全新空库跑完
+      **17 条迁移全部成功**；全量 **447 测试 / 0 失败 / 0 错误 / 46 跳过**（无 DB 时为 50 跳过），
+      `SkillProfilePipelineIntegrationTest` 由跳过转为真跑
+    - 端点实测：创建 JD_TARGETED 提案（targetJobId=2）→ `GET` 回显模式与 JD → `reject` 置 REJECTED
+      且写 `decidedAt` → 重复拒绝返回 `2011 提案已处理`；`GET /api/resume-versions/{id}` 透出
+      `optimizationType/targetJobId/targetDirection`。测试数据已删除，开发库还原
+- [x] 扩展确定性真实性校验：除数字外识别新增技术栈、公司、项目与经历事实
+  - 技术名词：词形规则（词内第二个大写 / 含 `.+#` / 含数字）+ 确定性技术词表兜底 `Java`/`Redis`/`Kafka`
+    这类单词技术名；「原文出现过即放行」（大小写不敏感）
+  - 公司机构：中文机构后缀实体 + 前置虚词剥离 + 描述性短语拦截（「负责公司核心系统」不误报）
+  - 经历事实：禁止 `ADD`/`DELETE` 整段 education/experience/projects；禁止改写公司/岗位/项目名/学校/
+    学历/起止时间/姓名/联系方式等身份字段
+  - 已验证：新增 4 个校验器单测；并修正原用例中被新规则正确拒绝的一条
+    （`精通 Java 与 Spring 生态` 在原文无 Spring 时属编造技术栈，旧规则放行、新规则拒绝）
+- [x] 「全选/全不选」后重新生成 Preview，保证选择状态与预览一致
+  - 根因：全选按钮只 `setSelectedIds` 未调度重渲，只有单条勾选走 `schedulePreview`——同一语义写了两份
+  - 修复：抽出 `togglePatchSelection` / `toggleAllPatchSelection` / `isAllPatchesSelected`，
+    单条与全选共用「改状态 + 调度重渲」同一路径，`locked`（已应用/已忽略）时统一不重渲
+  - 已验证：`resumePatchSelection` 5 项单测 + build
+- [x] 明确 Proposal 的 REJECTED 操作入口及审计状态流转
+  - 侦察结论：`REJECTED` 状态与 `transitionFromPending` 早已存在但**全仓无调用方**（仅单测引用），
+    PENDING 提案只能「应用」，否则永久悬挂——`getLatestPending` 每一轮都会把它取回来
+  - Java：`transitionFromPending` 改为返回落库实体；新增 `POST /api/resume-optimization/proposals/{id}/reject`
+    与 `GET /api/resume-optimization/proposals/{id}`（决策状态回显）
+  - 前端：优化卡片新增 `[全部忽略]`（与「应用勾选修改」构成对称出口）；卡片挂载时回显权威状态，
+    已应用/已忽略的提案刷新回放后不再显示成可操作
+  - 已验证：服务层 `PENDING → REJECTED` 单测（返回实体、记录 `decidedAt`、不改动 patches 供审计）
+- [x] 评估是否启用配置化 self-review —— **结论：保持默认关闭**
+  - 新增配置 `resume_self_review_rounds`（默认 0 = 关闭）。评估结论：每轮追加 1 次 LLM 调用与数秒等待，
+    而真实性已由确定性校验器兜底，当前没有质量证据说明多一轮评审的收益，故一期保持最小、默认不启用
+  - 代码按配置实现，边界为**只允许淘汰、不允许新增/改写**（改写会绕过真实性校验）；模型臆造的 patch id
+    一律忽略，淘汰后集合无变化立即终止（不空转）；评审失败不阻断主流程，已通过校验的建议照常展示
+  - 已验证：3 个单测（默认关闭不多调模型 / 开启后淘汰并如实告知 / 臆造 id 不改动集合）
 
 ### P4 待修正
 

@@ -12,11 +12,48 @@
 # 端口可通过环境变量覆盖:
 #   SERVER_PORT=8081 AGENT_PORT=8001 WEB_PORT=5173 ./scripts/dev.sh start
 #   （本机 8080/8000 被其他项目占用，默认使用 8081/8001）
+#
+# 根目录 .env 会自动加载（数据库 / 存储 / 模型密钥），**已导出的环境变量优先**：
+# 上面的 SERVER_PORT 等显式传参不会被 .env 覆盖（与 docker compose 读取 .env 的语义一致）。
 
 set -euo pipefail
 
 # ===== 配置 =====
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# 加载根目录 .env 到当前环境。
+#
+# 为什么需要它：Java 侧数据源默认密码是 123456，而 .env 里是 compose 实际使用的值；
+# 不加载会导致 bootRun 连库失败（密码不匹配），排障成本高且不易与「数据库没起」区分。
+#
+# 语义：已存在的环境变量优先（printenv 能区分「已设为空」与「未设置」，
+# 故显式传入的空值同样不会被 .env 覆盖）。
+load_dotenv() {
+  local file="$ROOT_DIR/.env"
+  [ -f "$file" ] || return 0
+
+  local line trimmed key value
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"                                  # 兼容 CRLF 换行
+    trimmed="${line#"${line%%[![:space:]]*}"}"            # 去掉前导空白
+    case "$trimmed" in ''|'#'*) continue ;; esac          # 跳过空行与注释
+    trimmed="${trimmed#export }"
+    key="${trimmed%%=*}"
+    value="${trimmed#*=}"
+    # 非法键名（含空格/中文的说明行）直接跳过，避免 export 报错中断脚本
+    case "$key" in ''|*[!A-Za-z0-9_]*) continue ;; esac
+    # .env 允许 KEY="value" / KEY='value'
+    case "$value" in
+      \"*\"|\'*\') value="${value:1:${#value}-2}" ;;
+    esac
+    if ! printenv "$key" >/dev/null 2>&1; then
+      export "$key=$value"
+    fi
+  done < "$file"
+}
+
+load_dotenv
+
 JAVA_PORT="${SERVER_PORT:-8081}"
 AGENT_PORT="${AGENT_PORT:-8001}"
 WEB_PORT="${WEB_PORT:-5173}"

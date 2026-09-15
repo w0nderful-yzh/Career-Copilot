@@ -455,7 +455,7 @@ Todo 原始统计为 **32 / 48 项勾选（约 66.7%）**。由于列表中包�
   - 此前 Python 侧已实现 REVIEW_INTERVIEW（读 Java `/details` 做逐题复盘），但前端没有任何入口可触发
   - 修复：面试结果卡新增「让 Copilot 复盘」→ REVIEW_INTERVIEW（带 sessionId）；面试记录页每条已完成文字面试新增「让 Copilot 复盘这场面试」→ 带 `reviewSessionId` 跳 `/copilot`，由该页发起 action，因此支持复盘**指定的那一场**而不只是最近一场
   - 附带：`CopilotOutletContext` 新增 `conversationsLoaded`，区分「还没加载」与「加载完确实为空」，避免带 action 跳转过来时误建新会话
-  - 已验证：前端 build 通过；`REVIEW_INTERVIEW` 的 Python 侧 payload 契约（`{sessionId}`）已存在并被既有 graph 测试覆盖
+  - 已验证：E2E 真实点击「让 Copilot 复盘」并断言请求体 `ACTION_SELECTED / REVIEW_INTERVIEW / payload.sessionId` 等于被点击的那一场；点击后即退出 Interview Mode。`REVIEW_INTERVIEW` 的 Python 侧处理（读 `/details` 逐题复盘、缺 sessionId 拒绝）由既有 graph 测试覆盖
 - [x] 为自适应选题补充包含“题目合并、跳过追问、刷新恢复、提前结束”的集成测试
   - 新增 `AdaptiveInterviewFlowTest`（8 项）沿合并后的真实题库走完整链路：元数据保留 + 索引偏移后追问归属正确（答好 Q1 得到 QF1 而不是上一批的 RF1）、答不上中断追问组、缓存失效后按 DB 重建（被跳过的追问不带答案）、缓存命中不回源、提前结束置 COMPLETED 并投递评估、重复交卷被拒、提前结束后恢复无当前题
   - 测试内用内存 store 代替 Redis，使 `saveSession → getSession` 的答案回填真正被验证，而不是把预期结果直接塞回被测代码
@@ -504,7 +504,7 @@ Todo 原始统计为 **32 / 48 项勾选（约 66.7%）**。由于列表中包�
 
 - [x] Java 全量测试通过 —— `./gradlew :app:test --no-daemon`：**410 测试 / 0 失败 / 0 错误 / 49 跳过**（跳过均为显式声明的预期行为；DB 在线时画像集成用例真跑，故比离线条目少 1 个跳过）
 - [x] Python pytest、ruff、mypy 全部通过 —— ruff 0 错、mypy 0 错（40 源文件）、pytest 79 通过
-- [x] Frontend build、unit test、E2E 全部通过 —— build 成功且 CSS 语法警告清零、**8 个单测脚本 37 项通过**、Playwright E2E **9 项通过**
+- [x] Frontend build、unit test、E2E 全部通过 —— build 成功且 CSS 语法警告清零、**8 个单测脚本 37 项通过**、Playwright E2E **10 项通过**
 - [x] 将上述命令固化到 CI，禁止带失败基线继续累计功能
   - **关键修复**：`.github/workflows/ci.yml` 原触发分支写的是 `master`，而本仓库真实分支是 `main`（默认）+ `dev`，`master` 只存在于 upstream 父仓库 —— 即原 CI **从未被触发过**。已改为 `main` + `dev`
   - 新增 `agent` job：`uv sync --frozen` → `ruff check src tests` → `mypy src` → `pytest`（原 CI 完全没有 Python 门禁）

@@ -207,4 +207,70 @@ test.describe('Interview Mode 刷新恢复', () => {
     await expect(page.getByText('Q1: JVM 内存模型？')).toHaveCount(0);
     await expect(page.getByRole('button', { name: '结束面试' })).toHaveCount(0);
   });
+
+  test('复盘入口：真实发出 REVIEW_INTERVIEW 且携带被点击的那一场 sessionId', async ({ page }) => {
+    await mockConversation(page);
+    await page.route(
+      /\/api\/agent\/conversations\/\d+\/messages$/,
+      (route) => route.fulfill(result(200, 'success', null)),
+    );
+
+    let finished = false;
+    await page.route(sessionUrl, (route) =>
+      route.fulfill(
+        result(200, 'success', {
+          sessionId: SESSION_ID,
+          resumeText: '',
+          totalQuestions: sessionQuestions.length,
+          currentQuestionIndex: finished ? 4 : 2,
+          questions: sessionQuestions,
+          status: finished ? 'EVALUATED' : 'IN_PROGRESS',
+          adaptive: true,
+        }),
+      ),
+    );
+    await page.route(completeUrl, (route) => {
+      finished = true;
+      return route.fulfill(result(200, 'success', null));
+    });
+    await page.route(reportUrl, (route) =>
+      route.fulfill(
+        result(200, 'success', {
+          overallScore: 72,
+          categoryScores: [{ category: 'Java', score: 72 }],
+        }),
+      ),
+    );
+
+    // 捕获复盘请求体：这是审计要求的「REVIEW_INTERVIEW 真实前端入口」的落点
+    let reviewBody: Record<string, any> | null = null;
+    await page.route('**/api/chat/stream', (route) => {
+      reviewBody = JSON.parse(route.request().postData() ?? '{}');
+      return route.fulfill({
+        status: 200,
+        contentType: 'text/event-stream',
+        body: [
+          'data: {"type":"message_delta","payload":{"content":"本场复盘：Java 72 分。"}}',
+          'data: {"type":"run_status","payload":{"status":"COMPLETED"}}',
+          'data: {"type":"done","payload":{}}',
+          '',
+        ].join('\n\n'),
+      });
+    });
+
+    await page.goto('/copilot');
+    await expect(page.getByText('Q1: JVM 内存模型？')).toBeVisible();
+
+    await page.getByRole('button', { name: '结束面试' }).click();
+    await expect(page.getByRole('button', { name: '让 Copilot 复盘' })).toBeVisible({ timeout: 15000 });
+    await page.getByRole('button', { name: '让 Copilot 复盘' }).click();
+
+    await expect.poll(() => reviewBody?.action?.action ?? null).toBe('REVIEW_INTERVIEW');
+    expect(reviewBody.action.type).toBe('ACTION_SELECTED');
+    // 复盘的是「这一场」，不是笼统的最近一场
+    expect(reviewBody.action.payload.sessionId).toBe(SESSION_ID);
+    // 复盘面向已结束的会话：点击后即退出 Interview Mode
+    await expect(page.getByRole('button', { name: '结束面试' })).toHaveCount(0);
+    await expect(page.getByText('本场复盘：Java 72 分。')).toBeVisible();
+  });
 });

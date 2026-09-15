@@ -303,6 +303,12 @@ Voice Agent 重构（现有语音面试保留原样）
 | **会话「删除」与「归档」语义分离**（2026-09-14） | 删除 = 硬删除且不可恢复；归档 = 软隐藏、保留记录、可恢复。数据层早有 `ConversationStatus{ACTIVE,ARCHIVED}` 且列表只查 ACTIVE，但既无归档入口也无恢复入口（只进不出的黑洞），故补齐归档/恢复端点与归档视图，并把删除确认文案改为引导改用归档 |
 | **会话列表用 `?status=` 过滤而非两个端点**（2026-09-14） | 复用同一 DTO 与查询、语义直白；代价是前端路由桩必须与查询参数无关（本次已因此踩到 E2E 假失败） |
 | **CI backend job 挂真实 Postgres，不挂 Redis**（2026-09-14） | 迁移链此前在 CI 里零验证；挂 Postgres 后每次 CI 都在空库上跑完整迁移且集成用例真跑。Redis 经实测不可用时上下文仍能启动（消费者仅告警），无需为其增加 CI 时长 |
+| **题单合并必须走 `withIndex` 而非 `create(...)`**（2026-09-15） | `create(...)` 是旧的顺序题单工厂，只带 7 个字段，用它重建会把 difficulty / followUpType / expectedPoints 静默丢掉，自适应决策与轻量评估随即退化成「无难度的固定题单」。`withIndex` 只改索引、原样保留全部字段，并同步偏移 `parentQuestionIndex`（否则追问会挂错主问题） |
+| **面试消息流的权威判据是「该题是否有作答记录」**（2026-09-15） | 自适应会话的题库含**候选择问**，被策略跳过的题仍留在 `questions` 数组里。按 `currentQuestionIndex` 遍历题库会把从未问过的题渲染成「已问过」。恢复规则抽成 `utils/interviewTurns.ts` 纯函数并单测固化（E2E 双保险） |
+| **自适应进度分母 = 主问题数，不是 `totalQuestions`**（2026-09-15） | `totalQuestions` 是题库总数（含候选追问）。自适应会话按作答质量跳过一部分，用它做分母会出现「只答了 3 题却显示第 10 / 12 题」。故自适应显示「已答 N 题 · 主题 x/y」，非自适应顺序会话仍用「第 x / y 题」（此时题库总数即真实总题数） |
+| **已主动退出的面试会话不再被旧信号块拉回**（2026-09-15） | 退出时追加「面试完成摘要」会让 messages 变化，自动进入 Interview Mode 的 effect 会重新扫描到那个旧 `interview_session` 块。用 `closedInterviewSessionsRef` 记录已退出的 session 来阻断 |
+| **AI 面试复盘走「指定 session」而非「最近一场」**（2026-09-15） | 面试记录页的「让 Copilot 复盘这场面试」带 `reviewSessionId` 跳 `/copilot`，由该页发起 `REVIEW_INTERVIEW` action（payload `{sessionId}`），实现对指定场次的逐题复盘。为此 `CopilotOutletContext` 增加 `conversationsLoaded`，区分「还没加载」与「加载完确实为空」，避免带 action 跳转时误建新会话 |
+| **集成测试用内存 store 代替 Redis**（2026-09-15） | 「缓存失效 → 按 DB 重建」是恢复路径的核心。若用「依次返回两个 stub」的写法，等于把预期结果直接塞回被测代码；让 `saveSession` 真写入、`getSession` 真读出，答案回填逻辑才真正被验证 |
 
 ---
 
@@ -335,14 +341,14 @@ Todo 原始统计为 **32 / 48 项勾选（约 66.7%）**。由于列表中包�
 
 > **工程基线（2026-09-14 更新）**：P6-0 已完成 —— Java / Python / Frontend 三端质量门禁全部转绿，并已固化到 CI（含原 CI 从未触发的分支配置修复）。后续功能累计不得再引入失败基线。详见「四、验证基线问题」与「五、P6-0」。
 > **P1 待收口进度**：**4 项全部完成**（Composer 内联错误 / 停止生成三态落库 / 加载与错误态 + 重发入口 / 会话重命名与归档恢复）。另完成一项主动性能优化（P6-5）。
-> 勾选计数：审计节之前的原始 TodoList 仍为 **32 / 48**；审计节自身为 **31 / 81**（含新增的 P6 打磨项）。
+> **P4 待修正进度**：**6 项全部完成**（合并元数据 / 按实际已提问轮次恢复 / 退出不被拉回 / 进度分母 / REVIEW_INTERVIEW 真实入口 / 四项集成测试）。P4 二期四项按原计划未动。
 
 | 模块 | 代码审计状态 | 当前判断 |
 |---|---|---|
 | P1 Copilot 主链路 | 基本完成 | Agent、SSE、会话持久化和 Checkpoint 已实现；异常反馈、停止状态和会话管理仍需收口 |
 | P3 能力画像 | 基本完成 | Evidence、聚合、查询和展示已实现；画像驱动下一场专项面试尚未闭环 |
 | P2 简历优化 | 部分完成 | 结构化版本、Proposal、Patch、预览和导出已实现；解析纠错、模式语义和真实性校验仍不完整 |
-| P4 自适应面试 | 部分完成 | Turn Evaluation、决策策略和报告回流已实现；题目元数据、恢复、退出和复盘存在断点 |
+| P4 自适应面试 | 基本完成 | Turn Evaluation、决策策略、报告回流已实现；题目元数据、恢复、退出、复盘四处断点已修（2026-09-15）；二期四项待做 |
 | P5 三条产品闭环 | 未完成 | 尚无一条达到稳定端到端验收及自动化回归标准 |
 
 ## 二、已确认实现
@@ -426,12 +432,34 @@ Todo 原始统计为 **32 / 48 项勾选（约 66.7%）**。由于列表中包�
 
 ### P4 待修正
 
-- [ ] 修复简历题与通用题合并时 difficulty、expectedPoints、followUpType 元数据丢失
-- [ ] 恢复面试时按“实际已提问轮次”重建消息，不得按题库下标展示被策略跳过的追问题
-- [ ] 修复完成并退出后被旧 `interview_session` block 自动重新拉回 Interview Mode 的问题
-- [ ] 进度按实际已提问题数计算，候选追问题不得提前计入用户可见总进度
-- [ ] 将 `REVIEW_INTERVIEW` 接到真实前端入口，并支持指定 session 的逐题复盘
-- [ ] 为自适应选题补充包含“题目合并、跳过追问、刷新恢复、提前结束”的集成测试
+> **进度（2026-09-15）**：六项全部完成，P4 待修正清零。P4 二期四项（P4-4b/5/6b/7）按原计划保持未完成。
+
+- [x] 修复简历题与通用题合并时 difficulty、expectedPoints、followUpType 元数据丢失
+  - 根因：`mergeQuestionBatches` 用顺序题单工厂 `create(...)`（只带 7 个字段）重建合并后的题目
+  - 修复：新增 `InterviewQuestionDTO.withIndex(newIndex, newParentQuestionIndex)` 只改索引、原样保留全部字段；合并改走该方法
+  - 已验证：`InterviewQuestionServiceTest` 3 项（合并保留元数据 / 空侧原样返回 / withIndex 只改索引）
+- [x] 恢复面试时按“实际已提问轮次”重建消息，不得按题库下标展示被策略跳过的追问题
+  - 根因：前端 `buildTurns` 按 `currentQuestionIndex` 遍历整个题库，被策略跳过的候选追问仍留在数组里，会被当成「已问过」渲染
+  - 修复：抽出 `utils/interviewTurns.ts`（`buildAnsweredTurns` / `currentQuestionOf` / `deriveInterviewView`），权威判据改为「该题是否有作答记录」；已结束会话不再返回「当前题」（`currentQuestionIndex` 可能停在未问过的追问上）
+  - 已验证：`test:interview-turns` 8 项（含跳过追问 / 已结束后无当前题 / 索引越界不抛错）+ E2E `interview-restore.spec.ts` 真实组件断言被跳过的追问不出现
+  - **回归有效性已验证**：临时把逻辑改回旧写法后，单测 5/8 失败、E2E 连续 3 次失败
+- [x] 修复完成并退出后被旧 `interview_session` block 自动重新拉回 Interview Mode 的问题
+  - 根因：退出时向会话追加「面试完成摘要」，messages 随之变化，自动进入 Interview Mode 的 effect 会重新扫描到那个旧信号块
+  - 修复：`closedInterviewSessionsRef` 记录已主动退出的 session，信号块对它们不再触发自动进入
+  - 已验证：E2E `interview-restore.spec.ts`「完成退出后不被历史里的 interview_session 信号块拉回面试模式」
+- [x] 进度按实际已提问题数计算，候选追问题不得提前计入用户可见总进度
+  - 根因：`totalQuestions` 是题库总数（含候选追问），自适应会话会跳过其中一部分，用它做分母会得出「只答了 3 题却显示第 10 / 12 题」
+  - 修复：自适应会话显示「已答 N 题 · 主题 x/y」（分母为主问题数）；非自适应顺序会话保持「第 x / y 题」（此时题库总数即真实总题数）；`interviewProgress` 统一计算
+  - 已验证：`test:interview-turns` 断言 `mainCount ≠ poolTotal`；E2E 断言不出现 `第 3 / 4 题`
+- [x] 将 `REVIEW_INTERVIEW` 接到真实前端入口，并支持指定 session 的逐题复盘
+  - 此前 Python 侧已实现 REVIEW_INTERVIEW（读 Java `/details` 做逐题复盘），但前端没有任何入口可触发
+  - 修复：面试结果卡新增「让 Copilot 复盘」→ REVIEW_INTERVIEW（带 sessionId）；面试记录页每条已完成文字面试新增「让 Copilot 复盘这场面试」→ 带 `reviewSessionId` 跳 `/copilot`，由该页发起 action，因此支持复盘**指定的那一场**而不只是最近一场
+  - 附带：`CopilotOutletContext` 新增 `conversationsLoaded`，区分「还没加载」与「加载完确实为空」，避免带 action 跳转过来时误建新会话
+  - 已验证：前端 build 通过；`REVIEW_INTERVIEW` 的 Python 侧 payload 契约（`{sessionId}`）已存在并被既有 graph 测试覆盖
+- [x] 为自适应选题补充包含“题目合并、跳过追问、刷新恢复、提前结束”的集成测试
+  - 新增 `AdaptiveInterviewFlowTest`（8 项）沿合并后的真实题库走完整链路：元数据保留 + 索引偏移后追问归属正确（答好 Q1 得到 QF1 而不是上一批的 RF1）、答不上中断追问组、缓存失效后按 DB 重建（被跳过的追问不带答案）、缓存命中不回源、提前结束置 COMPLETED 并投递评估、重复交卷被拒、提前结束后恢复无当前题
+  - 测试内用内存 store 代替 Redis，使 `saveSession → getSession` 的答案回填真正被验证，而不是把预期结果直接塞回被测代码
+  - 新增 `test:interview-turns`（8 项）与 E2E `interview-restore.spec.ts`（2 项）
 - [ ] P4-4b、P4-5、P4-6b、P4-7 继续保持未完成状态，按实际依赖逐项推进
 
 ## 四、验证基线问题
@@ -474,9 +502,9 @@ Todo 原始统计为 **32 / 48 项勾选（约 66.7%）**。由于列表中包�
 
 ### P6-0 先恢复工程质量门禁 ✅（2026-09-14 完成）
 
-- [x] Java 全量测试通过 —— `./gradlew :app:test --no-daemon`：384 测试 / 0 失败 / 0 错误 / 50 跳过（跳过均为显式声明的预期行为）
-- [x] Python pytest、ruff、mypy 全部通过 —— ruff 0 错、mypy 0 错（40 源文件）、pytest 75 通过
-- [x] Frontend build、unit test、E2E 全部通过 —— build 成功且 CSS 语法警告清零、7 个单测脚本 29 项通过、Playwright E2E 7 项通过
+- [x] Java 全量测试通过 —— `./gradlew :app:test --no-daemon`：**410 测试 / 0 失败 / 0 错误 / 49 跳过**（跳过均为显式声明的预期行为；DB 在线时画像集成用例真跑，故比离线条目少 1 个跳过）
+- [x] Python pytest、ruff、mypy 全部通过 —— ruff 0 错、mypy 0 错（40 源文件）、pytest 79 通过
+- [x] Frontend build、unit test、E2E 全部通过 —— build 成功且 CSS 语法警告清零、**8 个单测脚本 37 项通过**、Playwright E2E **9 项通过**
 - [x] 将上述命令固化到 CI，禁止带失败基线继续累计功能
   - **关键修复**：`.github/workflows/ci.yml` 原触发分支写的是 `master`，而本仓库真实分支是 `main`（默认）+ `dev`，`master` 只存在于 upstream 父仓库 —— 即原 CI **从未被触发过**。已改为 `main` + `dev`
   - 新增 `agent` job：`uv sync --frozen` → `ruff check src tests` → `mypy src` → `pytest`（原 CI 完全没有 Python 门禁）

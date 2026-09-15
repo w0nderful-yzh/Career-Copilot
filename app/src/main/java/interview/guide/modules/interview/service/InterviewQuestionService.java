@@ -292,7 +292,16 @@ public class InterviewQuestionService {
         }
     }
 
-    private List<InterviewQuestionDTO> mergeQuestionBatches(
+    /**
+     * 合并两组题单（简历题 + 方向题），后半段整体后移 offset 个索引。
+     *
+     * <p>纯函数（不依赖实例状态），故为 static 包级可见，便于直接单测。
+     *
+     * <p>必须走 {@code withIndex}：用顺序题单工厂 {@code create(...)} 重建会把
+     * difficulty / followUpType / expectedPoints 丢掉，合并后自适应决策与轻量评估拿不到
+     * 难度与考察要点（P4 待修正）。
+     */
+    static List<InterviewQuestionDTO> mergeQuestionBatches(
             List<InterviewQuestionDTO> first, List<InterviewQuestionDTO> second) {
         if (second.isEmpty()) {
             return first;
@@ -306,9 +315,7 @@ public class InterviewQuestionService {
             int newIndex = q.questionIndex() + offset;
             Integer newParent = q.parentQuestionIndex() != null
                 ? q.parentQuestionIndex() + offset : null;
-            merged.add(InterviewQuestionDTO.create(
-                newIndex, q.question(), q.type(), q.category(),
-                q.topicSummary(), q.isFollowUp(), newParent));
+            merged.add(q.withIndex(newIndex, newParent));
         }
         return merged;
     }

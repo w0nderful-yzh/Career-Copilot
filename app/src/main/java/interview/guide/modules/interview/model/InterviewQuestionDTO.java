@@ -104,4 +104,18 @@ public record InterviewQuestionDTO(
             isFollowUp, parentQuestionIndex, referenceAnswer, keyPoints, scoringRubric, sourceContext,
             difficulty, followUpType, expectedPoints);
     }
+
+    /**
+     * 批量合并题单时重排索引：只改 questionIndex / parentQuestionIndex，其余字段原样保留。
+     *
+     * <p>合并「简历题 + 方向题」必须走本方法。此前用 {@code create(...)}（顺序题单工厂）
+     * 重建，会把 difficulty / followUpType / expectedPoints 静默丢掉——自适应决策与轻量评估
+     * 都依赖这些元数据，丢了就退化成无难度的固定题单。
+     */
+    public InterviewQuestionDTO withIndex(int newIndex, Integer newParentQuestionIndex) {
+        return new InterviewQuestionDTO(
+            newIndex, question, type, category, topicSummary, userAnswer, score, feedback,
+            isFollowUp, newParentQuestionIndex, referenceAnswer, keyPoints, scoringRubric,
+            sourceContext, difficulty, followUpType, expectedPoints);
+    }
 }

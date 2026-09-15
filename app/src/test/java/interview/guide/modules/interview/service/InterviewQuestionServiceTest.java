@@ -96,4 +96,72 @@ class InterviewQuestionServiceTest {
         .extracting(java.lang.reflect.RecordComponent::getName)
         .contains("question", "followUpType", "expectedPoints");
   }
+
+  @Test
+  @DisplayName("合并简历题与方向题：重排索引但完整保留 difficulty/expectedPoints/followUpType")
+  void mergeQuestionBatchesPreservesStructuredMetadata() {
+    // 简历题（前半段）：一条主问题
+    InterviewQuestionDTO resumeMain = InterviewQuestionDTO.createMain(
+        0, "简历里写了订单幂等，具体怎么做的？", "PROJECT", "项目",
+        "订单幂等设计", 3, List.of("唯一索引", "去重表"));
+
+    // 方向题（后半段）：主问题 + 追问，带完整结构化元数据
+    InterviewQuestionDTO directionMain = InterviewQuestionDTO.createMain(
+        0, "Minor GC 与 Full GC 的区别？", "JVM", "JVM", "GC 对比", 4, List.of("分代", "STW"));
+    InterviewQuestionDTO directionFollowUp = InterviewQuestionDTO.createFollowUp(
+        1, "线上频繁 Full GC 怎么排查？", "JVM", "JVM（追问1）", 0,
+        InterviewQuestionDTO.FOLLOW_UP_SCENARIO, List.of("jstat", "heap dump"));
+
+    List<InterviewQuestionDTO> merged = InterviewQuestionService.mergeQuestionBatches(
+        List.of(resumeMain), List.of(directionMain, directionFollowUp));
+
+    assertThat(merged).hasSize(3);
+
+    // 索引按合并后位置重排
+    assertThat(merged).extracting(InterviewQuestionDTO::questionIndex).containsExactly(0, 1, 2);
+    // 追问的父索引同步后移（原 0 → 合并后 1），否则挂到简历题上
+    assertThat(merged.get(2).parentQuestionIndex()).isEqualTo(1);
+
+    // 元数据不得丢失：这正是此前用 create(...) 重建造成的缺陷
+    assertThat(merged.get(0).difficulty()).isEqualTo(3);
+    assertThat(merged.get(0).expectedPoints()).containsExactly("唯一索引", "去重表");
+
+    assertThat(merged.get(1).difficulty()).isEqualTo(4);
+    assertThat(merged.get(1).expectedPoints()).containsExactly("分代", "STW");
+
+    assertThat(merged.get(2).isFollowUp()).isTrue();
+    assertThat(merged.get(2).followUpType()).isEqualTo(InterviewQuestionDTO.FOLLOW_UP_SCENARIO);
+    assertThat(merged.get(2).expectedPoints()).containsExactly("jstat", "heap dump");
+    // 追问不仅元数据要保留，内容与分类也必须原样
+    assertThat(merged.get(2).question()).isEqualTo("线上频繁 Full GC 怎么排查？");
+    assertThat(merged.get(2).category()).isEqualTo("JVM（追问1）");
+  }
+
+  @Test
+  @DisplayName("合并时任一侧为空时原样返回另一侧（不复制、不改索引）")
+  void mergeQuestionBatchesHandlesEmptySide() {
+    InterviewQuestionDTO main = InterviewQuestionDTO.createMain(
+        0, "HashMap 扩容机制？", "JAVA", "Java", "扩容", 4, List.of("负载因子"));
+
+    assertThat(InterviewQuestionService.mergeQuestionBatches(List.of(main), List.of()))
+        .containsExactly(main);
+    assertThat(InterviewQuestionService.mergeQuestionBatches(List.of(), List.of(main)))
+        .containsExactly(main);
+  }
+
+  @Test
+  @DisplayName("withIndex 保留全部结构化字段，只改索引")
+  void withIndexOnlyChangesIndexes() {
+    InterviewQuestionDTO followUp = InterviewQuestionDTO.createFollowUp(
+        1, "追问内容", "JVM", "JVM（追问1）", 0,
+        InterviewQuestionDTO.FOLLOW_UP_WHY, List.of("原理"));
+
+    InterviewQuestionDTO reindexed = followUp.withIndex(7, 6);
+
+    assertThat(reindexed.questionIndex()).isEqualTo(7);
+    assertThat(reindexed.parentQuestionIndex()).isEqualTo(6);
+    assertThat(reindexed.followUpType()).isEqualTo(InterviewQuestionDTO.FOLLOW_UP_WHY);
+    assertThat(reindexed.expectedPoints()).containsExactly("原理");
+    assertThat(reindexed.question()).isEqualTo("追问内容");
+  }
 }

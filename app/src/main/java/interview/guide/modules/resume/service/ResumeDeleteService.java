@@ -21,6 +21,7 @@ public class ResumeDeleteService {
     private final ResumePersistenceService persistenceService;
     private final InterviewPersistenceService interviewPersistenceService;
     private final FileStorageService storageService;
+    private final interview.guide.modules.profile.service.ResumeProfileSyncService profileSyncService;
     
     /**
      * 删除简历
@@ -43,10 +44,13 @@ public class ResumeDeleteService {
             log.warn("删除存储文件失败，继续删除数据库记录: {}", e.getMessage());
         }
         
-        // 2. 删除面试会话（会自动删除面试答案）
+        // 2. 删除面试会话（会自动删除面试答案与对应的画像证据）
         interviewPersistenceService.deleteSessionsByResumeId(id);
-        
-        // 3. 删除数据库记录（包括分析记录）
+
+        // 3. 清理该简历的画像技能声明（P3 待收口）：简历已删，别让声明留在画像里
+        profileSyncService.removeDeclarations(id);
+
+        // 4. 删除数据库记录（包括分析记录）
         persistenceService.deleteResume(id);
         
         log.info("简历删除完成: id={}", id);

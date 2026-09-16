@@ -245,7 +245,14 @@ public class InterviewSessionService {
         // 1. 尝试从 Redis 缓存获取
         Optional<CachedSession> cachedOpt = sessionCache.getSession(sessionId);
         if (cachedOpt.isPresent()) {
-            return toDTO(cachedOpt.get());
+            CachedSession cached = cachedOpt.get();
+            // 面试已完成 → 报告由异步任务生成，缓存状态可能落后于数据库。
+            // 这是唯一会漂移的窗口（进行中会话的状态与问题都由同一写入方同步更新），
+            // 故只在此处回源一次数据库；其余读取路径完全走缓存，不额外打库。
+            if (cached.getStatus() == SessionStatus.COMPLETED) {
+                return syncReportStateFromDatabase(sessionId, cached);
+            }
+            return toDTO(cached);
         }
 
         // 2. 缓存未命中，从数据库恢复
@@ -254,7 +261,40 @@ public class InterviewSessionService {
             throw new BusinessException(ErrorCode.INTERVIEW_SESSION_NOT_FOUND);
         }
 
-        return toDTO(restoredSession);
+        return withReportState(toDTO(restoredSession), sessionId);
+    }
+
+    /**
+     * 用数据库校正「已完成」会话的缓存状态（P4Q-4）。
+     *
+     * <p>异步评估链路只写数据库，缓存里的 COMPLETED 不会自己变成 EVALUATED；不校正的话
+     * 前端会一直显示「评估中」（缓存 TTL 24 小时）。这里把数据库当权威做一次读取自愈，
+     * 而不是把 DB + Redis 双写当成原子操作。
+     */
+    private InterviewSessionDTO syncReportStateFromDatabase(String sessionId, CachedSession cached) {
+        Optional<InterviewSessionEntity> entityOpt = persistenceService.findBySessionId(sessionId);
+        if (entityOpt.isEmpty()) {
+            return toDTO(cached);
+        }
+        InterviewSessionEntity entity = entityOpt.get();
+        SessionStatus authoritative = convertStatus(entity.getStatus());
+        if (authoritative != cached.getStatus()) {
+            log.info("会话状态与数据库不一致，按数据库自愈: sessionId={}, cache={}, db={}",
+                sessionId, cached.getStatus(), authoritative);
+            sessionCache.updateSessionStatus(sessionId, authoritative);
+            cached.setStatus(authoritative);
+        }
+        return toDTO(cached, entity.getEvaluateStatus(), entity.getEvaluateError());
+    }
+
+    /** 补齐评估状态字段（缓存未命中路径：已经读过数据库，顺手带上） */
+    private InterviewSessionDTO withReportState(InterviewSessionDTO dto, String sessionId) {
+        return persistenceService.findBySessionId(sessionId)
+            .map(entity -> new InterviewSessionDTO(
+                dto.sessionId(), dto.resumeText(), dto.totalQuestions(), dto.currentQuestionIndex(),
+                dto.questions(), dto.status(), dto.knowledgeBaseId(), dto.interviewCategory(),
+                dto.adaptive(), entity.getEvaluateStatus(), entity.getEvaluateError()))
+            .orElse(dto);
     }
 
     /**
@@ -597,6 +637,35 @@ public class InterviewSessionService {
     }
 
     /**
+     * 重新入队评估任务（P4Q-4 的前端重试入口）。
+     *
+     * <p>只对「已完成但报告尚未成功生成」的会话开放；已有报告的会话直接返回当前状态，
+     * 不重复评分也不重复写入证据（评估消费端另有幂等跳过）。
+     */
+    public InterviewSessionDTO retryEvaluation(String sessionId) {
+        CachedSession session = getOrRestoreSession(sessionId);
+        if (session.getStatus() == SessionStatus.CREATED
+            || session.getStatus() == SessionStatus.IN_PROGRESS) {
+            throw new BusinessException(ErrorCode.INTERVIEW_NOT_COMPLETED,
+                "面试尚未完成，无法重试评估");
+        }
+
+        InterviewSessionEntity entity = persistenceService.findBySessionId(sessionId)
+            .orElseThrow(() -> new BusinessException(ErrorCode.INTERVIEW_SESSION_NOT_FOUND));
+        boolean reportReady = entity.getEvaluateStatus() == AsyncTaskStatus.COMPLETED
+            && entity.getStatus() == InterviewSessionEntity.SessionStatus.EVALUATED;
+        if (reportReady) {
+            log.info("报告已存在，忽略重复的评估重试: sessionId={}", sessionId);
+        } else {
+            // enqueueEvaluationTask 会把状态重置为 PENDING，让消费端的「已完成则跳过」判据不生效
+            enqueueEvaluationTask(sessionId);
+            log.info("评估任务已重新入队: sessionId={}, 上次状态={}",
+                sessionId, entity.getEvaluateStatus());
+        }
+        return getSession(sessionId);
+    }
+
+    /**
      * 获取或恢复会话（优先从缓存获取）
      */
     private CachedSession getOrRestoreSession(String sessionId) {
@@ -663,6 +732,12 @@ public class InterviewSessionService {
      * 将缓存会话转换为 DTO
      */
     private InterviewSessionDTO toDTO(CachedSession session) {
+        return toDTO(session, null, null);
+    }
+
+    /** 带评估状态的转换（仅「已完成」会话需要，评估状态不在缓存里，数据库才是权威） */
+    private InterviewSessionDTO toDTO(CachedSession session, AsyncTaskStatus evaluateStatus,
+                                      String evaluateError) {
         List<InterviewQuestionDTO> questions = session.getQuestions(objectMapper);
         return new InterviewSessionDTO(
             session.getSessionId(),
@@ -673,7 +748,9 @@ public class InterviewSessionService {
             session.getStatus(),
             session.getKnowledgeBaseId(),
             session.getInterviewCategory(),
-            Boolean.TRUE.equals(session.getAdaptive())
+            Boolean.TRUE.equals(session.getAdaptive()),
+            evaluateStatus,
+            evaluateError
         );
     }
 }

@@ -19,7 +19,18 @@ export interface InterviewSession {
   interviewCategory?: string | null;
   /** 自适应会话（P4-3）：逐题决策、会跳过候选追问、提前结束 */
   adaptive?: boolean;
+  /**
+   * 报告异步任务状态（P4Q-4）：null/undefined = 尚未进入评估。
+   *
+   * status 只会是 COMPLETED 或 EVALUATED，**评估中与评估失败在 status 上无法区分**，
+   * 必须靠 evaluateStatus 才能识别失败并给出重试入口。
+   */
+  evaluateStatus?: AsyncTaskStatus | null;
+  /** 评估失败原因（evaluateStatus = FAILED 时展示） */
+  evaluateError?: string | null;
 }
+
+export type AsyncTaskStatus = 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
 
 export interface InterviewQuestion {
   questionIndex: number;

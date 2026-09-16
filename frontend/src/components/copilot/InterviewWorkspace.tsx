@@ -9,6 +9,10 @@ import {
   toInterviewerTurn,
   type InterviewTurn as Turn,
 } from '../../utils/interviewTurns';
+import {
+  decideEvaluationPhase,
+  EVALUATION_POLL_INTERVAL_MS,
+} from '../../utils/evaluatePolling';
 import ProfileImpactCard from './ProfileImpactCard';
 
 // Interview Mode 主工作区（Interview Mode 重构）：
@@ -61,6 +65,10 @@ export default function InterviewWorkspace({
   const [impact, setImpact] = useState<ProfileImpact | null>(null);
   const timerRef = useRef<number | null>(null);
   const pollRef = useRef<number | null>(null);
+  /** 已轮询次数：用于给评估加时间上限，避免失败时无限「评估中」（P4Q-4） */
+  const pollAttemptRef = useRef(0);
+  /** 错误来自「报告生成失败/超时」而非会话加载：决定错误态给哪个重试动作 */
+  const [evaluationFailed, setEvaluationFailed] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const stopTimers = useCallback(() => {
@@ -136,8 +144,17 @@ export default function InterviewWorkspace({
   const pollEvaluation = useCallback(async () => {
     try {
       const s = await interviewApi.getSession(mode.sessionId);
-      if (s.status === 'EVALUATED') {
-        if (pollRef.current) window.clearInterval(pollRef.current);
+      pollAttemptRef.current += 1;
+      // 评估中与评估失败在 status 上都是 COMPLETED，必须靠 evaluateStatus 与轮询上限区分
+      const decision = decideEvaluationPhase({
+        status: s.status,
+        evaluateStatus: s.evaluateStatus,
+        attempt: pollAttemptRef.current,
+      });
+      if (decision.phase === 'waiting') return;
+
+      if (pollRef.current) window.clearInterval(pollRef.current);
+      if (decision.phase === 'ready') {
         const report = await interviewApi.getReport(mode.sessionId);
         setSummary({
           overallScore: report.overallScore,
@@ -150,27 +167,53 @@ export default function InterviewWorkspace({
           .catch((err) => console.error('拉取画像变化失败:', err));
         stopTimers();
         onChangeStatus({ ...mode, status: 'completed' });
-      } else if (s.status === 'COMPLETED') {
-        // 仍在评估中：进度已由本地 turns/mainIndexes 推导，无需同步题库总数
-      } else {
-        // 意外回到未完成（理论不发生），继续轮询
+        return;
       }
+
+      // 评估失败 / 超时：停止轮询并给出可见状态与重试入口（此前只会静默停在「评估中」）
+      const reason = s.evaluateError ? `${decision.message}（${s.evaluateError}）` : decision.message;
+      setEvaluationFailed(true);
+      onChangeStatus({ ...mode, status: 'error', error: reason });
     } catch (err) {
       // 会话不存在（已删除/被清理）→ 停止轮询，避免无限「评估中」
       if (pollRef.current) window.clearInterval(pollRef.current);
       console.error('轮询面试评估失败（可能会话已删除）:', err);
+      setEvaluationFailed(false);
       onChangeStatus({ ...mode, status: 'error', error: '面试会话不存在或已删除，请返回对话。' });
     }
   }, [mode, onChangeStatus, stopTimers]);
+
+  /** 重试生成报告：重置轮询计数后重新入队并继续轮询 */
+  const retryEvaluation = useCallback(async () => {
+    try {
+      await interviewApi.retryEvaluation(mode.sessionId);
+      pollAttemptRef.current = 0;
+      setEvaluationFailed(false);
+      onChangeStatus({ ...mode, status: 'evaluating', error: null });
+      if (pollRef.current) window.clearInterval(pollRef.current);
+      pollRef.current = window.setInterval(
+        () => void pollEvaluation(),
+        EVALUATION_POLL_INTERVAL_MS,
+      );
+    } catch (err) {
+      console.error('重试报告生成失败:', err);
+      onChangeStatus({ ...mode, status: 'error', error: '重试失败，请稍后再试。' });
+    }
+  }, [mode, onChangeStatus, pollEvaluation]);
 
   // 结束面试（提前交卷）→ Java 置 COMPLETED → 进入评估轮询
   const finish = useCallback(async () => {
     try {
       await interviewApi.completeInterview(mode.sessionId);
       setCurrent(null);
+      setEvaluationFailed(false);
       onChangeStatus({ ...mode, status: 'evaluating' });
+      pollAttemptRef.current = 0;
       if (pollRef.current) window.clearInterval(pollRef.current);
-      pollRef.current = window.setInterval(() => void pollEvaluation(), 3000);
+      pollRef.current = window.setInterval(
+        () => void pollEvaluation(),
+        EVALUATION_POLL_INTERVAL_MS,
+      );
     } catch (err) {
       console.error('结束面试失败:', err);
     }
@@ -243,17 +286,19 @@ export default function InterviewWorkspace({
       {/* 中部：面试题/答消息流（复用普通气泡视觉） */}
       <div className="flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-4xl space-y-5 px-5 py-6 lg:px-8">
-          {mode.status === 'error' && (
-            <div className="py-12 text-center">
-              <p className="text-sm text-red-500">{mode.error ?? '面试加载失败'}</p>
-              <button
-                onClick={() => void load()}
-                className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white dark:bg-white dark:text-slate-900"
-              >
-                <RotateCcw className="h-3.5 w-3.5" /> 重试
-              </button>
-            </div>
-          )}
+      {/* 错误态：报告生成失败的重试是「重新入队评估」，加载失败的重试是「重新拉会话」 */}
+      {mode.status === 'error' && (
+        <div className="py-12 text-center">
+          <p className="text-sm text-red-500">{mode.error ?? '面试加载失败'}</p>
+          <button
+            onClick={() => void (evaluationFailed ? retryEvaluation() : load())}
+            className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white dark:bg-white dark:text-slate-900"
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            {evaluationFailed ? '重新生成报告' : '重试'}
+          </button>
+        </div>
+      )}
 
           {mode.status === 'starting' && !current && (
             <div className="flex items-center justify-center gap-2 py-16 text-sm text-slate-400">

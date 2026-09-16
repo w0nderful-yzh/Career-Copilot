@@ -1,6 +1,8 @@
 package interview.guide.modules.interview.service;
 
+import interview.guide.common.model.AsyncTaskStatus;
 import interview.guide.infrastructure.redis.InterviewSessionCache;
+import interview.guide.modules.interview.model.InterviewSessionDTO;
 import interview.guide.modules.interview.model.InterviewSessionEntity;
 import interview.guide.modules.interview.repository.InterviewAnswerRepository;
 import interview.guide.modules.interview.repository.InterviewSessionRepository;
@@ -19,6 +21,7 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -89,6 +92,36 @@ class InterviewPersistenceServiceTest {
 
     verify(sessionRepository).delete(entity);
     verify(sessionCache).deleteSession("ghost-session");
+  }
+
+  @Test
+  @DisplayName("评估完成时同步会话缓存状态，避免前端一直显示「评估中」（P4Q-4）")
+  void evaluationCompletedSyncsCachedSessionStatus() {
+    InterviewSessionEntity session = new InterviewSessionEntity();
+    session.setSessionId("sid2");
+    when(sessionRepository.findBySessionId("sid2")).thenReturn(Optional.of(session));
+    when(sessionRepository.save(any(InterviewSessionEntity.class)))
+        .thenAnswer(invocation -> invocation.getArgument(0));
+
+    newService().updateEvaluateStatus("sid2", AsyncTaskStatus.COMPLETED, null);
+
+    verify(sessionCache).updateSessionStatus(
+        "sid2", InterviewSessionDTO.SessionStatus.EVALUATED);
+  }
+
+  @Test
+  @DisplayName("评估失败不顺带改会话状态：报告缺失由前端重试，不伪装成已评估")
+  void evaluationFailedDoesNotTouchSessionStatus() {
+    InterviewSessionEntity session = new InterviewSessionEntity();
+    session.setSessionId("sid3");
+    when(sessionRepository.findBySessionId("sid3")).thenReturn(Optional.of(session));
+    when(sessionRepository.save(any(InterviewSessionEntity.class)))
+        .thenAnswer(invocation -> invocation.getArgument(0));
+
+    newService().updateEvaluateStatus("sid3", AsyncTaskStatus.FAILED, "模型超时");
+
+    verify(sessionCache, never()).updateSessionStatus(any(), any());
+    assertThat(session.getEvaluateError()).isEqualTo("模型超时");
   }
 
   private InterviewPersistenceService newService() {

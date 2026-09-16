@@ -9,6 +9,7 @@ import interview.guide.modules.interview.model.HistoricalQuestion;
 import interview.guide.modules.interview.model.InterviewAnswerEntity;
 import interview.guide.modules.interview.model.InterviewQuestionDTO;
 import interview.guide.modules.interview.model.InterviewReportDTO;
+import interview.guide.modules.interview.model.InterviewSessionDTO;
 import interview.guide.modules.interview.model.InterviewSessionEntity;
 import interview.guide.modules.interview.repository.InterviewAnswerRepository;
 import interview.guide.modules.interview.repository.InterviewSessionRepository;
@@ -175,6 +176,10 @@ public class InterviewPersistenceService {
 
     /**
      * 更新评估状态
+     *
+     * <p>P4Q-4：评估任务完成时报告已经落库（saveReport 已把会话置为 EVALUATED），
+     * 因此顺手把缓存里的会话状态同步过去——否则缓存会长期停留在 COMPLETED，
+     * 前端只能显示「评估中」。缓存写失败不影响数据库结果，读取侧还有一次自愈兜底。
      */
     @Transactional(rollbackFor = Exception.class)
     public void updateEvaluateStatus(String sessionId, AsyncTaskStatus status, String error) {
@@ -189,6 +194,16 @@ public class InterviewPersistenceService {
             }
             sessionRepository.save(session);
             log.debug("评估状态已更新: sessionId={}, status={}", sessionId, status);
+        }
+
+        if (status == AsyncTaskStatus.COMPLETED) {
+            try {
+                sessionCache.updateSessionStatus(
+                    sessionId, InterviewSessionDTO.SessionStatus.EVALUATED);
+            } catch (Exception e) {
+                log.warn("评估完成后同步会话缓存状态失败（读取侧会自愈）: sessionId={}, error={}",
+                    sessionId, e.getMessage());
+            }
         }
     }
     

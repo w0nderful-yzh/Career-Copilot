@@ -92,6 +92,16 @@ export const interviewApi = {
   },
 
   /**
+   * 重试生成面试报告（P4Q-4）：评估失败或超时后的用户重试入口。
+   * 已有报告时会话幂等返回，不会重复评分。
+   */
+  async retryEvaluation(sessionId: string): Promise<InterviewSession> {
+    return request.post<InterviewSession>(
+      `/api/interview/sessions/${sessionId}/evaluate/retry`
+    );
+  },
+
+  /**
    * 查找未完成的面试会话
    */
   async findUnfinishedSession(resumeId: number): Promise<InterviewSession | null> {

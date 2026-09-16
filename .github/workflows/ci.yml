@@ -136,6 +136,7 @@ jobs:
           pnpm run test:code-language
           pnpm run test:interview-turns
           pnpm run test:profile-impact
+          pnpm run test:evaluate-polling
           pnpm run test:resume-patch-selection
           pnpm run test:resume-content-edit
 

@@ -1,5 +1,6 @@
 package interview.guide.modules.interview.model;
 
+import interview.guide.common.model.AsyncTaskStatus;
 import java.util.List;
 
 /**
@@ -14,19 +15,34 @@ public record InterviewSessionDTO(
     SessionStatus status,
     Long knowledgeBaseId,
     String interviewCategory,
-    boolean adaptive
+    boolean adaptive,
+    /**
+     * 报告异步任务状态（P4Q-4）：null = 尚未进入评估（会话进行中）。
+     *
+     * <p>前端据它区分「评估中」（PENDING/PROCESSING）与「评估失败」（FAILED）——
+     * 只看 {@code status} 时两者都是 COMPLETED，失败会被一直显示成「评估中」。
+     */
+    AsyncTaskStatus evaluateStatus,
+    /** 评估失败原因（evaluateStatus = FAILED 时用于展示与排查） */
+    String evaluateError
 ) {
-    /** 兼容旧构造点（无 adaptive 的调用），默认非自适应 */
-    public InterviewSessionDTO {
-        // 空
+
+    /** 兼容旧构造点（无评估状态：进行中会话与内部恢复路径） */
+    public InterviewSessionDTO(
+        String sessionId, String resumeText, int totalQuestions, int currentQuestionIndex,
+        List<InterviewQuestionDTO> questions, SessionStatus status,
+        Long knowledgeBaseId, String interviewCategory, boolean adaptive) {
+        this(sessionId, resumeText, totalQuestions, currentQuestionIndex, questions, status,
+            knowledgeBaseId, interviewCategory, adaptive, null, null);
     }
 
+    /** 兼容旧构造点（无 adaptive 与评估状态），默认非自适应 */
     public InterviewSessionDTO(
         String sessionId, String resumeText, int totalQuestions, int currentQuestionIndex,
         List<InterviewQuestionDTO> questions, SessionStatus status,
         Long knowledgeBaseId, String interviewCategory) {
         this(sessionId, resumeText, totalQuestions, currentQuestionIndex, questions,
-            status, knowledgeBaseId, interviewCategory, false);
+            status, knowledgeBaseId, interviewCategory, false, null, null);
     }
 
     public enum SessionStatus {

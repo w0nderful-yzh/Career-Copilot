@@ -47,6 +47,20 @@ class SkillProfilePipelineIntegrationTest {
 
   private static final String E2E_SESSION_ID = "e2e0000000000001";
 
+  /**
+   * 播种用的技能名刻意带前缀，避免撞上真实数据。
+   *
+   * <p>本类直连**共享的 dev 数据库**，而聚合是按技能对全部证据求均值——用真实技能名
+   * （MySQL / JVM / Redis）播种时，只要开发者自己跑过一场面试，均值里就会混入真实证据，
+   * 断言必然失败（实测：MySQL 期望 83，混入一条 42 分的真实证据后变成 69）。
+   * 用独有技能名既能覆盖同一条链路，又不会误伤真实数据，也不会被真实数据影响。
+   */
+  private static final String E2E_SKILL_A = "e2e-mysql-probe";
+
+  private static final String E2E_SKILL_B = "e2e-jvm-probe";
+
+  private static final String E2E_SKILL_UNANSWERED = "e2e-redis-probe";
+
   /** 探测超时（毫秒）：只判断端口是否可连，不等待业务响应 */
   private static final int PROBE_TIMEOUT_MS = 1000;
 
@@ -196,10 +210,15 @@ class SkillProfilePipelineIntegrationTest {
     evidenceRepository.findBySourceTypeAndSourceIdStartingWith(
             EvidenceSourceType.INTERVIEW_TURN, E2E_SESSION_ID + ":")
         .forEach(evidenceRepository::delete);
+    // 播种用的探针技能同样兜底清理，避免任何路径把它留在真实画像里
+    for (String skill : List.of(E2E_SKILL_A, E2E_SKILL_B, E2E_SKILL_UNANSWERED)) {
+      profileRepository.findByUserIdAndSkill("default", skill)
+          .ifPresent(profileRepository::delete);
+    }
   }
 
   @Test
-  @DisplayName("提取→聚合→级联：种子会话产出 MySQL=83(2题) 且 JVM=55(1题)，Redis 无证据不入画像")
+  @DisplayName("提取→聚合→级联：种子会话产出 均值=83(2题) 与 55(1题)，未作答不入画像")
   void fullPipelineExtractsAggregatesAndCascades() {
     // 测试自播种：一场 4 题面试（3 题真实作答 + 1 题未作答）
     InterviewSessionEntity session = new InterviewSessionEntity();
@@ -211,36 +230,36 @@ class SkillProfilePipelineIntegrationTest {
     session.setCompletedAt(java.time.LocalDateTime.of(2026, 8, 28, 12, 0));
     session.setQuestionsJson("[]");
     sessionRepository.save(session);
-    seedAnswer(0, "MySQL", "InnoDB 使用 B+ 树索引", 88);
-    seedAnswer(1, "MySQL", "MVCC 实现事务隔离", 78);
-    seedAnswer(2, "JVM", "G1 按 Region 分堆", 55);
-    seedAnswer(3, "Redis", null, 0); // 未作答：不算证据
+    seedAnswer(0, E2E_SKILL_A, "InnoDB 使用 B+ 树索引", 88);
+    seedAnswer(1, E2E_SKILL_A, "MVCC 实现事务隔离", 78);
+    seedAnswer(2, E2E_SKILL_B, "G1 按 Region 分堆", 55);
+    seedAnswer(3, E2E_SKILL_UNANSWERED, null, 0); // 未作答：不算证据
 
     // 1. 提取：4 题中只有 3 题入证据
     List<SkillEvidenceEntity> evidences = extractor.extract(E2E_SESSION_ID);
     assertThat(evidences).hasSize(3);
 
-    // 2. 聚合：MySQL=(88+78)/2=83，JVM=55，Redis 不出画像
+    // 2. 聚合：探针技能 A=(88+78)/2=83，B=55，未作答技能不出画像
     aggregator.applyEvidence(evidences);
 
-    assertThat(profileRepository.findByUserIdAndSkill("default", "MySQL"))
+    assertThat(profileRepository.findByUserIdAndSkill("default", E2E_SKILL_A))
         .hasValueSatisfying(profile -> {
           assertThat(profile.getScore()).isEqualTo(83);
           assertThat(profile.getEvidenceCount()).isEqualTo(2);
         });
-    assertThat(profileRepository.findByUserIdAndSkill("default", "JVM"))
+    assertThat(profileRepository.findByUserIdAndSkill("default", E2E_SKILL_B))
         .hasValueSatisfying(profile -> {
           assertThat(profile.getScore()).isEqualTo(55);
           assertThat(profile.getEvidenceCount()).isEqualTo(1);
         });
-    assertThat(profileRepository.findByUserIdAndSkill("default", "Redis")).isEmpty();
+    assertThat(profileRepository.findByUserIdAndSkill("default", E2E_SKILL_UNANSWERED)).isEmpty();
 
     // 3. 删除级联：清掉该会话证据后画像行同步消失
     aggregator.removeInterviewSessionEvidence(E2E_SESSION_ID);
     assertThat(evidenceRepository.findBySourceTypeAndSourceIdStartingWith(
         EvidenceSourceType.INTERVIEW_TURN, E2E_SESSION_ID + ":")).isEmpty();
-    assertThat(profileRepository.findByUserIdAndSkill("default", "MySQL")).isEmpty();
-    assertThat(profileRepository.findByUserIdAndSkill("default", "JVM")).isEmpty();
+    assertThat(profileRepository.findByUserIdAndSkill("default", E2E_SKILL_A)).isEmpty();
+    assertThat(profileRepository.findByUserIdAndSkill("default", E2E_SKILL_B)).isEmpty();
   }
 
   /** 播种一条作答回答（session_id 关联通过 JPA 关系维护） */

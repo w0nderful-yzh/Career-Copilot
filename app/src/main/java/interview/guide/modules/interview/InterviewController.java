@@ -147,6 +147,19 @@ public class InterviewController {
     }
     
     /**
+     * 重试生成面试报告（P4Q-4）。
+     *
+     * <p>评估失败或长时间未完成时的用户重试入口；已有报告时幂等返回当前会话。
+     */
+    @PostMapping("/api/interview/sessions/{sessionId}/evaluate/retry")
+    @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 5)
+    @RateLimit(dimension = RateLimit.Dimension.IP, count = 5)
+    public Result<InterviewSessionDTO> retryEvaluation(@PathVariable String sessionId) {
+        log.info("重试生成面试报告: {}", sessionId);
+        return Result.success(sessionService.retryEvaluation(sessionId));
+    }
+
+    /**
      * 获取面试会话详情
      * GET /api/interview/sessions/{sessionId}/details
      */

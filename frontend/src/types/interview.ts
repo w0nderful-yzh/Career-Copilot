@@ -43,6 +43,8 @@ export interface InterviewQuestion {
   feedback: string | null;
   isFollowUp?: boolean;
   parentQuestionIndex?: number | null;
+  /** 追问序号（P4Q-6）：同一主问题下的第几条追问，主问题为 null；技能名不再拼序号 */
+  followUpIndex?: number | null;
   referenceAnswer?: string | null;
   keyPoints?: string[];
   scoringRubric?: string | null;

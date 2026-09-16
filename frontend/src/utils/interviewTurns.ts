@@ -13,6 +13,8 @@ export interface InterviewTurn {
   question?: string;
   category?: string;
   isFollowUp?: boolean;
+  /** 追问序号；与 isFollowUp 一起表达追问身份，不依赖技能名后缀 */
+  followUpIndex?: number | null;
   answer?: string;
 }
 
@@ -45,6 +47,7 @@ export function toInterviewerTurn(question: InterviewQuestion, index: number): I
     question: question.question,
     category: question.category,
     isFollowUp: question.isFollowUp,
+    followUpIndex: question.followUpIndex ?? null,
   };
 }
 

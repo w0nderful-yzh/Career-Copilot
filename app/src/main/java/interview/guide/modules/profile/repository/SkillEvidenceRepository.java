@@ -5,6 +5,8 @@ import interview.guide.modules.profile.model.SkillEvidenceEntity;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 /**
@@ -36,4 +38,14 @@ public interface SkillEvidenceRepository extends JpaRepository<SkillEvidenceEnti
 
   /** 声明型证据查询：某技能下按来源类型过滤（区分「有分」与「仅简历声明」） */
   List<SkillEvidenceEntity> findByUserIdAndSourceType(String userId, EvidenceSourceType sourceType);
+
+  /**
+   * 历史伪技能（技能名里拼了「（追问N）」）候选查询（P4Q-6 修复用）。
+   *
+   * <p>只做粗筛（LIKE），真正的判定交给 {@code SkillNameNormalizer} 的严格正则，
+   * 避免把恰好含「追问」二字的正常技能名误伤。
+   */
+  @Query("select e from SkillEvidenceEntity e where e.userId = :userId "
+      + "and (e.skill like '%（追问%' or e.skill like '%(追问%')")
+  List<SkillEvidenceEntity> findFollowUpSuffixedSkills(@Param("userId") String userId);
 }

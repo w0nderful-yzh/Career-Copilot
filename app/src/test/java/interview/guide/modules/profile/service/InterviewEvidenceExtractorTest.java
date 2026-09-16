@@ -100,5 +100,39 @@ class InterviewEvidenceExtractorTest {
 
       assertThat(extractor.extract("missing")).isEmpty();
     }
+
+    @Test
+    @DisplayName("兼容历史分类后缀：追问题并入主问题技能，不产出伪技能（P4Q-6）")
+    void normalizesLegacyFollowUpCategorySuffix() {
+      when(sessionRepository.findBySessionId("abc123")).thenReturn(Optional.of(
+          sessionWithAnswers(List.of(
+              answered(0, "Java", "主问题回答", 70),
+              answered(1, "Java（追问1）", "追问回答", 52),
+              answered(2, "系统设计/场景题（追问2）", "又是追问", 82)), null)));
+
+      List<SkillEvidenceEntity> evidences = extractor.extract("abc123");
+
+      assertThat(evidences)
+          .extracting(SkillEvidenceEntity::getSkill)
+          .containsExactly("Java", "Java", "系统设计/场景题");
+      assertThat(evidences).noneMatch(e -> e.getSkill().contains("追问"));
+    }
+
+    @Test
+    @DisplayName("历史后缀归一化后与主问题技能同名，但来源不同不受影响")
+    void normalizedFollowUpKeepsDistinctSources() {
+      when(sessionRepository.findBySessionId("abc123")).thenReturn(Optional.of(
+          sessionWithAnswers(List.of(
+              answered(0, "Java", "主问题回答", 70),
+              answered(1, "Java（追问1）", "追问回答", 52)), null)));
+
+      List<SkillEvidenceEntity> evidences = extractor.extract("abc123");
+
+      assertThat(evidences)
+          .extracting(SkillEvidenceEntity::getSourceId)
+          .containsExactly("abc123:0", "abc123:1");
+      assertThat(evidences)
+          .allSatisfy(e -> assertThat(e.getSkill()).isEqualTo("Java"));
+    }
   }
 }

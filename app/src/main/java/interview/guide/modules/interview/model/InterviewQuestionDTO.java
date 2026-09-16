@@ -27,7 +27,15 @@ public record InterviewQuestionDTO(
     String sourceContext,
     Integer difficulty,    // 数值难度 1-5（低→高），null 表示未标注（知识库题等来源）
     String followUpType,   // 追问语义类型（DEPTH/SCENARIO/WHY/...），主问题为 null
-    List<String> expectedPoints  // 期望答出的要点（供评估与决策参考），可为 null
+    List<String> expectedPoints,  // 期望答出的要点（供评估与决策参考），可为 null
+    /**
+     * 追问序号（P4Q-6）：同一主问题下的第几条追问，主问题为 null。
+     *
+     * <p>此前追问序号被**烘焙进 category**（如 "JVM（追问1）"），而 category 同时是
+     * 画像证据的技能名，于是产生「Java（追问1）」这类伪技能。追问身份改为本字段独立表达，
+     * category 恒为稳定技能名。
+     */
+    Integer followUpIndex
 ) {
     /** 追问类型：继续深挖原理（默认） */
     public static final String FOLLOW_UP_DEPTH = "DEPTH";
@@ -42,7 +50,7 @@ public record InterviewQuestionDTO(
     public static InterviewQuestionDTO create(int index, String question, String type, String category) {
         return new InterviewQuestionDTO(
             index, question, type, category, null, null, null, null, false, null, null, null, null, null,
-            null, null, null);
+            null, null, null, null);
     }
 
     /** 顺序题单工厂（现 /interview 页沿用线性语义；P4-1 生成的题也走此工厂） */
@@ -50,7 +58,7 @@ public record InterviewQuestionDTO(
                                                String topicSummary, boolean isFollowUp, Integer parentQuestionIndex) {
         return new InterviewQuestionDTO(
             index, question, type, category, topicSummary, null, null, null, isFollowUp, parentQuestionIndex,
-            null, null, null, null, null, null, null);
+            null, null, null, null, null, null, null, null);
     }
 
     /** P4-1 主问题工厂：带数值难度与考察要点（供自适应决策/评估） */
@@ -59,16 +67,22 @@ public record InterviewQuestionDTO(
                                                    List<String> expectedPoints) {
         return new InterviewQuestionDTO(
             index, question, type, category, topicSummary, null, null, null, false, null,
-            null, null, null, null, difficulty, null, expectedPoints);
+            null, null, null, null, difficulty, null, expectedPoints, null);
     }
 
-    /** P4-1 追问工厂：挂到父主问题，带追问语义类型 */
+    /**
+     * P4-1 追问工厂：挂到父主问题，带追问语义类型与**追问序号**。
+     *
+     * <p>category 传主问题的稳定技能名（不要自己拼「（追问N）」）——追问身份由
+     * followUpIndex 独立表达，拼进技能名会污染画像证据（见 P4Q-6）。
+     */
     public static InterviewQuestionDTO createFollowUp(int index, String question, String type, String category,
-                                                       int mainIndex, String followUpType,
+                                                       int mainIndex, int followUpIndex, String followUpType,
                                                        List<String> expectedPoints) {
         return new InterviewQuestionDTO(
             index, question, type, category, null, null, null, null, true, mainIndex,
-            null, null, null, null, null, followUpType, expectedPoints);
+            null, null, null, null, null, followUpType, expectedPoints,
+            followUpIndex > 0 ? followUpIndex : null);
     }
 
     /** 题库来源工厂（知识库等：无 P4-1 数值难度，difficulty 留空由决策期默认） */
@@ -78,7 +92,7 @@ public record InterviewQuestionDTO(
                                                         String scoringRubric, String sourceContext) {
         return new InterviewQuestionDTO(
             index, question, type, category, topicSummary, null, null, null, false, null,
-            referenceAnswer, keyPoints, scoringRubric, sourceContext, null, null, null);
+            referenceAnswer, keyPoints, scoringRubric, sourceContext, null, null, null, null);
     }
 
     /** 题库追问工厂（知识库等来源的追问：带参考答案，但无 P4-1 followUpType 标注） */
@@ -88,21 +102,21 @@ public record InterviewQuestionDTO(
                                                                 String scoringRubric, String sourceContext) {
         return new InterviewQuestionDTO(
             index, question, type, category, null, null, null, null, true, mainIndex,
-            referenceAnswer, keyPoints, scoringRubric, sourceContext, null, null, null);
+            referenceAnswer, keyPoints, scoringRubric, sourceContext, null, null, null, null);
     }
 
     public InterviewQuestionDTO withAnswer(String answer) {
         return new InterviewQuestionDTO(
             questionIndex, question, type, category, topicSummary, answer, score, feedback,
             isFollowUp, parentQuestionIndex, referenceAnswer, keyPoints, scoringRubric, sourceContext,
-            difficulty, followUpType, expectedPoints);
+            difficulty, followUpType, expectedPoints, followUpIndex);
     }
 
     public InterviewQuestionDTO withEvaluation(int score, String feedback) {
         return new InterviewQuestionDTO(
             questionIndex, question, type, category, topicSummary, userAnswer, score, feedback,
             isFollowUp, parentQuestionIndex, referenceAnswer, keyPoints, scoringRubric, sourceContext,
-            difficulty, followUpType, expectedPoints);
+            difficulty, followUpType, expectedPoints, followUpIndex);
     }
 
     /**
@@ -116,6 +130,6 @@ public record InterviewQuestionDTO(
         return new InterviewQuestionDTO(
             newIndex, question, type, category, topicSummary, userAnswer, score, feedback,
             isFollowUp, newParentQuestionIndex, referenceAnswer, keyPoints, scoringRubric,
-            sourceContext, difficulty, followUpType, expectedPoints);
+            sourceContext, difficulty, followUpType, expectedPoints, followUpIndex);
     }
 }

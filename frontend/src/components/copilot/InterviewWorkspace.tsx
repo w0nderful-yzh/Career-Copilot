@@ -317,7 +317,7 @@ export default function InterviewWorkspace({
                     {turn.category || '面试官'}
                     {turn.isFollowUp && (
                       <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600 dark:bg-amber-900/40 dark:text-amber-300">
-                        追问
+                        追问{turn.followUpIndex ? ` ${turn.followUpIndex}` : ''}
                       </span>
                     )}
                   </p>

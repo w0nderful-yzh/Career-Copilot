@@ -69,11 +69,18 @@ public class InterviewEvidenceExtractor {
     return evidences;
   }
 
-  /** category 为空时归入未知技能并丢弃（无技能归属的证据不参与聚合） */
+  /**
+   * category → 技能名。
+   *
+   * <p>P4Q-6：历史数据里追问序号被拼进了 category（`Java（追问1）`），直接当技能名会产出
+   * 伪技能；这里统一归一化，使历史与新增数据落在同一个稳定技能标识上。
+   * category 为空时丢弃（无技能归属的证据不参与聚合）。
+   */
   private String normalizeSkill(String category) {
     if (category == null || category.isBlank()) {
       return null;
     }
-    return category.trim();
+    String skill = SkillNameNormalizer.normalize(category);
+    return skill == null || skill.isBlank() ? null : skill;
   }
 }

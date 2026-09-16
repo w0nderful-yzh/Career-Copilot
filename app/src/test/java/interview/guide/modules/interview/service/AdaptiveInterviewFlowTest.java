@@ -122,8 +122,7 @@ class AdaptiveInterviewFlowTest {
     return List.of(
         InterviewQuestionDTO.createMain(0, "R1: 介绍你最有挑战的项目", "PROJECT", "项目",
             "项目深挖", 3, List.of("背景", "个人贡献")),
-        InterviewQuestionDTO.createFollowUp(1, "RF1: 你具体负责哪一块？", "PROJECT", "项目（追问1）",
-            0, InterviewQuestionDTO.FOLLOW_UP_DEPTH, List.of("职责边界"))
+        InterviewQuestionDTO.createFollowUp(1, "RF1: 你具体负责哪一块？", "PROJECT", "项目", 0, 1, InterviewQuestionDTO.FOLLOW_UP_DEPTH, List.of("职责边界"))
     );
   }
 
@@ -132,8 +131,7 @@ class AdaptiveInterviewFlowTest {
     return List.of(
         InterviewQuestionDTO.createMain(0, "Q1: JVM 内存模型？", "JVM", "JVM",
             "运行时数据区", 4, List.of("堆", "栈", "方法区")),
-        InterviewQuestionDTO.createFollowUp(1, "QF1: 堆为什么分代？", "JVM", "JVM（追问1）",
-            0, InterviewQuestionDTO.FOLLOW_UP_WHY, List.of("分代假设")),
+        InterviewQuestionDTO.createFollowUp(1, "QF1: 堆为什么分代？", "JVM", "JVM", 0, 1, InterviewQuestionDTO.FOLLOW_UP_WHY, List.of("分代假设")),
         InterviewQuestionDTO.createMain(2, "Q2: Redis 持久化？", "REDIS", "Redis",
             "RDB/AOF", 3, List.of("RDB", "AOF"))
     );

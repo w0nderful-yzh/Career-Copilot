@@ -1,15 +1,21 @@
 package interview.guide.modules.interview.service;
 
+import interview.guide.common.ai.LlmProviderRegistry;
+import interview.guide.common.ai.PromptSanitizer;
+import interview.guide.common.ai.StructuredOutputInvoker;
 import interview.guide.modules.interview.model.InterviewQuestionDTO;
 import interview.guide.modules.interview.service.InterviewQuestionService.FollowUpDTO;
 import interview.guide.modules.interview.service.InterviewQuestionService.QuestionDTO;
 import interview.guide.modules.interview.service.InterviewQuestionService.QuestionListDTO;
+import interview.guide.modules.interview.skill.InterviewSkillService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.core.io.DefaultResourceLoader;
 
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
 
 /**
  * P4-1 题库结构化：生成 schema 字段（difficulty/expectedPoints/followUpType）
@@ -17,6 +23,31 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @DisplayName("面试问题生成转换（P4-1 题库结构化）")
 class InterviewQuestionServiceTest {
+
+  /**
+   * 轻量构造：模板从真实 classpath 资源加载，其余依赖 mock，不触发任何 LLM 调用。
+   * 这样纯转换逻辑（convertToQuestions / mergeQuestionBatches）可以直接测。
+   */
+  private static InterviewQuestionService newService() {
+    return newService(1);
+  }
+
+  /** followUpCount 决定每个主问题保留几条追问（默认 1），需要验证多条追问时显式指定 */
+  private static InterviewQuestionService newService(int followUpCount) {
+    InterviewQuestionProperties properties = new InterviewQuestionProperties();
+    properties.setFollowUpCount(followUpCount);
+    try {
+      return new InterviewQuestionService(
+          mock(StructuredOutputInvoker.class),
+          mock(InterviewSkillService.class),
+          properties,
+          new DefaultResourceLoader(),
+          mock(LlmProviderRegistry.class),
+          mock(PromptSanitizer.class));
+    } catch (Exception e) {
+      throw new IllegalStateException("构造 InterviewQuestionService 失败", e);
+    }
+  }
 
   /** 直接 new 服务不方便（构造器加载模板），仅验证可包级访问的转换方法；通过空壳子类不必要——用静态方式调用转换需实例。
    *  因此这里通过构造轻量实例：构造器需要 ResourceLoader 等，代价高。改为测 DTO 工厂语义 + 归一逻辑由
@@ -33,7 +64,7 @@ class InterviewQuestionServiceTest {
     assertThat(main.followUpType()).isNull();
 
     InterviewQuestionDTO followUp = InterviewQuestionDTO.createFollowUp(
-        1, "线上频繁 Full GC 如何排查？", "JVM", "JVM（追问1）", 0,
+        1, "线上频繁 Full GC 如何排查？", "JVM", "JVM", 0, 1,
         InterviewQuestionDTO.FOLLOW_UP_SCENARIO, List.of("日志", "heap dump"));
     assertThat(followUp.isFollowUp()).isTrue();
     assertThat(followUp.parentQuestionIndex()).isZero();
@@ -109,7 +140,7 @@ class InterviewQuestionServiceTest {
     InterviewQuestionDTO directionMain = InterviewQuestionDTO.createMain(
         0, "Minor GC 与 Full GC 的区别？", "JVM", "JVM", "GC 对比", 4, List.of("分代", "STW"));
     InterviewQuestionDTO directionFollowUp = InterviewQuestionDTO.createFollowUp(
-        1, "线上频繁 Full GC 怎么排查？", "JVM", "JVM（追问1）", 0,
+        1, "线上频繁 Full GC 怎么排查？", "JVM", "JVM", 0, 1,
         InterviewQuestionDTO.FOLLOW_UP_SCENARIO, List.of("jstat", "heap dump"));
 
     List<InterviewQuestionDTO> merged = InterviewQuestionService.mergeQuestionBatches(
@@ -134,7 +165,45 @@ class InterviewQuestionServiceTest {
     assertThat(merged.get(2).expectedPoints()).containsExactly("jstat", "heap dump");
     // 追问不仅元数据要保留，内容与分类也必须原样
     assertThat(merged.get(2).question()).isEqualTo("线上频繁 Full GC 怎么排查？");
-    assertThat(merged.get(2).category()).isEqualTo("JVM（追问1）");
+    // P4Q-6：技能名恒为稳定标识（不拼「（追问N）」），追问身份走独立元数据——
+    // 拼进技能名会经 answers.category 变成画像伪技能
+    assertThat(merged.get(2).category()).isEqualTo("JVM");
+    assertThat(merged.get(2).followUpIndex()).isEqualTo(1);
+    assertThat(merged.get(1).followUpIndex()).as("主问题的追问序号为空").isNull();
+  }
+
+  @Test
+  @DisplayName("出题转换：追问并入主问题技能，序号写入独立元数据（P4Q-6）")
+  void followUpUsesStableSkillAndSeparateOrdinal() {
+    FollowUpDTO classFollowUp = new FollowUpDTO(
+        "堆为什么分代？", InterviewQuestionDTO.FOLLOW_UP_WHY, List.of("分代假设"));
+    FollowUpDTO secondFollowUp = new FollowUpDTO(
+        "线上 OOM 怎么定位？", InterviewQuestionDTO.FOLLOW_UP_SCENARIO, List.of("heap dump"));
+
+    List<InterviewQuestionDTO> questions = newService(2).convertToQuestions(
+        new InterviewQuestionService.QuestionListDTO(List.of(
+            new InterviewQuestionService.QuestionDTO(
+                "JVM 内存模型？", "JVM", "JVM", "运行时数据区", 4, List.of("堆", "栈"),
+                List.of(classFollowUp, secondFollowUp)))),
+        3);
+
+    assertThat(questions).hasSize(3);
+    InterviewQuestionDTO main = questions.get(0);
+    InterviewQuestionDTO firstFollowUp = questions.get(1);
+    InterviewQuestionDTO secondFollowUpQuestion = questions.get(2);
+
+    assertThat(main.category()).isEqualTo("JVM");
+    assertThat(main.followUpIndex()).isNull();
+    // 两条追问与主问题同属一个技能，序号各自独立
+    assertThat(List.of(firstFollowUp, secondFollowUpQuestion))
+        .allSatisfy(question -> assertThat(question.category()).isEqualTo("JVM"));
+    assertThat(firstFollowUp.followUpIndex()).isEqualTo(1);
+    assertThat(secondFollowUpQuestion.followUpIndex()).isEqualTo(2);
+    assertThat(firstFollowUp.parentQuestionIndex()).isEqualTo(0);
+    assertThat(secondFollowUpQuestion.parentQuestionIndex()).isEqualTo(0);
+    // 技能名里不得再出现追问序号（回归护栏）
+    assertThat(questions)
+        .allSatisfy(question -> assertThat(question.category()).doesNotContain("追问"));
   }
 
   @Test
@@ -153,7 +222,7 @@ class InterviewQuestionServiceTest {
   @DisplayName("withIndex 保留全部结构化字段，只改索引")
   void withIndexOnlyChangesIndexes() {
     InterviewQuestionDTO followUp = InterviewQuestionDTO.createFollowUp(
-        1, "追问内容", "JVM", "JVM（追问1）", 0,
+        1, "追问内容", "JVM", "JVM", 0, 1,
         InterviewQuestionDTO.FOLLOW_UP_WHY, List.of("原理"));
 
     InterviewQuestionDTO reindexed = followUp.withIndex(7, 6);

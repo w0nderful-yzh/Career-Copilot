@@ -365,9 +365,11 @@ public class InterviewQuestionService {
             for (int i = 0; i < followUps.size(); i++) {
                 FollowUpDTO followUp = followUps.get(i);
                 // 追问不重复携带整体难度：决策引擎在 P4-3 依据主问题难度与作答质量决定是否加难
+                // P4Q-6：category 保持主问题的稳定技能名（不再拼「（追问N）」），
+                // 追问序号由 followUpIndex 独立表达——否则它会经 answers.category 变成画像伪技能
                 questions.add(InterviewQuestionDTO.createFollowUp(
                     index++, followUp.question(), type,
-                    buildFollowUpCategory(q.category(), i + 1), mainQuestionIndex,
+                    q.category(), mainQuestionIndex, i + 1,
                     normalizeFollowUpType(followUp.followUpType()),
                     sanitizeExpectedPoints(followUp.expectedPoints())
                 ));
@@ -470,7 +472,7 @@ public class InterviewQuestionService {
                 for (int j = 0; j < followUpCount; j++) {
                     questions.add(InterviewQuestionDTO.createFollowUp(
                         index++, buildDefaultFollowUp(question, j + 1),
-                        cat.key(), buildFollowUpCategory(cat.label(), j + 1), mainIndex,
+                        cat.key(), cat.label(), mainIndex, j + 1,
                         j == 0 ? InterviewQuestionDTO.FOLLOW_UP_SCENARIO : InterviewQuestionDTO.FOLLOW_UP_DEPTH,
                         List.of()
                     ));
@@ -488,7 +490,7 @@ public class InterviewQuestionService {
             for (int j = 0; j < followUpCount; j++) {
                 questions.add(InterviewQuestionDTO.createFollowUp(
                     index++, buildDefaultFollowUp(q[0], j + 1),
-                    q[1], buildFollowUpCategory(q[2], j + 1), mainIndex,
+                    q[1], q[2], mainIndex, j + 1,
                     j == 0 ? InterviewQuestionDTO.FOLLOW_UP_SCENARIO : InterviewQuestionDTO.FOLLOW_UP_DEPTH,
                     List.of()
                 ));
@@ -538,11 +540,6 @@ public class InterviewQuestionService {
         return "\n\n# Skill Persona\n"
             + "以下内容来自当前面试方向的 SKILL.md，请作为面试官角色、风格与出题约束：\n"
             + promptSanitizer.wrapWithDelimiters("skill_persona", skill.persona());
-    }
-
-    private String buildFollowUpCategory(String category, int order) {
-        String base = (category == null || category.isBlank()) ? "追问" : category;
-        return base + "（追问" + order + "）";
     }
 
     private String buildDefaultFollowUp(String mainQuestion, int order) {

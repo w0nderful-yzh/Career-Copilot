@@ -22,10 +22,10 @@ class AdaptiveInterviewPolicyTest {
   private static List<InterviewQuestionDTO> twoTopicSession() {
     List<InterviewQuestionDTO> list = new ArrayList<>();
     list.add(InterviewQuestionDTO.createMain(0, "Q1: JVM 内存模型？", "JVM", "JVM", "内存", 3, List.of("堆", "栈")));
-    list.add(InterviewQuestionDTO.createFollowUp(1, "F1a: 堆区如何分代？", "JVM", "JVM（追问1）", 0, "DEPTH", List.of("young")));
-    list.add(InterviewQuestionDTO.createFollowUp(2, "F1b: Full GC 触发条件？", "JVM", "JVM（追问2）", 0, "SCENARIO", List.of("old")));
+    list.add(InterviewQuestionDTO.createFollowUp(1, "F1a: 堆区如何分代？", "JVM", "JVM", 0, 1, "DEPTH", List.of("young")));
+    list.add(InterviewQuestionDTO.createFollowUp(2, "F1b: Full GC 触发条件？", "JVM", "JVM", 0, 2, "SCENARIO", List.of("old")));
     list.add(InterviewQuestionDTO.createMain(3, "Q2: Redis 持久化？", "REDIS", "Redis", "持久化", 3, List.of("RDB", "AOF")));
-    list.add(InterviewQuestionDTO.createFollowUp(4, "F2a: AOF 重写？", "REDIS", "Redis（追问1）", 3, "DEPTH", List.of("rewrite")));
+    list.add(InterviewQuestionDTO.createFollowUp(4, "F2a: AOF 重写？", "REDIS", "Redis", 3, 1, "DEPTH", List.of("rewrite")));
     return list;
   }
 

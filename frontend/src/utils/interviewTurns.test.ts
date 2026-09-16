@@ -44,9 +44,22 @@ function session(overrides: Partial<InterviewSession> = {}): InterviewSession {
 function adaptivePool(): InterviewQuestion[] {
   return [
     question({ questionIndex: 0, question: 'Q1: JVM 内存模型？' }),
-    question({ questionIndex: 1, question: 'F1: 堆区分代？', isFollowUp: true, parentQuestionIndex: 0 }),
+    question({
+      questionIndex: 1,
+      question: 'F1: 堆区分代？',
+      isFollowUp: true,
+      parentQuestionIndex: 0,
+      followUpIndex: 1,
+    }),
     question({ questionIndex: 2, question: 'Q2: Redis 持久化？', category: 'Redis' }),
-    question({ questionIndex: 3, question: 'F2: AOF 重写？', category: 'Redis', isFollowUp: true, parentQuestionIndex: 2 }),
+    question({
+      questionIndex: 3,
+      question: 'F2: AOF 重写？',
+      category: 'Redis',
+      isFollowUp: true,
+      parentQuestionIndex: 2,
+      followUpIndex: 1,
+    }),
   ];
 }
 
@@ -122,6 +135,21 @@ test('索引越界时不抛错，视为无当前题', () => {
   assert.deepEqual(deriveInterviewView(s).turns, []);
 });
 
+test('追问轮次携带独立序号，技能名不含「（追问N）」后缀（P4Q-6）', () => {
+  const pool = adaptivePool();
+  pool[0] = { ...pool[0], userAnswer: '堆和栈' };
+  pool[1] = { ...pool[1], userAnswer: '新生代老年代' };
+
+  const turns = buildAnsweredTurns(session({ questions: pool }));
+
+  // 追问身份由 followUpIndex 表达，展示层据此渲染「追问 N」
+  assert.equal(turns[2].isFollowUp, true);
+  assert.equal(turns[2].followUpIndex, 1);
+  assert.equal(turns[0].followUpIndex, null);
+  // 技能名恒为稳定标识：不能再把序号拼进去（那会变成画像伪技能）
+  assert.ok(!String(turns[2].category).includes('追问'));
+});
+
 test('追问轮次保留追问徽标与所属分类', () => {
   // 主问题答得好 → 进入追问，两轮都作答
   const pool = adaptivePool();
@@ -164,5 +192,6 @@ test('toInterviewerTurn 只搬运展示字段，不带答案', () => {
     question: '题面',
     category: 'Java',
     isFollowUp: false,
+    followUpIndex: null,
   });
 });

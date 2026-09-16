@@ -1,6 +1,8 @@
 package interview.guide.modules.interview;
 
 import interview.guide.common.annotation.RateLimit;
+import interview.guide.common.exception.BusinessException;
+import interview.guide.common.exception.ErrorCode;
 import interview.guide.common.result.Result;
 import interview.guide.modules.interview.model.CreateInterviewRequest;
 import interview.guide.modules.interview.model.InterviewDetailDTO;
@@ -121,6 +123,23 @@ public class InterviewController {
         return Result.success(sessionService.findUnfinishedSessionOrThrow(resumeId));
     }
     
+    /**
+     * 跳过当前题（P4Q-5 一等动作）。
+     *
+     * <p>不调模型、不追问、不计分、不产生画像证据——与「答错」严格区分。
+     */
+    @PostMapping("/api/interview/sessions/{sessionId}/skip")
+    public Result<SubmitAnswerResponse> skipQuestion(
+            @PathVariable String sessionId,
+            @RequestBody Map<String, Object> body) {
+        Integer questionIndex = (Integer) body.get("questionIndex");
+        if (questionIndex == null) {
+            throw new BusinessException(ErrorCode.AGENT_TOOL_ARGUMENT_INVALID, "缺少 questionIndex");
+        }
+        log.info("跳过当前题: 会话{}, 问题{}", sessionId, questionIndex);
+        return Result.success(sessionService.skipQuestion(sessionId, questionIndex));
+    }
+
     /**
      * 暂存答案（不进入下一题）
      */

@@ -16,8 +16,25 @@ public record TurnEvaluation(
     List<String> missingPoints,    // 遗漏/答错的期望要点
     AnswerState answerState,       // 语义状态（决策主输入）
     String recommendedFocus,       // 建议继续追问的方向（30 字内，可为空）
-    boolean evaluatedByLlm         // 是否为 LLM 评估结果；false = NO_ANSWER 短路或 LLM 失败回落
+    boolean evaluatedByLlm,        // 是否为 LLM 评估结果；false = NO_ANSWER 短路或 LLM 失败回落
+    /**
+     * 用户是否明确要求跳过本题（P4Q-5）。
+     *
+     * <p>与 answerState=NO_ANSWER 的区别：NO_ANSWER 是「答不上来 / 明确不会」（诊断信息），
+     * skipRequested 是「我不想答这题」（一等动作）。判定必须走语义，不能做关键词包含匹配——
+     * 否则「不会发生死锁」这类技术回答会被误判成跳过。
+     */
+    boolean skipRequested
 ) {
+
+    /** 兼容构造：未识别到跳过指令 */
+    public TurnEvaluation(int score, double coverage, List<String> coveredPoints,
+                          List<String> missingPoints, AnswerState answerState,
+                          String recommendedFocus, boolean evaluatedByLlm) {
+        this(score, coverage, coveredPoints, missingPoints, answerState, recommendedFocus,
+            evaluatedByLlm, false);
+    }
+
     public enum AnswerState {
         EXCELLENT, GOOD, PARTIAL, WEAK, WRONG, NO_ANSWER
     }
@@ -51,9 +68,14 @@ public record TurnEvaluation(
         return AnswerState.WRONG;
     }
 
-    /** NO_ANSWER 短路结果（不调 LLM） */
+    /** NO_ANSWER 短路结果（不调 LLM）：用户答不上来 / 明确不会 */
     public static TurnEvaluation noAnswer() {
         return new TurnEvaluation(0, 0.0, List.of(), List.of(), AnswerState.NO_ANSWER, "", false);
+    }
+
+    /** 用户明确要求跳过本题（P4Q-5）：不调模型、不追问、不计分 */
+    public static TurnEvaluation skipped() {
+        return new TurnEvaluation(0, 0.0, List.of(), List.of(), AnswerState.NO_ANSWER, "", false, true);
     }
 
     /** LLM 评估失败时的中性回落：未知质量按 PARTIAL 处理，由决策引擎保守推进 */

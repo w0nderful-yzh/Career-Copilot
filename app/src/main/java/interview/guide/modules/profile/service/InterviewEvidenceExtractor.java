@@ -48,7 +48,11 @@ public class InterviewEvidenceExtractor {
     InterviewSessionEntity session = sessionOpt.get();
     List<SkillEvidenceEntity> evidences = new ArrayList<>();
     for (InterviewAnswerEntity answer : session.getAnswers()) {
-      // 只取真实作答且有评分的答案；score 为 null 表示评估未覆盖该题
+      // P4Q-5：只取「真实作答」——跳过/未作答/明确不会是有意记录的事实，不是评分证据
+      if (!answer.countsAsAnswer()) {
+        continue;
+      }
+      // score 为 null 表示评估未覆盖该题（未作答的题目得 0 分是"未考"而非"不会"）
       if (answer.getUserAnswer() == null || answer.getUserAnswer().isBlank()
           || answer.getScore() == null) {
         continue;

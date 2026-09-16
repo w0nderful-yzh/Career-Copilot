@@ -69,7 +69,7 @@ class TurnEvaluationServiceTest {
   @Test
   @DisplayName("模型输出归一：状态合法则按状态默认分补齐缺失分数，coverage 由要点列表计算")
   void normalizesModelOutputWhenScoreMissing() throws Exception {
-    TurnEvalDTO dto = new TurnEvalDTO(null, "PARTIAL", List.of("触发条件"), List.of("发生区域", "STW"), "GC 触发细节");
+    TurnEvalDTO dto = new TurnEvalDTO(null, "PARTIAL", List.of("触发条件"), List.of("发生区域", "STW"), "GC 触发细节", null);
     when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(dto);
 
     TurnEvaluation evaluation = service.evaluateTurn(chatClient, question(), "Young 代满会触发 Minor GC……");
@@ -86,13 +86,13 @@ class TurnEvaluationServiceTest {
   @Test
   @DisplayName("分数越界时夹取到 0-100，状态缺失时按分数推导")
   void clampsScoreAndDerivesStateWhenStateMissing() throws Exception {
-    TurnEvalDTO high = new TurnEvalDTO(120, null, List.of(), List.of(), "");
+    TurnEvalDTO high = new TurnEvalDTO(120, null, List.of(), List.of(), "", null);
     when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(high);
     TurnEvaluation evaluation = service.evaluateTurn(chatClient, question(), "非常完整的回答……");
     assertThat(evaluation.score()).isEqualTo(100);
     assertThat(evaluation.answerState()).isEqualTo(AnswerState.EXCELLENT);
 
-    TurnEvalDTO negative = new TurnEvalDTO(-5, null, List.of(), List.of(), "");
+    TurnEvalDTO negative = new TurnEvalDTO(-5, null, List.of(), List.of(), "", null);
     when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(negative);
     TurnEvaluation low = service.evaluateTurn(chatClient, question(), "回答错误……");
     assertThat(low.score()).isZero();
@@ -102,7 +102,7 @@ class TurnEvaluationServiceTest {
   @Test
   @DisplayName("score 与 answerState 同时存在时以分数为准，状态自洽不需要强行改写")
   void keepsScoreAndStateWhenBothPresent() throws Exception {
-    TurnEvalDTO dto = new TurnEvalDTO(88, "EXCELLENT", List.of("触发条件", "发生区域", "STW"), List.of(), "");
+    TurnEvalDTO dto = new TurnEvalDTO(88, "EXCELLENT", List.of("触发条件", "发生区域", "STW"), List.of(), "", null);
     when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(dto);
     TurnEvaluation evaluation = service.evaluateTurn(chatClient, question(), "回答很完整……");
     assertThat(evaluation.score()).isEqualTo(88);
@@ -125,7 +125,7 @@ class TurnEvaluationServiceTest {
   @DisplayName("未提供期望要点时无要点判定，coverage 回落中性")
   void noExpectedPointsYieldsNeutralCoverage() throws Exception {
     InterviewQuestionDTO bare = InterviewQuestionDTO.create(0, "简单介绍下 JVM？", "JVM", "JVM");
-    TurnEvalDTO dto = new TurnEvalDTO(80, "GOOD", List.of(), List.of(), "");
+    TurnEvalDTO dto = new TurnEvalDTO(80, "GOOD", List.of(), List.of(), "", null);
     when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(dto);
     TurnEvaluation evaluation = service.evaluateTurn(chatClient, bare, "回答……");
     assertThat(evaluation.score()).isEqualTo(80);

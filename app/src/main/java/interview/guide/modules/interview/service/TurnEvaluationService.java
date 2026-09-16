@@ -37,11 +37,21 @@ public class TurnEvaluationService {
 
     private static final Logger log = LoggerFactory.getLogger(TurnEvaluationService.class);
 
-    /** NO_ANSWER 短路词表（精确匹配，避免误伤；其余由 LLM 自行判 NO_ANSWER） */
-    private static final Set<String> NO_ANSWER_PHRASES = Set.of(
+    /**
+     * 跳过指令短路词表（P4Q-5，精确匹配）。
+     *
+     * <p>精确匹配而非包含匹配：包含匹配会把「不会发生死锁」判成不会作答——这是文档明确禁止的。
+     * 更复杂的自然语言（如「这题我会，但打字太麻烦，跳过」）交给模型的语义判断，不在这里猜。
+     */
+    private static final Set<String> SKIP_PHRASES = Set.of(
+        "跳过", "下一个", "下一题", "跳过这题", "pass", "skip", "next", "skip this"
+    );
+
+    /** 「明确不会」短路词表（精确匹配）：作为诊断信息保留，不作为技术评分 */
+    private static final Set<String> DECLINE_PHRASES = Set.of(
         "不会", "不知道", "不清楚", "没复习", "忘了", "忘记了", "不记得",
-        "跳过", "答不上来", "下一个", "不会做", "没学过",
-        "pass", "skip", "next", "no answer", "i don't know", "i do not know", "unknown"
+        "答不上来", "不会做", "没学过",
+        "no answer", "i don't know", "i do not know", "unknown"
     );
 
     /** 数值难度 → 提示用描述（题目难度参与评分校准） */
@@ -71,7 +81,9 @@ public class TurnEvaluationService {
         String answerState,
         List<String> coveredPoints,
         List<String> missingPoints,
-        String recommendedFocus
+        String recommendedFocus,
+        /** 用户是否在作答中明确要求跳过本题（P4Q-5）；有实质回答内容时即使夹带指令也应为 false */
+        Boolean skipRequested
     ) {}
 
     public TurnEvaluationService(
@@ -97,8 +109,13 @@ public class TurnEvaluationService {
      */
     public TurnEvaluation evaluateTurn(ChatClient chatClient, InterviewQuestionDTO question, String userAnswer) {
         String answer = userAnswer == null ? "" : userAnswer.trim();
-        if (answer.isEmpty() || isNoAnswerPhrase(answer)) {
+        if (answer.isEmpty()) {
             return TurnEvaluation.noAnswer();
+        }
+        // 精确匹配的短回答直接短路，不花模型调用；两类指令语义不同，分别落到跳过与明确不会
+        TurnEvaluation shortCircuit = shortCircuit(answer);
+        if (shortCircuit != null) {
+            return shortCircuit;
         }
         if (answer.length() > MAX_ANSWER_CHARS) {
             answer = answer.substring(0, MAX_ANSWER_CHARS);
@@ -132,9 +149,32 @@ public class TurnEvaluationService {
         }
     }
 
-    static boolean isNoAnswerPhrase(String answer) {
+    /**
+     * 精确匹配的短路结果：跳过指令 / 明确不会；非指令返回 null（交由模型判定）。
+     *
+     * <p>public 是刻意的：运行期的答案状态归类与历史数据修复必须用**同一判据**，
+     * 否则「修复口径」和「今后行为口径」会分叉。
+     */
+    public static TurnEvaluation shortCircuit(String answer) {
+        if (answer == null) {
+            return null;
+        }
         String normalized = answer.trim().toLowerCase();
-        return NO_ANSWER_PHRASES.contains(normalized);
+        if (SKIP_PHRASES.contains(normalized)) {
+            return TurnEvaluation.skipped();
+        }
+        if (DECLINE_PHRASES.contains(normalized)) {
+            return TurnEvaluation.noAnswer();
+        }
+        return null;
+    }
+
+    static boolean isNoAnswerPhrase(String answer) {
+        if (answer == null) {
+            return false;
+        }
+        String normalized = answer.trim().toLowerCase();
+        return DECLINE_PHRASES.contains(normalized) || SKIP_PHRASES.contains(normalized);
     }
 
     /**
@@ -162,6 +202,11 @@ public class TurnEvaluationService {
         String focus = dto.recommendedFocus() == null ? "" : dto.recommendedFocus().trim();
         if (focus.length() > MAX_FOCUS_CHARS) {
             focus = focus.substring(0, MAX_FOCUS_CHARS);
+        }
+        boolean skipRequested = Boolean.TRUE.equals(dto.skipRequested());
+        // 跳过与「有实质作答」互斥：模型偶尔会同时给出分数与跳过，以代码规则收敛
+        if (skipRequested) {
+            return TurnEvaluation.skipped();
         }
         return new TurnEvaluation(score, coverage, covered, missing, state, focus, true);
     }

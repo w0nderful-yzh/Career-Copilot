@@ -2,6 +2,7 @@ package interview.guide.modules.profile;
 
 import interview.guide.common.annotation.RateLimit;
 import interview.guide.common.result.Result;
+import interview.guide.modules.profile.service.ProfileSkipRepairService;
 import interview.guide.modules.profile.service.SkillProfileRepairService;
 import interview.guide.modules.profile.service.SkillProfileRepairService.RepairReport;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -23,6 +24,22 @@ import org.springframework.web.bind.annotation.RestController;
 public class ProfileMaintenanceController {
 
   private final SkillProfileRepairService repairService;
+  private final ProfileSkipRepairService skipRepairService;
+
+  /**
+   * 修复历史「跳过被当成答案计分」的数据（P4Q-5）。
+   *
+   * <p>会调用模型复核候选答案（仅「已标记作答但得 0 分」的少量候选），
+   * 判据与运行期完全一致；幂等，可重复执行。
+   */
+  @PostMapping("/api/profile/repair/skip-semantics")
+  @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 1)
+  public Result<ProfileSkipRepairService.SkipRepairReport> repairSkipSemantics() {
+    ProfileSkipRepairService.SkipRepairReport report =
+        skipRepairService.repairHistoricalSkipSemantics();
+    log.info("历史跳过语义修复: {}", report);
+    return Result.success(report);
+  }
 
   /**
    * 合并「追问序号拼进技能名」的历史伪技能证据并重算画像。

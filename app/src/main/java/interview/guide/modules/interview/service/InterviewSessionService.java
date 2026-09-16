@@ -368,7 +368,9 @@ public class InterviewSessionService {
                 int index = answer.getQuestionIndex();
                 if (index >= 0 && index < questions.size()) {
                     InterviewQuestionDTO question = questions.get(index);
-                    questions.set(index, question.withAnswer(answer.getUserAnswer()));
+                    // 带上作答状态：跳过时答案为空，只靠答案文本会把已跳过的题从轨迹里丢掉
+                    questions.set(index, question.withAnswer(answer.getUserAnswer())
+                        .withAnswerState(answer.getAnswerState()));
                 }
             }
 
@@ -457,26 +459,69 @@ public class InterviewSessionService {
      * 如果是最后一题，自动触发异步评估
      */
     public SubmitAnswerResponse submitAnswer(SubmitAnswerRequest request) {
-        CachedSession session = getOrRestoreSession(request.sessionId());
+        return recordTurn(request.sessionId(), request.questionIndex(), request.answer(), null);
+    }
+
+    /**
+     * 跳过当前题（P4Q-5 一等动作）。
+     *
+     * <p>跳过的语义：**不调模型、不追问、不计分、不产生画像证据**。它和「答错」是两件事——
+     * 答错是有作答内容但质量差（正常计分），跳过是没有作答（只记录发生过）。
+     * 自适应会话按「答不上来」处理：中断当前追问组，切下一主问题。
+     */
+    public SubmitAnswerResponse skipQuestion(String sessionId, int questionIndex) {
+        return recordTurn(sessionId, questionIndex, null,
+            InterviewAnswerEntity.AnswerState.SKIPPED);
+    }
+
+    /**
+     * 记录一轮（作答或跳过）并推进到下一题。
+     *
+     * @param answer      作答内容；跳过时为 null
+     * @param forcedState 调用方已确定的状态（如显式跳过）；null 表示按作答内容判定
+     */
+    private SubmitAnswerResponse recordTurn(String sessionId, int index, String answer,
+                                            InterviewAnswerEntity.AnswerState forcedState) {
+        CachedSession session = getOrRestoreSession(sessionId);
         List<InterviewQuestionDTO> questions = session.getQuestions(objectMapper);
 
-        int index = request.questionIndex();
         if (index < 0 || index >= questions.size()) {
             throw new BusinessException(ErrorCode.INTERVIEW_QUESTION_NOT_FOUND, "无效的问题索引: " + index);
         }
 
-        // 更新问题答案
         InterviewQuestionDTO question = questions.get(index);
-        InterviewQuestionDTO answeredQuestion = question.withAnswer(request.answer());
-        questions.set(index, answeredQuestion);
+        InterviewAnswerEntity.AnswerState answerState = forcedState;
 
-        // P4-3 自适应会话：逐题轻量评估 → 决策引擎选下一题（追问/换主问题/结束）
         boolean adaptive = Boolean.TRUE.equals(session.getAdaptive());
+
+        // 只对「可能有真实作答」的内容才花模型调用；跳过与空作答直接短路
+        if (answerState == null) {
+            if (answer == null || answer.isBlank()) {
+                answerState = InterviewAnswerEntity.AnswerState.UNANSWERED;
+            } else {
+                // 精确匹配的「跳过 / 不会」对**所有会话**生效（不依赖自适应会话的逐题评估）
+                TurnEvaluation shortCircuit = TurnEvaluationService.shortCircuit(answer);
+                answerState = shortCircuit != null
+                    ? answerStateOf(shortCircuit)
+                    : InterviewAnswerEntity.AnswerState.ANSWERED;
+            }
+        }
+
         int nextIndex;
         InterviewQuestionDTO nextQuestion;
         boolean hasNextQuestion;
         if (adaptive) {
-            nextQuestion = selectAdaptiveNext(request, session, questions, index, question);
+            TurnEvaluation evaluation;
+            if (answerState == InterviewAnswerEntity.AnswerState.ANSWERED) {
+                evaluation = evaluateTurn(sessionId, question, answer);
+                // 语义判定优先：模型识别出「要求跳过」时改判，本轮不计分也不追问
+                answerState = answerStateOf(evaluation);
+            } else {
+                evaluation = answerState == InterviewAnswerEntity.AnswerState.SKIPPED
+                    ? TurnEvaluation.skipped()
+                    : TurnEvaluation.noAnswer();
+            }
+            nextQuestion = AdaptiveInterviewPolicy.selectNext(questions, index, evaluation);
             hasNextQuestion = nextQuestion != null;
             nextIndex = hasNextQuestion ? nextQuestion.questionIndex() : questions.size();
         } else {
@@ -487,18 +532,23 @@ public class InterviewSessionService {
 
         SessionStatus newStatus = hasNextQuestion ? SessionStatus.IN_PROGRESS : SessionStatus.COMPLETED;
 
-        persistSubmittedAnswer(request, index, question, nextIndex, newStatus);
+        // 答案与状态一起写回题目列表：跳过时答案为空，只靠答案文本前端无法还原「这题发生过」；
+        // 这里写入的内容会经缓存 / 数据库进入刷新恢复路径
+        questions.set(index, question.withAnswer(answer).withAnswerState(answerState));
+
+        // 只有真实作答才写分数：跳过/未作答留空，避免被判成 0 分并进入画像证据
+        persistSubmittedAnswer(sessionId, index, question, answer, answerState, nextIndex, newStatus);
 
         // 更新 Redis 缓存。DB 已经持久化成功，缓存失败时可由后续读取从数据库恢复。
-        sessionCache.updateQuestions(request.sessionId(), questions);
-        sessionCache.updateCurrentIndex(request.sessionId(), nextIndex);
+        sessionCache.updateQuestions(sessionId, questions);
+        sessionCache.updateCurrentIndex(sessionId, nextIndex);
         if (newStatus == SessionStatus.COMPLETED) {
-            sessionCache.updateSessionStatus(request.sessionId(), SessionStatus.COMPLETED);
-            enqueueEvaluationTask(request.sessionId());
+            sessionCache.updateSessionStatus(sessionId, SessionStatus.COMPLETED);
+            enqueueEvaluationTask(sessionId);
         }
 
-        log.info("会话 {} 提交答案: 问题{}, adaptive={}, 剩余{}题",
-            request.sessionId(), index, adaptive,
+        log.info("会话 {} 记录轮次: 问题{}, state={}, adaptive={}, 剩余{}题",
+            sessionId, index, answerState, adaptive,
             adaptive ? (hasNextQuestion ? questions.size() - nextIndex - 1 : 0)
                 : questions.size() - nextIndex);
 
@@ -511,50 +561,65 @@ public class InterviewSessionService {
     }
 
     /**
-     * 自适应会话的下一题：逐题轻量评估（同步、低延迟）→ 决策引擎选题。
-     * 评估/决策永不抛出（内部已回落），失败时退化为「下一主问题」保证流程不断。
+     * 逐题评估结果 → 落库的答案状态（P4Q-5）。
+     *
+     * <p>三种情况语义不同：明确要求跳过（SKIPPED，一等动作）、答不上来/明确不会
+     * （DECLINED，只作诊断保留）、有实质作答（ANSWERED，参与评分与画像证据）。
      */
-    private InterviewQuestionDTO selectAdaptiveNext(SubmitAnswerRequest request, CachedSession session,
-                                                    List<InterviewQuestionDTO> questions, int index,
-                                                    InterviewQuestionDTO question) {
+    private static InterviewAnswerEntity.AnswerState answerStateOf(TurnEvaluation evaluation) {
+        if (evaluation.skipRequested()) {
+            return InterviewAnswerEntity.AnswerState.SKIPPED;
+        }
+        if (evaluation.answerState() == TurnEvaluation.AnswerState.NO_ANSWER) {
+            return InterviewAnswerEntity.AnswerState.DECLINED;
+        }
+        return InterviewAnswerEntity.AnswerState.ANSWERED;
+    }
+
+    /**
+     * 逐题轻量评估（同步、低延迟）。评估永不抛出（内部已回落），失败时退化为中性结果，
+     * 由决策引擎保守推进，保证答题流程不断。
+     */
+    private TurnEvaluation evaluateTurn(String sessionId, InterviewQuestionDTO question, String answer) {
         String provider = null;
         try {
-            Optional<InterviewSessionEntity> entityOpt = persistenceService.findBySessionId(request.sessionId());
+            Optional<InterviewSessionEntity> entityOpt = persistenceService.findBySessionId(sessionId);
             if (entityOpt.isPresent()) {
                 provider = entityOpt.get().getLlmProvider();
             }
         } catch (Exception e) {
-            log.warn("读取会话 provider 失败，使用默认模型评估: sessionId={}", request.sessionId());
+            log.warn("读取会话 provider 失败，使用默认模型评估: sessionId={}", sessionId);
         }
         ChatClient chatClient = llmProviderRegistry.getChatClientOrDefault(provider);
-
-        TurnEvaluation evaluation = turnEvaluationService.evaluateTurn(chatClient, question, request.answer());
-        InterviewQuestionDTO next = AdaptiveInterviewPolicy.selectNext(questions, index, evaluation);
-        if (next == null) {
-            log.info("自适应会话全部主问题已作答，面试结束: sessionId={}", request.sessionId());
-        }
-        return next;
+        return turnEvaluationService.evaluateTurn(chatClient, question, answer);
     }
 
-    private void persistSubmittedAnswer(SubmitAnswerRequest request, int index,
-                                        InterviewQuestionDTO question, int newIndex,
-                                        SessionStatus newStatus) {
+    /**
+     * 落库这一轮的事实。
+     *
+     * <p>P4Q-5：分数只在**真实作答**时预留（由报告回填），跳过/未作答/明确不会一律留空——
+     * 写 0 分会让报告把它显示成「答错」，也会以 0 分进入画像证据（缺陷期间真实发生过）。
+     */
+    private void persistSubmittedAnswer(String sessionId, int index,
+                                        InterviewQuestionDTO question, String answer,
+                                        InterviewAnswerEntity.AnswerState answerState,
+                                        int newIndex, SessionStatus newStatus) {
         try {
+            boolean counts = answerState == InterviewAnswerEntity.AnswerState.ANSWERED;
             persistenceService.saveAnswer(
-                request.sessionId(), index,
+                sessionId, index,
                 question.question(), question.category(),
-                request.answer(), 0, null  // 分数在报告生成时更新
+                answer, counts ? 0 : null, null, answerState
             );
-            persistenceService.updateCurrentQuestionIndex(request.sessionId(), newIndex);
-            persistenceService.updateSessionStatus(request.sessionId(),
+            persistenceService.updateCurrentQuestionIndex(sessionId, newIndex);
+            persistenceService.updateSessionStatus(sessionId,
                 newStatus == SessionStatus.COMPLETED
                     ? InterviewSessionEntity.SessionStatus.COMPLETED
                     : InterviewSessionEntity.SessionStatus.IN_PROGRESS);
         } catch (BusinessException e) {
             throw e;
         } catch (Exception e) {
-            log.error("保存答案到数据库失败: sessionId={}, questionIndex={}",
-                request.sessionId(), index, e);
+            log.error("保存答案到数据库失败: sessionId={}, questionIndex={}", sessionId, index, e);
             throw new BusinessException(ErrorCode.INTERVIEW_ANSWER_SAVE_FAILED,
                 "保存答案失败，请稍后重试");
         }

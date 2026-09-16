@@ -28,6 +28,8 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -88,14 +90,10 @@ class InterviewSessionAdaptiveTest {
   }
 
   @Test
-  @DisplayName("自适应会话：答不上 → 中断追问组切到下一主问题")
+  @DisplayName("自适应会话：答不上 → 中断追问组切到下一主问题（且不花模型调用）")
   void adaptiveSessionSkipsFollowUpToNextMain() {
     List<InterviewQuestionDTO> questions = linearSession();
     when(sessionCache.getSession("session-abc")).thenReturn(Optional.of(cached(questions, 0, true)));
-    when(persistenceService.findBySessionId("session-abc"))
-        .thenReturn(Optional.of(entity("session-abc", true)));
-    when(turnEvaluationService.evaluateTurn(any(), any(), any()))
-        .thenReturn(TurnEvaluation.noAnswer());
 
     SubmitAnswerResponse response = service.submitAnswer(
         new SubmitAnswerRequest("session-abc", 0, "不会"));
@@ -104,6 +102,8 @@ class InterviewSessionAdaptiveTest {
     // 决策跳到 Q2（index 2），而不是顺序的 F1a（index 1）
     assertThat(response.nextQuestion().question()).isEqualTo("Q2: Redis 持久化？");
     assertThat(response.currentIndex()).isEqualTo(2);
+    // 「不会」是精确匹配的「明确不会」：P4Q-5 起在调用模型前就短路，省掉一次无意义的模型调用
+    verify(turnEvaluationService, never()).evaluateTurn(any(), any(), any());
   }
 
   @Test

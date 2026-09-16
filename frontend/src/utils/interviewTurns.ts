@@ -16,6 +16,8 @@ export interface InterviewTurn {
   /** 追问序号；与 isFollowUp 一起表达追问身份，不依赖技能名后缀 */
   followUpIndex?: number | null;
   answer?: string;
+  /** 非真实作答的标记：跳过 / 明确不会 / 未作答（P4Q-5） */
+  answerState?: 'ANSWERED' | 'SKIPPED' | 'DECLINED' | 'UNANSWERED' | null;
 }
 
 export interface InterviewView {
@@ -52,6 +54,30 @@ export function toInterviewerTurn(question: InterviewQuestion, index: number): I
 }
 
 /**
+ * 这题是否「已经发生过」：有作答内容，或有作答状态（跳过/明确不会/未作答都算）。
+ *
+ * <p>只看答案文本是不够的——跳过时答案为空，会被当成「从没问过」而从轨迹里消失，
+ * 刷新恢复后用户就看不到自己跳过过哪些题（P4Q-5）。
+ */
+export function wasAsked(question: InterviewQuestion): boolean {
+  return Boolean(question.userAnswer) || Boolean(question.answerState);
+}
+
+/** 非真实作答的展示文案；真实作答返回 null */
+export function nonAnswerLabel(question: InterviewQuestion): string | null {
+  switch (question.answerState) {
+    case 'SKIPPED':
+      return '（已跳过本题）';
+    case 'DECLINED':
+      return '（表示不会，未作答）';
+    case 'UNANSWERED':
+      return '（未作答）';
+    default:
+      return null;
+  }
+}
+
+/**
  * 构建「已发生」的题/答流。
  *
  * 权威判据是「该题是否有作答记录」——**不能**按 currentQuestionIndex 遍历题库：
@@ -61,9 +87,15 @@ export function toInterviewerTurn(question: InterviewQuestion, index: number): I
 export function buildAnsweredTurns(session: InterviewSession): InterviewTurn[] {
   const turns: InterviewTurn[] = [];
   session.questions.forEach((question, index) => {
-    if (!question.userAnswer) return;
+    // 判据是「发生过」而不是「有答案」：跳过/未作答的轮次也要在轨迹里可见（P4Q-5）
+    if (!wasAsked(question)) return;
     turns.push(toInterviewerTurn(question, index));
-    turns.push({ role: 'user', answer: question.userAnswer });
+    const label = nonAnswerLabel(question);
+    turns.push({
+      role: 'user',
+      answer: label ?? question.userAnswer ?? '',
+      answerState: question.answerState ?? null,
+    });
   });
   return turns;
 }

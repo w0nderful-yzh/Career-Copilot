@@ -6,7 +6,9 @@ import {
   currentQuestionOf,
   deriveInterviewView,
   interviewProgress,
+  nonAnswerLabel,
   toInterviewerTurn,
+  wasAsked,
 } from './interviewTurns.ts';
 import type { InterviewQuestion, InterviewSession } from '../types/interview.ts';
 
@@ -178,6 +180,45 @@ test('非自适应顺序会话：题库总数即真实总题数，进度语义�
   assert.equal(view.adaptive, false);
   assert.equal(view.mainIndexes.length, 2);
   assert.equal(view.poolTotal, 2);
+});
+
+test('跳过的轮次仍在轨迹里（判据是发生过，不是有答案）（P4Q-5）', () => {
+  // Q1 跳过（答案为空但有状态）→ F1 未问 → Q2 已作答
+  const pool = [
+    question({ questionIndex: 0, question: 'Q1: JVM 内存模型？', answerState: 'SKIPPED' }),
+    question({
+      questionIndex: 1,
+      question: 'F1: 堆区分代？',
+      isFollowUp: true,
+      parentQuestionIndex: 0,
+      followUpIndex: 1,
+    }),
+    question({ questionIndex: 2, question: 'Q2: Redis 持久化？', category: 'Redis', userAnswer: 'RDB 和 AOF' }),
+  ];
+
+  const turns = buildAnsweredTurns(session({ questions: pool }));
+
+  // 跳过与被作答的轮次都要出现；从未问过的候选追问不出现
+  assert.deepEqual(
+    turns.map((turn) => turn.role),
+    ['interviewer', 'user', 'interviewer', 'user'],
+  );
+  assert.equal(turns[1].answer, '（已跳过本题）');
+  assert.equal(turns[1].answerState, 'SKIPPED');
+  assert.equal(turns[3].answerState, null);
+});
+
+test('非作答状态的展示文案：跳过/明确不会/未作答各不相同', () => {
+  assert.equal(nonAnswerLabel(question({ questionIndex: 0, answerState: 'SKIPPED' })), '（已跳过本题）');
+  assert.equal(nonAnswerLabel(question({ questionIndex: 0, answerState: 'DECLINED' })), '（表示不会，未作答）');
+  assert.equal(nonAnswerLabel(question({ questionIndex: 0, answerState: 'UNANSWERED' })), '（未作答）');
+  assert.equal(nonAnswerLabel(question({ questionIndex: 0, userAnswer: '答了' })), null);
+});
+
+test('wasAsked：有答案或有状态都算发生过', () => {
+  assert.equal(wasAsked(question({ questionIndex: 0 })), false);
+  assert.equal(wasAsked(question({ questionIndex: 0, userAnswer: '答案' })), true);
+  assert.equal(wasAsked(question({ questionIndex: 0, answerState: 'DECLINED' })), true);
 });
 
 test('toInterviewerTurn 只搬运展示字段，不带答案', () => {

@@ -10,11 +10,19 @@
 - coveredPoints：已答出的期望要点数组
 - missingPoints：遗漏或答错的期望要点数组
 - recommendedFocus：建议下一问继续深挖/考察的方向（30 字以内，无则空字符串）
+- skipRequested：候选人是否**明确要求跳过本题**（true / false）
 
 # Rules
 - answerState 与 score 必须自洽：EXCELLENT≈85+，GOOD≈70-84，PARTIAL≈50-69，WEAK≈30-49，WRONG≈30 以下。
 - coveredPoints / missingPoints 依据题目给出的期望要点逐条判定；
   题目没有给出期望要点时，依据该题常识判断应覆盖的要点，不要编造题干外的冷门点。
 - 明显"不会 / 跳过"类回答应判 NO_ANSWER，不要给中间分数。
+- skipRequested 判据（这是节奏指令，不是答案质量）：
+  * 当回答**不含实质技术内容**、只是表示"这题我不答 / 跳过 / 换一题 / 先聊别的"时，置 true，
+    同时 answerState 取 NO_ANSWER；
+  * 当回答**含有实质技术内容**时，即使夹带"讲完这段就跳过""下一个问题吧"之类的话，
+    也必须置 false，并照常给出 score 与 answerState —— 有效答案不能被指令吞掉；
+  * 不要做关键词匹配。"死锁不会发生"、"这种情况不会导致数据丢失"这类是**技术判断**，
+    不是跳过请求，必须置 false。
 - 只判断内容正确性与要点覆盖，不评价表达风格与字数。
 - 不要输出任何解释文字、前后缀或 markdown 代码块。

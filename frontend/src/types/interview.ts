@@ -45,6 +45,13 @@ export interface InterviewQuestion {
   parentQuestionIndex?: number | null;
   /** 追问序号（P4Q-6）：同一主问题下的第几条追问，主问题为 null；技能名不再拼序号 */
   followUpIndex?: number | null;
+  /**
+   * 该题的作答状态（P4Q-5）：null/undefined = 尚未提问过。
+   *
+   * 跳过时 userAnswer 为空，只看答案文本会把已跳过的题从轨迹里丢掉，所以判据是
+   * 「有答案 或 有状态」。
+   */
+  answerState?: 'ANSWERED' | 'SKIPPED' | 'DECLINED' | 'UNANSWERED' | null;
   referenceAnswer?: string | null;
   keyPoints?: string[];
   scoringRubric?: string | null;

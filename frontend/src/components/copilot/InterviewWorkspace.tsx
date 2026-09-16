@@ -127,9 +127,14 @@ export default function InterviewWorkspace({
       } else {
         // 面试结束 → 异步整场评估轮询
         setCurrent(null);
+        setEvaluationFailed(false);
         onChangeStatus({ ...mode, status: 'evaluating' });
+        pollAttemptRef.current = 0;
         if (pollRef.current) window.clearInterval(pollRef.current);
-        pollRef.current = window.setInterval(() => void pollEvaluation(), 3000);
+        pollRef.current = window.setInterval(
+          () => void pollEvaluation(),
+          EVALUATION_POLL_INTERVAL_MS,
+        );
       }
     } catch (err) {
       console.error('提交答案失败:', err);
@@ -182,6 +187,43 @@ export default function InterviewWorkspace({
       onChangeStatus({ ...mode, status: 'error', error: '面试会话不存在或已删除，请返回对话。' });
     }
   }, [mode, onChangeStatus, stopTimers]);
+
+  /**
+   * 跳过当前题（P4Q-5 一等动作）。
+   *
+   * Java 侧语义：不调模型、不追问、不计分、不产生画像证据——与「答错」严格区分。
+   * 与 submit 一样先乐观追加轨迹，失败回滚。
+   */
+  const skip = useCallback(async () => {
+    if (!current || submitting) return;
+    const skippedIndex = current.questionIndex;
+    setSubmitting(true);
+    setAnswer('');
+    setTurns((prev) => [...prev, { role: 'user', answer: '（已跳过本题）', answerState: 'SKIPPED' }]);
+    try {
+      const res = await interviewApi.skipQuestion(mode.sessionId, skippedIndex);
+      const next = res.hasNextQuestion ? res.nextQuestion : null;
+      if (next) {
+        setCurrent(next);
+        setTurns((prev) => [...prev, toInterviewerTurn(next, next.questionIndex)]);
+      } else {
+        setCurrent(null);
+        setEvaluationFailed(false);
+        onChangeStatus({ ...mode, status: 'evaluating' });
+        pollAttemptRef.current = 0;
+        if (pollRef.current) window.clearInterval(pollRef.current);
+        pollRef.current = window.setInterval(
+          () => void pollEvaluation(),
+          EVALUATION_POLL_INTERVAL_MS,
+        );
+      }
+    } catch (err) {
+      console.error('跳过失败:', err);
+      setTurns((prev) => prev.slice(0, -1));
+    } finally {
+      setSubmitting(false);
+    }
+  }, [current, submitting, mode, onChangeStatus, pollEvaluation]);
 
   /** 重试生成报告：重置轮询计数后重新入队并继续轮询 */
   const retryEvaluation = useCallback(async () => {
@@ -329,7 +371,13 @@ export default function InterviewWorkspace({
                 <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300">
                   <User className="h-4 w-4" />
                 </div>
-                <div className="max-w-[80%] rounded-2xl rounded-tr-sm bg-white px-4 py-3 text-sm leading-relaxed text-slate-800 shadow-sm ring-1 ring-slate-200 dark:bg-slate-700 dark:text-slate-100">
+                <div
+                  className={`max-w-[80%] rounded-2xl rounded-tr-sm px-4 py-3 text-sm leading-relaxed shadow-sm ring-1 ${
+                    turn.answerState && turn.answerState !== 'ANSWERED'
+                      ? 'bg-slate-50 italic text-slate-400 ring-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:ring-slate-700'
+                      : 'bg-white text-slate-800 ring-slate-200 dark:bg-slate-700 dark:text-slate-100'
+                  }`}
+                >
                   {turn.answer}
                 </div>
               </div>
@@ -392,6 +440,7 @@ export default function InterviewWorkspace({
         answer={answer}
         onAnswerChange={setAnswer}
         onSubmit={() => void submit()}
+        onSkip={() => void skip()}
       />
     </div>
   );
@@ -404,12 +453,15 @@ function InterviewAnswerBar({
   answer,
   onAnswerChange,
   onSubmit,
+  onSkip,
 }: {
   visible: boolean;
   submitting: boolean;
   answer: string;
   onAnswerChange: (value: string) => void;
   onSubmit: () => void;
+  /** 跳过本题：一等动作，不等同于答错（P4Q-5） */
+  onSkip: () => void;
 }) {
   if (!visible) return null;
   return (
@@ -430,6 +482,14 @@ function InterviewAnswerBar({
             disabled={submitting}
             className="max-h-32 min-h-[2.5rem] flex-1 resize-none bg-transparent px-2 py-1.5 text-sm leading-6 text-slate-800 outline-none placeholder:text-slate-400 disabled:opacity-60 dark:text-white dark:placeholder:text-slate-500"
           />
+          <button
+            onClick={onSkip}
+            disabled={submitting}
+            title="跳过本题（不计分，也不算答错）"
+            className="flex h-10 shrink-0 items-center gap-1 rounded-xl border border-slate-300 px-3 text-sm font-semibold text-slate-500 transition hover:bg-slate-50 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700"
+          >
+            跳过
+          </button>
           <button
             onClick={onSubmit}
             disabled={submitting || !answer.trim()}

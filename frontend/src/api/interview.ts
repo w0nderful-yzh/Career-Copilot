@@ -92,6 +92,18 @@ export const interviewApi = {
   },
 
   /**
+   * 跳过当前题（P4Q-5 一等动作）。
+   *
+   * Java 侧不调模型、不追问、不计分、不产生画像证据——与「答错」严格区分。
+   */
+  async skipQuestion(sessionId: string, questionIndex: number): Promise<SubmitAnswerResponse> {
+    return request.post<SubmitAnswerResponse>(
+      `/api/interview/sessions/${sessionId}/skip`,
+      { questionIndex }
+    );
+  },
+
+  /**
    * 重试生成面试报告（P4Q-4）：评估失败或超时后的用户重试入口。
    * 已有报告时会话幂等返回，不会重复评分。
    */

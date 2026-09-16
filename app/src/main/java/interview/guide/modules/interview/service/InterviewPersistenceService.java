@@ -222,12 +222,27 @@ public class InterviewPersistenceService {
     }
     
     /**
-     * 保存面试答案
+     * 保存面试答案（默认按「真实作答」写入，兼容旧调用点）
      */
     @Transactional(rollbackFor = Exception.class)
     public InterviewAnswerEntity saveAnswer(String sessionId, int questionIndex,
                                             String question, String category,
                                             String userAnswer, int score, String feedback) {
+        return saveAnswer(sessionId, questionIndex, question, category, userAnswer, score, feedback,
+            InterviewAnswerEntity.AnswerState.ANSWERED);
+    }
+
+    /**
+     * 保存面试答案（P4Q-5：带答案状态）
+     *
+     * <p>状态决定这条答案是否进入评分与画像证据：跳跃/未作答/明确不会只作为事实记录，
+     * 不参与技术评分。已存在的行按状态覆盖（重新作答 / 状态修正场景）。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public InterviewAnswerEntity saveAnswer(String sessionId, int questionIndex,
+                                            String question, String category,
+                                            String userAnswer, Integer score, String feedback,
+                                            InterviewAnswerEntity.AnswerState answerState) {
         Optional<InterviewSessionEntity> sessionOpt = sessionRepository.findBySessionId(sessionId);
         if (sessionOpt.isEmpty()) {
             throw new BusinessException(ErrorCode.INTERVIEW_SESSION_NOT_FOUND);
@@ -247,11 +262,14 @@ public class InterviewPersistenceService {
         answer.setUserAnswer(userAnswer);
         answer.setScore(score);
         answer.setFeedback(feedback);
+        if (answerState != null) {
+            answer.setAnswerState(answerState);
+        }
 
         InterviewAnswerEntity saved = answerRepository.save(answer);
-        log.info("面试答案已保存: sessionId={}, questionIndex={}, score={}", 
-                sessionId, questionIndex, score);
-        
+        log.info("面试答案已保存: sessionId={}, questionIndex={}, score={}, state={}",
+                sessionId, questionIndex, score, saved.getAnswerState());
+
         return saved;
     }
     
@@ -302,14 +320,22 @@ public class InterviewPersistenceService {
                 InterviewAnswerEntity answer = answerMap.get(eval.questionIndex());
 
                 if (answer == null) {
-                    // 未回答的题目，创建新记录
+                    // 未回答的题目，创建新记录（P4Q-5：明确记为未作答，且不带分数）
                     answer = new InterviewAnswerEntity();
                     answer.setSession(session);
                     answer.setQuestionIndex(eval.questionIndex());
                     answer.setQuestion(eval.question());
                     answer.setCategory(eval.category());
                     answer.setUserAnswer(null);  // 未回答
+                    answer.setAnswerState(InterviewAnswerEntity.AnswerState.UNANSWERED);
                     log.debug("为未回答的题目 {} 创建答案记录", eval.questionIndex());
+                }
+
+                // P4Q-5：跳过/未作答/明确不会不参与技术评分——报告不得把它们显示成 0 分，
+                // 也不能让它们以 0 分进入画像证据（缺陷期间真实发生过）
+                if (!answer.countsAsAnswer()) {
+                    answersToSave.add(answer);
+                    continue;
                 }
 
                 // 更新评分和反馈

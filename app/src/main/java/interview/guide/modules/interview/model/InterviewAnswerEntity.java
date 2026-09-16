@@ -59,7 +59,34 @@ public class InterviewAnswerEntity {
     // 回答时间
     @Column(nullable = false)
     private LocalDateTime answeredAt;
-    
+
+    /**
+     * 答案状态（P4Q-5）：区分真实作答与跳过/未作答/明确不会。
+     *
+     * <p>只有 {@link AnswerState#ANSWERED} 参与报告评分与画像证据——否则「跳过」会被
+     * 当成技术答案打 0 分并污染画像（缺陷期间真实发生过）。
+     * 未考察不落库：没有答案行即为未考察。
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "answer_state", nullable = false, length = 16)
+    private AnswerState answerState = AnswerState.ANSWERED;
+
+    public enum AnswerState {
+        /** 真实作答（含「答案 + 换话题指令」的混合消息，有效答案部分保留） */
+        ANSWERED,
+        /** 用户主动跳过（按钮或明确的跳过指令）：不调模型、不追问、不计分 */
+        SKIPPED,
+        /** 明确表示不会/不记得：作为诊断信息保留，不作为技术评分 */
+        DECLINED,
+        /** 已提问但没有任何作答内容 */
+        UNANSWERED
+    }
+
+    /** 是否计入评分与画像证据 */
+    public boolean countsAsAnswer() {
+        return answerState == null || answerState == AnswerState.ANSWERED;
+    }
+
     @PrePersist
     protected void onCreate() {
         answeredAt = LocalDateTime.now();
@@ -152,5 +179,13 @@ public class InterviewAnswerEntity {
     
     public void setAnsweredAt(LocalDateTime answeredAt) {
         this.answeredAt = answeredAt;
+    }
+
+    public AnswerState getAnswerState() {
+        return answerState;
+    }
+
+    public void setAnswerState(AnswerState answerState) {
+        this.answerState = answerState;
     }
 }

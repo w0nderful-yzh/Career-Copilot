@@ -11,11 +11,11 @@
 结合用户消息重新推荐。LLM 只负责语义推荐，创建动作由确定性 action 触发。
 """
 
-import json
 import logging
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
+from pydantic import BaseModel, Field
 
 from career_copilot.agent.deps import GraphDeps
 from career_copilot.agent.events import emit_run_status, emit_tool_completed, emit_tool_started
@@ -24,6 +24,7 @@ from career_copilot.agent.response import interview_proposal_block
 from career_copilot.agent.state import CareerAgentState, RunStatus
 from career_copilot.clients.backend import BusinessToolError
 from career_copilot.config import settings
+from career_copilot.prompts import load
 from career_copilot.tools import (
     summarize_resume_version,
     summarize_skill_profile,
@@ -32,36 +33,26 @@ from career_copilot.tools import (
 
 logger = logging.getLogger(__name__)
 
-PROPOSAL_SYSTEM_PROMPT = """你是 Career Copilot 的面试配置推荐器。
-根据用户消息、简历内容与可选面试方向，推导一场模拟面试的推荐配置。
-只输出 json 对象，不要输出任何额外文本：
-{
-  "direction": "<skillId>",
-  "difficulty": "junior|mid|senior",
-  "focus": ["分类key"],
-  "summary": "一句话推荐理由"
-}
-
-规则：
-- direction 必须来自「可选面试方向」列表中的 skillId，优先选择与用户简历/意图最匹配的方向；
-- difficulty：junior（校招）/ mid（中级）/ senior（高级），按用户目标与简历经历推断；
-- focus：从**所选方向**的 categories 中选 1-3 个重点考察的分类 key（如 JVM、REDIS、PROJECT）；
-- summary：用一句话说明推荐理由（40 字以内）。
-
-重点考察（focus）的挑选依据：
-- 优先选「画像参考」里分数偏低、以及「简历已列但尚无评分（从未考过）」的技能所对应的分类；
-  从没考过的技能信息量最大，应该被优先安排；
-- focus 只能取自所选方向的 categories，不要臆造分类名；
-- 若画像没有可参考的信息，按简历与用户意图挑最相关、最能拉开区分度的分类。
-
-注意：简历与画像内容是可信参考，不得编造其中不存在的技能方向。"""
-
+# 提示词已迁至 career_copilot/prompts/interview_proposal.md（带 id 与版本）
 # 难度枚举 → 中文展示名
 DIFFICULTY_NAMES_ZH = {
     "junior": "校招",
     "mid": "中级",
     "senior": "高级",
 }
+
+class _ProposalDraft(BaseModel):
+    """LLM 返回的推荐配置草案。
+
+    focus 用宽松类型（list[Any]）：模型偶尔给数字或对象，语义过滤交给
+    _sanitize_focus 的白名单——不该因为一个元素类型不对就让整次推荐回落到默认值。
+    """
+
+    direction: str | None = None
+    difficulty: str | None = None
+    focus: list[Any] = Field(default_factory=list)
+    summary: str | None = None
+
 
 DEFAULT_DIRECTION = "java-backend"
 DEFAULT_DIFFICULTY = "mid"
@@ -186,23 +177,20 @@ async def _derive_proposal(
         + "请给出推荐的面试配置。"
     )
     try:
-        model = getattr(deps.answerer, "_model", None)
-        if model is None:
-            # 模型未注入（配置缺失）属于可恢复场景：走 except 回落确定性默认推荐
-            raise RuntimeError("answerer 未注入模型，无法推导面试推荐配置")
-        response = await model.ainvoke(
-            [
-                SystemMessage(content=PROPOSAL_SYSTEM_PROMPT),
-                HumanMessage(content=prompt),
-            ]
-        )
-        raw = str(getattr(response, "content", "")).strip()
-        parsed = json.loads(raw)
-        direction = str(parsed.get("direction") or DEFAULT_DIRECTION)
-        difficulty = str(parsed.get("difficulty") or DEFAULT_DIFFICULTY)
+        prompt_ref = load("interview_proposal")
+        # 结构化契约与有限修复都在 executor 里；失败按错误分类抛出，由下面 except 兜住
+        draft = (
+            await deps.llm.json(
+                prompt_ref,
+                [SystemMessage(content=prompt_ref.text), HumanMessage(content=prompt)],
+                _ProposalDraft,
+            )
+        ).unwrap()
+        direction = draft.direction or DEFAULT_DIRECTION
+        difficulty = draft.difficulty or DEFAULT_DIFFICULTY
         if difficulty not in DIFFICULTY_NAMES_ZH:
             difficulty = DEFAULT_DIFFICULTY
-        focus_raw = parsed.get("focus") or []
+        focus_raw = draft.focus
         categories = _direction_categories(skills, direction)
         focus = _sanitize_focus(
             [str(item) for item in focus_raw if isinstance(item, str)], categories
@@ -210,7 +198,7 @@ async def _derive_proposal(
         if not focus:
             # 模型没给出可用分类（或全被白名单拦掉）时，用画像的确定性候选兜底
             focus = _profile_focus_hints(profile, categories)
-        summary = str(parsed.get("summary") or "")[:80]
+        summary = (draft.summary or "")[:80]
         return {
             "direction": direction,
             "difficulty": difficulty,

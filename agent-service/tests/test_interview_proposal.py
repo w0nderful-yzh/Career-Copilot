@@ -11,6 +11,7 @@ from typing import Any
 
 import httpx
 
+from career_copilot.agent.answerer import Answerer
 from career_copilot.agent.deps import GraphDeps
 from career_copilot.agent.nodes.interview_proposal import (
     _derive_proposal,
@@ -20,6 +21,7 @@ from career_copilot.agent.nodes.interview_proposal import (
     interview_proposal,
 )
 from career_copilot.clients.backend import BackendClient
+from tests.conftest import make_fake_executor
 
 CATEGORIES = [
     {"key": "JAVA", "label": "Java"},
@@ -107,10 +109,12 @@ class _FakeAnswerer:
 
 
 def _deps(payload: dict[str, Any]) -> GraphDeps:
+    llm = make_fake_executor(payload)
     return GraphDeps(
         intent_router=None,  # _derive_proposal 不用路由
-        answerer=_FakeAnswerer(payload),
+        answerer=Answerer(llm),
         backend=BackendClient(base_url="http://test", transport=httpx.MockTransport(_noop)),
+            llm=make_fake_executor()
     )
 
 
@@ -149,8 +153,9 @@ async def test_derive_proposal_falls_back_to_default_on_model_error():
 
     deps = GraphDeps(
         intent_router=None,
-        answerer=_BrokenAnswerer(),
+        answerer=Answerer(make_fake_executor("{}")),
         backend=BackendClient(base_url="http://test", transport=httpx.MockTransport(_noop)),
+            llm=make_fake_executor()
     )
     profile = {"declaredSkills": [{"skill": "Redis", "resumeId": "7"}]}
 
@@ -278,13 +283,14 @@ async def _collect(stream) -> str:  # noqa: ANN001
 
 async def test_proposal_reads_confirmed_resume_version():
     """提案取数走「已确认的结构化版本」，并把确认过的经历事实注入推荐上下文。"""
-    answerer = _RecordingAnswerer(
+    llm = make_fake_executor(
         {"direction": "java-backend", "difficulty": "mid", "focus": ["JAVA"], "summary": "推荐"}
     )
     deps = GraphDeps(
         intent_router=None,
-        answerer=answerer,
+        answerer=Answerer(llm),
         backend=BackendClient(base_url="http://test", transport=_ok_transport()),
+        llm=llm,
     )
     try:
         result = await interview_proposal({"active_resume_id": 7, "message": "来一场面试"}, deps)
@@ -294,7 +300,7 @@ async def test_proposal_reads_confirmed_resume_version():
     blocks = result["plan"].blocks
     assert blocks, "应当产出面试提案块"
     assert blocks[0].type == "interview_proposal"
-    prompt = str(answerer.model.messages[-1].content)
+    prompt = str(llm.model.messages[-1].content)
     assert "消费端幂等改造" in prompt
     assert "Java / Kafka" in prompt
 
@@ -310,7 +316,7 @@ async def test_proposal_reports_visible_reason_when_resume_unavailable():
     deps = GraphDeps(
         intent_router=None,
         answerer=answerer,
-        backend=BackendClient(base_url="http://test", transport=transport),
+        backend=BackendClient(base_url="http://test", transport=transport), llm=make_fake_executor()
     )
     try:
         result = await interview_proposal(

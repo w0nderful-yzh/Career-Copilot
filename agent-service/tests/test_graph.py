@@ -10,12 +10,14 @@ import json
 import httpx
 import pytest
 
+from career_copilot.agent.answerer import Answerer
 from career_copilot.agent.deps import GraphDeps
 from career_copilot.agent.graph import build_graph, build_initial_state
 from career_copilot.agent.nodes.normalize_input import normalize_input
 from career_copilot.agent.nodes.route_intent import route_intent
 from career_copilot.agent.router import Intent, IntentClassification
 from career_copilot.clients.backend import BackendClient
+from tests.conftest import executor_for, make_fake_executor
 
 
 class FakeIntentRouter:
@@ -56,7 +58,7 @@ def make_deps(
     deps = GraphDeps(
         intent_router=router,
         answerer=FakeAnswerer(),
-        backend=backend,
+        backend=backend, llm=make_fake_executor()
     )
     return deps, router
 
@@ -317,7 +319,8 @@ async def test_graph_targeted_resume_includes_content(backend_transport):
     backend = BackendClient(
         base_url="http://test", transport=httpx.MockTransport(backend_transport)
     )
-    deps = GraphDeps(intent_router=router, answerer=ContentAnswerer(), backend=backend)
+    deps = GraphDeps(intent_router=router, answerer=ContentAnswerer(), backend=backend,
+        llm=make_fake_executor())
     graph = build_graph(deps)
     state = build_initial_state(
         conversation_id=None,
@@ -355,7 +358,8 @@ def _capture_deps(backend_transport, intent: Intent):
     backend = BackendClient(
         base_url="http://test", transport=httpx.MockTransport(backend_transport)
     )
-    return GraphDeps(intent_router=router, answerer=CaptureAnswerer(), backend=backend), seen
+    return GraphDeps(intent_router=router, answerer=CaptureAnswerer(), backend=backend,
+        llm=make_fake_executor()), seen
 
 
 async def test_graph_resume_query_single_resume_auto_targets(backend_transport):
@@ -608,6 +612,7 @@ async def test_graph_analysis_pending_waits_until_ready(monkeypatch):
         intent_router=FakeIntentRouter(IntentClassification(intent=Intent.RESUME_QUERY)),
         answerer=CapAnswerer(),
         backend=BackendClient(base_url="http://t", transport=httpx.MockTransport(flaky_handler)),
+            llm=make_fake_executor()
     )
     graph = build_graph(deps)
     state = build_initial_state(
@@ -681,6 +686,7 @@ async def test_graph_analysis_failed_fails_fast(monkeypatch):
         intent_router=FakeIntentRouter(IntentClassification(intent=Intent.RESUME_QUERY)),
         answerer=SilentAnswerer(),
         backend=BackendClient(base_url="http://t", transport=httpx.MockTransport(failed_handler)),
+            llm=make_fake_executor()
     )
     graph = build_graph(deps)
     state = build_initial_state(
@@ -738,6 +744,7 @@ async def test_graph_analysis_timeout_returns_retry_choice(monkeypatch):
         intent_router=FakeIntentRouter(IntentClassification(intent=Intent.RESUME_QUERY)),
         answerer=FakeAnswerer(),
         backend=BackendClient(base_url="http://t", transport=httpx.MockTransport(pending_handler)),
+            llm=make_fake_executor()
     )
     graph = build_graph(deps)
     state = build_initial_state(
@@ -812,7 +819,8 @@ async def test_graph_loads_history_and_passes_to_answerer():
     backend = BackendClient(
         base_url="http://test", transport=httpx.MockTransport(history_handler)
     )
-    deps = GraphDeps(intent_router=router, answerer=HistoryAnswerer(), backend=backend)
+    deps = GraphDeps(intent_router=router, answerer=HistoryAnswerer(), backend=backend,
+        llm=make_fake_executor())
     graph = build_graph(deps)
     state = build_initial_state(
         conversation_id=5, message="继续", attachments=[], action=None
@@ -867,7 +875,8 @@ async def test_graph_triggers_rolling_summary_and_writes_back():
     backend = BackendClient(
         base_url="http://test", transport=httpx.MockTransport(summary_handler)
     )
-    deps = GraphDeps(intent_router=router, answerer=FakeAnswerer(), backend=backend)
+    deps = GraphDeps(intent_router=router, answerer=FakeAnswerer(), backend=backend,
+        llm=make_fake_executor())
     graph = build_graph(deps)
     state = build_initial_state(
         conversation_id=5, message="继续", attachments=[], action=None
@@ -929,7 +938,8 @@ async def test_graph_checkpoint_persists_working_state():
     backend = BackendClient(
         base_url="http://test", transport=httpx.MockTransport(history_handler)
     )
-    deps = GraphDeps(intent_router=router, answerer=FakeAnswerer(), backend=backend)
+    deps = GraphDeps(intent_router=router, answerer=FakeAnswerer(), backend=backend,
+        llm=make_fake_executor())
     checkpointer = MemoryCopilotSaver()
     graph = build_graph(deps, checkpointer=checkpointer)
     config = {"configurable": {"thread_id": "5"}}
@@ -971,26 +981,14 @@ class FakeProposalResult:
 
 
 def _proposal_deps(backend_transport, proposal_payload: dict) -> GraphDeps:
-    """带提案模型的 deps：answerer._model 返回预设 JSON 推荐配置。"""
-    from career_copilot.agent.nodes.interview_proposal import interview_proposal  # noqa: F401
-
-    class ProposalAnswerer:
-        def __init__(self) -> None:
-            self._model = FakeProposalModel(proposal_payload)
-
-        async def answer_stream(self, message, context=None, history=None):
-            for char in "fake answer":
-                yield char
-
-        async def summarize_history(self, history_text: str) -> str:
-            return ""
-
+    """带推荐 JSON 的 deps：deps.llm 返回预设的推荐配置（ARCH-2 后不再走 answerer._model）。"""
+    llm = make_fake_executor(proposal_payload)
     router = FakeIntentRouter(IntentClassification(intent=Intent.INTERVIEW_CREATE))
     backend = BackendClient(
         base_url="http://test", transport=httpx.MockTransport(backend_transport)
     )
     return GraphDeps(
-        intent_router=router, answerer=ProposalAnswerer(), backend=backend
+        intent_router=router, answerer=Answerer(llm), backend=backend, llm=llm
     )
 
 
@@ -1425,18 +1423,17 @@ class FakePatchModel:
 def _optimization_deps(transport, patch_payload: dict) -> GraphDeps:
     from career_copilot.agent.answerer import Answerer
 
-    class PatchAnswerer(Answerer):
-        def __init__(self) -> None:
-            super().__init__(FakePatchModel(patch_payload))
-
+    # Patch 生成走 deps.llm（ARCH-2）：让 fake 执行器返回该用例的 Patch JSON
+    llm = make_fake_executor(patch_payload)
     return GraphDeps(
         intent_router=FakeIntentRouter(
             IntentClassification(intent=Intent.GENERAL_CHAT)
         ),
-        answerer=PatchAnswerer(),
+        answerer=Answerer(llm),
         backend=BackendClient(
             base_url="http://test", transport=httpx.MockTransport(transport)
         ),
+        llm=llm,
     )
 
 
@@ -1688,18 +1685,17 @@ class SequencedPatchModel:
 def _optimization_deps_with_model(transport, model) -> GraphDeps:
     from career_copilot.agent.answerer import Answerer
 
-    class ModelAnswerer(Answerer):
-        def __init__(self) -> None:
-            super().__init__(model)
-
+    # 替身自带自定义行为（如返回评审结论）时，用 executor_for 包住它
+    llm = executor_for(model)
     return GraphDeps(
         intent_router=FakeIntentRouter(
             IntentClassification(intent=Intent.GENERAL_CHAT)
         ),
-        answerer=ModelAnswerer(),
+        answerer=Answerer(llm),
         backend=BackendClient(
             base_url="http://test", transport=httpx.MockTransport(transport)
         ),
+        llm=llm,
     )
 
 

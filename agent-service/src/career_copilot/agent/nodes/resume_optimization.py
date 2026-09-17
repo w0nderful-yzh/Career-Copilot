@@ -25,6 +25,7 @@ from enum import StrEnum
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
+from pydantic import BaseModel, Field
 
 from career_copilot.agent.deps import GraphDeps
 from career_copilot.agent.events import emit_run_status, emit_tool_completed, emit_tool_started
@@ -34,10 +35,17 @@ from career_copilot.agent.response import resume_optimization_block
 from career_copilot.agent.state import CareerAgentState, RunStatus
 from career_copilot.clients.backend import BusinessToolError
 from career_copilot.config import settings
+from career_copilot.prompts import load
 from career_copilot.schemas.action import AgentAction
 from career_copilot.schemas.message import ChoiceBlock, ChoiceOption
 from career_copilot.schemas.resume_patch import ResumePatch, ResumePatchProposal
 from career_copilot.tools import summarize_skill_profile
+
+
+class _ReviewVerdict(BaseModel):
+    """自评审结论：只表达「淘汰哪些」，不新增也不改写建议。"""
+
+    drop: list[dict[str, Any]] = Field(default_factory=list)
 
 logger = logging.getLogger(__name__)
 
@@ -127,28 +135,6 @@ def _is_generic_direction(candidate: str) -> bool:
     return normalized.startswith(_GENERIC_DIRECTION_PREFIXES)
 
 
-PATCH_SYSTEM_PROMPT = """你是 Career Copilot 的简历优化顾问。
-基于简历结构化内容生成修改建议（Patch），每条建议用 JSON path 精确定位。
-
-# 真实性铁律（违反会被代码校验器直接拒绝）
-1. **禁止编造量化数字**：不得新增原文没有的 QPS、百分比、时间、数量。改写只能重组原文已有信息。
-2. **禁止虚构经历/奖项/技术栈**：不得添加原文没有的项目、证书、技能。
-3. **允许的优化**：表达精炼（动词开头、删除冗余）、技术名词规范（Java/Spring Boot 大小写）、
-   突出技术职责、调整结构归属、删除重复内容。
-
-# 输出格式
-只输出 json 对象，不要输出任何额外文本，结构如下：
-summary: 字符串，一句话总结本轮优化思路
-patches: 数组，每项包含 id（patch_N）、type（REPLACE/ADD/DELETE）、
-path（如 projects[0].bullets[1]）、oldValue（原文精确片段）、
-newValue（改写后内容）、reason（修改理由一句话）
-
-# 约束
-- type 只能是 REPLACE / ADD / DELETE（REORDER 暂不支持）
-- REPLACE/DELETE 的 oldValue 必须从原文精确摘录（应用时会做一致性校验）
-- 一次给出 3-8 条高价值建议，宁缺毋滥；没有值得修改的就返回空 patches
-- 描述强度如实：用户画像中某技能分数偏低时，避免「精通」「深入掌握」等超出门水平的表述"""
-
 # 画像驱动的描述强度约束（P3 消费点：低分技能 → 谨慎表述）
 _PROFILE_STRENGTH_HINT = """
 # 用户技能画像（Evidence 驱动，描述强度约束）
@@ -177,19 +163,6 @@ _RESUME_STRUCTURE_HINT = """
 """
 
 # 自评审（P2 待修正，默认关闭）：只淘汰不新增，防止改写绕过真实性校验
-REVIEW_SYSTEM_PROMPT = """你是简历优化建议的评审员。
-逐条评审修改建议是否值得采纳：表达是否更精炼/更专业、是否与原文事实一致、
-是否与其它建议重复、是否属于无意义改写。
-
-# 边界（违反会被代码丢弃）
-- 只能决定「保留」或「淘汰」，禁止新增建议、禁止改写建议内容
-- 只能使用给定的 patch id，臆造的 id 会被忽略
-
-# 输出格式
-只输出 json 对象，不要输出任何额外文本：
-keep: 字符串数组，保留的 patch id
-drop: 对象数组，每项包含 id、reason（一句话说明为什么淘汰）"""
-
 
 async def resume_optimization(
     state: CareerAgentState, deps: GraphDeps
@@ -529,18 +502,17 @@ async def _self_review_patches(
     - 只接受对**已存在 patch id** 的淘汰决定，模型臆造的 id 一律忽略；
     - 淘汰后若集合无变化（模型给的 id 全不存在）立即终止，避免空转。
     """
-    model = getattr(deps.answerer, "_model", None)
-    if model is None:
-        return patches, []
+    prompt_ref = load("resume_review")
 
     current = list(patches)
     dropped: list[tuple[str, str]] = []
     for _ in range(max(0, rounds)):
         if not current:
             break
-        response = await model.ainvoke(
+        result = await deps.llm.json(
+            prompt_ref,
             [
-                SystemMessage(content=REVIEW_SYSTEM_PROMPT),
+                SystemMessage(content=prompt_ref.text),
                 HumanMessage(
                     content="\n".join([
                         _RESUME_STRUCTURE_HINT.format(content_json=content_json),
@@ -562,12 +534,21 @@ async def _self_review_patches(
                         "请给出保留/淘汰结论。",
                     ])
                 ),
-            ]
+            ],
+            _ReviewVerdict,
         )
-        verdict = json.loads(_strip_code_fence(str(getattr(response, "content", "")).strip()))
+        if not result.ok:
+            # 自评审是可选增强：拿不到结论就保留原建议，不阻塞主流程
+            logger.info(
+                "自评审未获得结论，保留原建议: error=%s attempts=%d",
+                result.error,
+                result.attempts,
+            )
+            break
+        verdict = result.unwrap()
         drop_map = {
             str(item.get("id")): str(item.get("reason") or "自评审认为价值不足")
-            for item in (verdict.get("drop") or [])
+            for item in verdict.drop
             if isinstance(item, dict) and item.get("id")
         }
         known_ids = {patch.id for patch in current}
@@ -584,14 +565,6 @@ async def _self_review_patches(
     return current, dropped
 
 
-def _strip_code_fence(raw: str) -> str:
-    """剥掉模型可能输出的 markdown 代码块围栏，返回纯 JSON 文本。"""
-    if not raw.startswith("```"):
-        return raw
-    body = raw.split("```")[1]
-    return body[4:] if body.startswith("json") else body
-
-
 async def _generate_patches(
     deps: GraphDeps,
     *,
@@ -606,7 +579,6 @@ async def _generate_patches(
     模型输出解析失败时抛异常，由上层回落到「无建议」的诚实回复
     （简历优化不能瞎编建议，宁可不给）。
     """
-    from pydantic import ValidationError
 
     prompt_parts = [
         f"用户消息：{message}" if message else "用户没有附加要求，请做通用优化。",
@@ -620,19 +592,16 @@ async def _generate_patches(
         prompt_parts.append(_PROFILE_STRENGTH_HINT.format(profile_summary=profile_summary))
     prompt_parts.append("请生成本轮优化建议。")
 
-    model = getattr(deps.answerer, "_model", None)
-    if model is None:
-        raise RuntimeError("Answerer 未注入模型，无法生成优化提案")
-    response = await model.ainvoke(
-        [
-            SystemMessage(content=PATCH_SYSTEM_PROMPT),
-            HumanMessage(content="\n".join(prompt_parts)),
-        ]
-    )
-    raw = _strip_code_fence(str(getattr(response, "content", "")).strip())
-    try:
-        parsed = json.loads(raw)
-        return ResumePatchProposal.model_validate(parsed)
-    except (json.JSONDecodeError, ValidationError) as exc:
-        logger.error("优化提案 JSON 解析失败: %s", exc)
-        raise
+    prompt_ref = load("resume_patch")
+    # 结构化契约（Pydantic 校验）与有限修复都在 executor 里；
+    # 失败按错误分类抛出，由上层回落到「无建议」的诚实回复
+    return (
+        await deps.llm.json(
+            prompt_ref,
+            [
+                SystemMessage(content=prompt_ref.text),
+                HumanMessage(content="\n".join(prompt_parts)),
+            ],
+            ResumePatchProposal,
+        )
+    ).unwrap()

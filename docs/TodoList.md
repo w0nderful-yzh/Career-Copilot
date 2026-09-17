@@ -246,10 +246,30 @@ React 展示本轮结果与下一步
     真 JSON Schema（`required=["skillId"]`、`additionalProperties=false`、字段带中文语义说明）；未知参数被拒并
     **列出可用参数**（`存在未知参数（get_resume）: [resume_id]；可用参数: [resumeId, maxChars]`）；类型错误同样 12002。
   - 尚未覆盖（字段还不存在，等对应待办落地时补测）：时间预算与节奏动作类参数。
-- [ ] **ARCH-2 LLM 执行治理**
-  - 统一配置版本、结构化输出契约、Prompt 资源与版本、错误分类和观测；实时与后台调用分别设置预算。
-  - 限制重试责任层，覆盖意图分类、结构化输出失败与模型超时；区分调用失败和真实「无建议」。
-  - 验收：可定位失败发生在哪一层、实际调了几次模型、花了多久以及如何降级，不静默丢失业务上下文。
+- [x] **ARCH-2 LLM 执行治理**
+  - 现状侦察：Python 侧 6 处模型调用各写各的——两种取模型姿势（`deps.answerer._model` 私有属性 / `self._model`）、
+    裸 `json.loads`、宽泛 `except Exception` 静默回落；6 处内联 SYSTEM_PROMPT 散在 4 个文件、**无 id 无版本**。
+    于是验收要答的几问（失败在哪层、调了几次、花了多久、怎么降级）一条都答不上来。
+  - 统一执行器 `LlmExecutor`（`agent/llm.py`）：**拿模型、控预算、结构化契约、有限修复、错误分类、观测**收在一处。
+    - 结构化调用：抽取 JSON（容忍 ```json 围栏）→ pydantic 校验 → **解析失败才重试**（默认 1 次）；
+      网络/超时类错误不重试（重试只会把用户等待翻倍）。优先请求 `response_format=json_object`，
+      拿不到就退化为提示词约束——两条路都在这一层收口，节点不必各自操心用不用 json_mode。
+    - 错误分类：TIMEOUT / RATE_LIMITED / PARSE_FAILED / UPSTREAM，调用方按类别决定降级，而不是一律吞掉。
+    - `LlmResult[T]`：`ok` / `error` / `attempts` / `latency_ms`，**显式区分「调用失败」与「模型真的没给内容」**
+      （此前两者都表现为 None，分不开）。
+    - 观测：每次调用记录 `promptId@版本`、尝试次数、耗时、状态；`metrics_snapshot()` 按 prompt 汇总调用数与平均耗时。
+  - 预算分档（`config.py`）：实时（意图分类等用户等待路径，`llm_timeout_realtime_seconds=20`）与后台
+    （报告、优化提案、摘要，`llm_timeout_background_seconds=120`）分开；重试次数 `llm_parse_retries=1`。
+  - 提示词集中：6 处内联常量迁到 `career_copilot/prompts/*.md`，每个文件自带
+    `<!-- prompt: <id> | version: N | 用途：… -->` 头部；加载时校验，缺失即报错——
+    「跑的是哪一版」必须能从代码与日志里直接读出来。
+  - 节点与装配：`Answerer` / `IntentRouter` 改为接收执行器，`GraphDeps` 增加 `llm`；
+    面试提案与简历优化的三处调用改走 `deps.llm.json(...)`；`_model` 私有属性访问全部消失。
+  - 边界：不建进程内观测平台（文档已明确不做复杂观测平台）；流式**不重试**（已吐出的增量无法回滚）；
+    重试责任只在这一层，避免形成不受控的重试链。
+  - 已验证：Python ruff 0 / mypy 0（43 源文件）/ pytest **134**（+20，其中执行器 11 项、提示词资源 9 项）；
+    **真实模型验证**（Java 同步的 deepseek-v4-flash）：意图分类结构化调用 ok、1 次尝试、1291ms；
+    文本调用 ok、1193ms；`metrics_snapshot()` 按 `intent@v1` / `answer@v1` 汇总调用数与平均耗时。
 
 ### 4.3 高优先：AI 主导的动态面试
 

@@ -23,10 +23,12 @@ from career_copilot.api.chat import (
     get_answerer,
     get_backend_client,
     get_intent_router,
+    get_llm_executor,
 )
 from career_copilot.clients.backend import BackendClient, BusinessToolError
 from career_copilot.main import app
 from career_copilot.schemas.message import ActionBlock, ChatRequest
+from tests.conftest import make_fake_executor
 
 
 class FakeIntentRouter:
@@ -68,6 +70,7 @@ def setup_overrides(
         classification
     )
     app.dependency_overrides[get_answerer] = lambda: FakeAnswerer()
+    app.dependency_overrides[get_llm_executor] = lambda: make_fake_executor()
 
     def fake_client() -> BackendClient:
         return BackendClient(
@@ -547,6 +550,7 @@ async def test_chat_stream_aborted_turn_persists_as_stopped(monkeypatch):
         FakeIntentRouter(IntentClassification(intent=Intent.GENERAL_CHAT)),
         FakeAnswerer(),
         backend,
+        make_fake_executor(),
     )
 
     agen = response.body_iterator
@@ -719,6 +723,7 @@ def test_chat_stream_resume_attachment_skips_classifier(backend_transport):
 
     app.dependency_overrides[get_intent_router] = lambda: BrokenIntentRouter()
     app.dependency_overrides[get_answerer] = lambda: FakeAnswerer()
+    app.dependency_overrides[get_llm_executor] = lambda: make_fake_executor()
 
     def fake_client() -> BackendClient:
         return BackendClient(

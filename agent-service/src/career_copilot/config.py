@@ -25,6 +25,13 @@ class Settings(BaseSettings):
     # LLM 单次调用超时（秒）：防止模型侧卡住时 SSE 请求无限挂起（前端表现为"无响应"）
     llm_timeout_seconds: float = 120.0
 
+    # LLM 调用预算（ARCH-2）：实时调用要人等（面试逐轮），后台调用可以慢（报告、优化提案、摘要）
+    llm_timeout_realtime_seconds: float = 20.0
+    llm_timeout_background_seconds: float = 120.0
+    # 结构化输出的有限修复重试次数：只针对「解析失败」，网络/超时类错误不重试
+    # （重试超时只会把用户的等待翻倍）
+    llm_parse_retries: int = 1
+
     agent_service_host: str = "0.0.0.0"
     agent_service_port: int = 8000
 

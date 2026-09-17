@@ -18,6 +18,7 @@ from pydantic import SecretStr
 from career_copilot.agent.answerer import Answerer
 from career_copilot.agent.deps import GraphDeps
 from career_copilot.agent.graph import build_graph, build_initial_state
+from career_copilot.agent.llm import LlmExecutor
 from career_copilot.agent.router import IntentRouter
 from career_copilot.agent.state import RunStatus
 from career_copilot.clients.backend import BackendClient, BusinessToolError
@@ -116,21 +117,44 @@ async def _ensure_llm_config_synced() -> None:
         await sync_agent_llm_config()
 
 
+async def get_llm_executor() -> LlmExecutor:
+    """LLM 统一执行器（ARCH-2）：预算、结构化契约、有限修复、观测都在它里面。
+
+    与 Answerer 共用同一实例（FastAPI 依赖缓存保证同一请求只建一次），
+    节点做结构化调用时用它——不再摸 answerer 的私有模型属性。
+    """
+    await _ensure_llm_config_synced()
+    return LlmExecutor(
+        _openai_model(settings.llm_model, temperature=0.3),
+        default_timeout=settings.llm_timeout_background_seconds,
+        parse_retries=settings.llm_parse_retries,
+    )
+
+
 async def get_intent_router() -> IntentRouter:
     """意图分类用低延迟模型 + temperature=0，保证分类稳定。
 
     async：构造前先确保配置已同步 —— 若作为同步 Depends，会在启动竞态下
     定型于 .env 回落地址（Java 未就绪时同步失败），整轮请求打到死 URL。
     测试经 dependency_overrides 整体替换本函数，不受影响。
+
+    预算用**实时档**：意图分类位于用户等待路径上（面试逐轮同类）。
     """
     await _ensure_llm_config_synced()
-    return IntentRouter(_openai_model(settings.llm_intent_model, temperature=0.0))
+    return IntentRouter(
+        LlmExecutor(
+            _openai_model(settings.llm_intent_model, temperature=0.0),
+            default_timeout=settings.llm_timeout_realtime_seconds,
+            parse_retries=settings.llm_parse_retries,
+        )
+    )
 
 
-async def get_answerer() -> Answerer:
+async def get_answerer(
+    llm: Annotated[LlmExecutor, Depends(get_llm_executor)],
+) -> Answerer:
     """回答生成使用常规模型，允许一定自由度（async 语义同 get_intent_router）。"""
-    await _ensure_llm_config_synced()
-    return Answerer(_openai_model(settings.llm_model, temperature=0.3))
+    return Answerer(llm)
 
 
 async def get_backend_client() -> AsyncIterator[BackendClient]:
@@ -146,9 +170,12 @@ def _build_deps(
     intent_router: IntentRouter,
     answerer: Answerer,
     backend: BackendClient,
+    llm: LlmExecutor,
 ) -> GraphDeps:
     """组装 Graph 依赖（每请求一次）。"""
-    return GraphDeps(intent_router=intent_router, answerer=answerer, backend=backend)
+    return GraphDeps(
+        intent_router=intent_router, answerer=answerer, backend=backend, llm=llm
+    )
 
 
 def _initial_state(payload: ChatRequest) -> dict[str, Any]:
@@ -215,12 +242,13 @@ async def chat(
     intent_router: Annotated[IntentRouter, Depends(get_intent_router)],
     answerer: Annotated[Answerer, Depends(get_answerer)],
     backend: Annotated[BackendClient, Depends(get_backend_client)],
+    llm: Annotated[LlmExecutor, Depends(get_llm_executor)],
 ) -> CopilotResponse:
     """同步入口：完整 JSON 响应，供简单调用与测试使用。"""
     # 启动同步失败时在首个请求惰性重试（Java 可能晚于 Agent 就绪）
     await _ensure_llm_config_synced()
     initial_state = _initial_state(payload)
-    deps = _build_deps(intent_router, answerer, backend)
+    deps = _build_deps(intent_router, answerer, backend, llm)
     graph = _build_graph_with_checkpointer(http_request, deps, initial_state)
     state = await _invoke_graph(graph, initial_state)
     plan = state.get("plan")
@@ -238,6 +266,7 @@ async def chat_stream(
     intent_router: Annotated[IntentRouter, Depends(get_intent_router)],
     answerer: Annotated[Answerer, Depends(get_answerer)],
     backend: Annotated[BackendClient, Depends(get_backend_client)],
+    llm: Annotated[LlmExecutor, Depends(get_llm_executor)],
 ) -> StreamingResponse:
     """SSE 流式入口：run_status/tool_* → block → message_delta... → done / error。
 
@@ -258,7 +287,7 @@ async def chat_stream(
             # 启动同步失败时在首个请求惰性重试（Java 可能晚于 Agent 就绪）
             await _ensure_llm_config_synced()
             initial_state = _initial_state(payload)
-            deps = _build_deps(intent_router, answerer, backend)
+            deps = _build_deps(intent_router, answerer, backend, llm)
             graph = _build_graph_with_checkpointer(http_request, deps, initial_state)
             config = _graph_config(initial_state)
 

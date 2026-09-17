@@ -193,7 +193,13 @@ React 展示本轮结果与下一步
     - 已验证：Java **511** 测试 / 0 失败 / 54 跳过（+15，其中 `InterviewResumeContextResolverTest` 10 项、
       `InterviewSessionResumeContextWiringTest` 3 项用真实解析器走通 resumeId → 结构化版本 → 出题文本 →
       落库快照 → 缓存来源 → DTO）；Python ruff 0 / mypy 0 / pytest **114**（+2）。
-      **未做**：真库迁移与真 HTTP 验证（本机 PG/Redis 离线，应用起不来），迁移链由 CI 的真实 PG 覆盖。
+      **真实验证（2026-09-17 依赖上线后补做）**：`V20260918` 在真库生效（三列就位，flyway success=true）；
+      只传 `resumeId=11` 建会话（不传任何文本）→ `resumeSource=RESUME_TEXT`（该简历无 ACTIVE 结构化版本，
+      按规则降级到原文并如实标明来源）、`resumeVersion=null`、快照 2504 字落库，且**题目真的引用了简历事实**
+      （「你在 Career Copilot 中设计了 Java System of Record + Python Agent Runtime…」
+      「你在 MES 实习中负责报工变更后的上下游数据一致性…与 WMS/U9」）——修复前这条链路只会出通用题。
+      指定不存在的简历时在**出题前**即返回可见原因（`简历不存在: id=999999`）。
+      同 `requestId` 重复调用 0.01s 复用同一会话、会话数不变（幂等生效）。验证会话已清理（会话/答案/画像证据均 0 残留）。
   - [x] **逐轮上下文供给（2026-09-17 完成，有数据支撑的三项）**
     - 入参收敛为 `TurnEvaluationRequest`（当前题 + 回答 + 三类参照物），避免逐轮评估的签名越加越长；
       历史数据修复等没有会话上下文的场景用 `TurnEvaluationRequest.of(题, 回答)`。
@@ -236,8 +242,9 @@ React 展示本轮结果与下一步
     生成一次并原样回传，**配置变化时换新值**（沿用旧键会命中 Java 幂等缓存、返回配置不符的旧会话）。
   - 已验证：Java **496** 测试 / 0 失败 / 54 跳过（本机 PG、Redis 离线，含 5 个 DB 依赖用例的预期跳过）；
     Python ruff 0 / mypy 0 / pytest **112**（+11）；前端 12 个单测脚本 67 项 + build + E2E 11 项。
-    **未做**：真 HTTP 层调 `/api/agent/tools` 核对 Discovery 输出（应用起不来，本地依赖离线）——
-    该点改由单测覆盖：逐 Tool 断言 inputSchema 是合法 JSON 对象、`additionalProperties=false`，且与契约导出结果一致。
+    **真实验证（2026-09-17 依赖上线后补做）**：`GET /api/agent/tools` 的 13 个 Tool 的 inputSchema 均可解析为
+    真 JSON Schema（`required=["skillId"]`、`additionalProperties=false`、字段带中文语义说明）；未知参数被拒并
+    **列出可用参数**（`存在未知参数（get_resume）: [resume_id]；可用参数: [resumeId, maxChars]`）；类型错误同样 12002。
   - 尚未覆盖（字段还不存在，等对应待办落地时补测）：时间预算与节奏动作类参数。
 - [ ] **ARCH-2 LLM 执行治理**
   - 统一配置版本、结构化输出契约、Prompt 资源与版本、错误分类和观测；实时与后台调用分别设置预算。

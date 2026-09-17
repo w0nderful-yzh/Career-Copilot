@@ -87,6 +87,20 @@ function NavigationBlockView({ block }: { block: NavigationBlock }) {
   );
 }
 
+/**
+ * 生成创建面试的幂等键（ARCH-1）。
+ *
+ * 同一次「确认开始」的网络重试必须复用同一值，否则会重复建会话；
+ * 但**配置一旦变化就是另一个创建意图，必须换新键**——Java 侧按 requestId 命中幂等缓存后
+ * 会直接返回上一次的会话，沿用旧键会让用户拿到与自己选择不符的面试。
+ */
+function newInterviewRequestId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `req-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function InterviewProposalBlockView({
   block,
   actionDisabled,
@@ -101,6 +115,8 @@ function InterviewProposalBlockView({
   // 手动调整后的配置（null = 使用 Agent 推荐）；与 Agent 推荐收敛到同一 InterviewConfig → CREATE_INTERVIEW
   const [customConfig, setCustomConfig] = useState<InterviewConfig | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
+  /** 幂等键：同一次确认流程（含重发/重试）复用同一个值，避免重复建会话 */
+  const [createRequestId, setCreateRequestId] = useState(() => newInterviewRequestId());
 
   const activeConfig: InterviewConfig = customConfig ?? {
     direction: block.direction,
@@ -118,6 +134,7 @@ function InterviewProposalBlockView({
       focus: activeConfig.focus,
       questionCount: activeConfig.question_count,
       resumeId: block.resume_id ?? null,
+      requestId: createRequestId,
     },
   };
 
@@ -125,6 +142,9 @@ function InterviewProposalBlockView({
     // 手动配置与 Agent 推荐收敛到同一 InterviewConfig → 立即 CREATE_INTERVIEW
     setCustomConfig(config);
     setPanelOpen(false);
+    // 配置变了 = 新的创建意图：换幂等键，否则 Java 会按旧键返回上一次的会话
+    const nextRequestId = newInterviewRequestId();
+    setCreateRequestId(nextRequestId);
     onConfirm({
       action: 'CREATE_INTERVIEW',
       label: '按自定义配置开始',
@@ -134,6 +154,7 @@ function InterviewProposalBlockView({
         focus: config.focus,
         questionCount: config.question_count,
         resumeId: block.resume_id ?? null,
+        requestId: nextRequestId,
       },
     });
   };

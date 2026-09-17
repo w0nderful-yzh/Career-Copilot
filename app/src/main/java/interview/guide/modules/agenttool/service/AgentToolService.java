@@ -2,9 +2,11 @@ package interview.guide.modules.agenttool.service;
 
 import interview.guide.common.exception.BusinessException;
 import interview.guide.common.exception.ErrorCode;
+import interview.guide.modules.agenttool.contract.AgentToolSchemaExporter;
 import interview.guide.modules.agenttool.dto.ToolInfoDTO;
 import interview.guide.modules.agenttool.dto.ToolResponse;
 import interview.guide.modules.agenttool.model.AgentToolName;
+import interview.guide.modules.agenttool.model.AgentToolRequests;
 import interview.guide.modules.interview.model.CreateInterviewRequest;
 import interview.guide.modules.interview.model.InterviewDetailDTO;
 import interview.guide.modules.interview.model.InterviewSessionDTO;
@@ -27,8 +29,13 @@ import interview.guide.modules.resume.service.ResumeHistoryService;
 import interview.guide.modules.resume.service.ResumePatchApplyService;
 import interview.guide.modules.resume.service.ResumePersistenceService;
 import interview.guide.modules.resume.service.ResumeVersionService;
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.Validator;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -39,6 +46,10 @@ import tools.jackson.databind.ObjectMapper;
  *
  * <p>薄适配层：只负责 Tool 路由、参数校验与现有业务 Service 的调用转发，
  * 不包含任何业务逻辑。数据归属与业务规则仍由各业务模块负责。
+ *
+ * <p><b>入参契约（ARCH-1）</b>：入参先按 {@link AgentToolName#getRequestType()} 反序列化为
+ * 类型化请求模型，再做「未知参数拒绝 + jakarta validation 校验」。因此这里不再手写逐个字段的
+ * 提取与类型转换——那正是契约漂移的来源（未知字段曾被静默忽略，调用方以为传了、服务端其实没用）。
  */
 @Slf4j
 @Service
@@ -47,30 +58,6 @@ public class AgentToolService {
 
   /** 默认题目数量（Agent 未指定时使用，与前端创建面试默认一致） */
   private static final int DEFAULT_QUESTION_COUNT = 8;
-
-  /** 每个 Tool 的输入参数 schema 描述，用于 Tool Discovery 时帮助 LLM 生成正确参数 */
-  private static final Map<AgentToolName, String> INPUT_SCHEMAS = Map.ofEntries(
-      Map.entry(AgentToolName.GET_RESUME_LIST, "{}"),
-      Map.entry(AgentToolName.GET_SKILL_PROFILE, "{}"),
-      Map.entry(AgentToolName.GET_RESUME_VERSION,
-          "{\"resumeId\": Long, \"version\": Integer, optional}"),
-      Map.entry(AgentToolName.GET_RESUME_ANALYSIS, "{\"resumeId\": Long}"),
-      Map.entry(AgentToolName.GET_RESUME,
-          "{\"resumeId\": Long, \"maxChars\": Integer, optional}"),
-      Map.entry(AgentToolName.GET_INTERVIEW_HISTORY, "{\"resumeId\": Long, optional}"),
-      Map.entry(AgentToolName.GET_INTERVIEW_REPORT, "{\"sessionId\": String}"),
-      Map.entry(AgentToolName.LIST_KNOWLEDGE_BASES, "{}"),
-      Map.entry(AgentToolName.SEARCH_KNOWLEDGE,
-          "{\"knowledgeBaseIds\": List[Long], \"question\": String}"),
-      Map.entry(AgentToolName.LIST_SKILLS, "{}"),
-      Map.entry(AgentToolName.CREATE_INTERVIEW,
-          "{\"skillId\": String, \"difficulty\": String, \"questionCount\": Integer, "
-              + "optional, \"resumeId\": Long, optional, \"resumeText\": String, optional, "
-              + "\"forceCreate\": Boolean, optional, \"requestId\": String, optional, "
-              + "\"focusCategories\": List[String], optional（重点考察分类 key，按维度缩小出题范围）}"),
-      Map.entry(AgentToolName.APPLY_RESUME_PATCHES,
-          "{\"proposalId\": Long, \"patchIds\": List[String], optional}"),
-      Map.entry(AgentToolName.GET_JOB, "{\"jobId\": Long}"));
 
   private final ResumeHistoryService resumeHistoryService;
   private final ResumePersistenceService resumePersistenceService;
@@ -85,55 +72,63 @@ public class AgentToolService {
   private final ResumePatchApplyService resumePatchApplyService;
   private final interview.guide.modules.job.service.JobDescriptionService jobDescriptionService;
   private final ObjectMapper objectMapper;
+  private final Validator validator;
 
-  /** 返回全部 Tool 的元信息，供 Agent Runtime 做 Tool Discovery */
+  /**
+   * 返回全部 Tool 的元信息，供 Agent Runtime 做 Tool Discovery。
+   *
+   * <p>inputSchema 由类型化请求模型**实时导出**为真正的 JSON Schema——此前是一份手写字符串
+   * （`{"resumeId": Long, optional}` 连合法 JSON 都不是），是契约漂移的第二来源。
+   */
   public List<ToolInfoDTO> listTools() {
     return List.of(AgentToolName.values()).stream()
         .map(tool -> new ToolInfoDTO(
             tool.getName(),
             tool.getDescription(),
             tool.getPermission(),
-            INPUT_SCHEMAS.get(tool)))
+            writeSchema(tool)))
         .toList();
   }
 
   /**
    * 执行指定 Tool。
    *
-   * <p>先按名称解析 Tool（不存在直接报错），再通过 switch 分派到对应的
-   * 业务 Service 转发方法。每个 handler 只做参数提取与转发，不承载业务规则。
+   * <p>先按名称解析 Tool（不存在直接报错），再把入参收进该 Tool 的类型化请求模型，
+   * 最后通过 switch 分派到对应的业务 Service 转发方法。每个 handler 只做转发，
+   * 不承载业务规则。
    */
   public ToolResponse execute(String toolName, Map<String, Object> arguments) {
     AgentToolName tool = AgentToolName.from(toolName)
         .orElseThrow(() -> new BusinessException(
             ErrorCode.AGENT_TOOL_NOT_FOUND, "未知 Tool: " + toolName));
-    log.info("Agent Tool execute: tool={}", toolName);
+    Map<String, Object> args = arguments == null ? Map.of() : arguments;
+    log.info("Agent Tool execute: tool={}, args={}", toolName, args.keySet());
     return switch (tool) {
-      case GET_RESUME_LIST -> executeGetResumeList();
-      case GET_SKILL_PROFILE -> executeGetSkillProfile();
-      case GET_RESUME_VERSION -> executeGetResumeVersion(arguments);
-      case GET_RESUME_ANALYSIS -> executeGetResumeAnalysis(arguments);
-      case GET_RESUME -> executeGetResume(arguments);
-      case GET_JOB -> executeGetJob(arguments);
-      case GET_INTERVIEW_HISTORY -> executeGetInterviewHistory(arguments);
-      case GET_INTERVIEW_REPORT -> executeGetInterviewReport(arguments);
-      case LIST_KNOWLEDGE_BASES -> executeListKnowledgeBases();
-      case SEARCH_KNOWLEDGE -> executeSearchKnowledge(arguments);
-      case LIST_SKILLS -> executeListSkills();
-      case CREATE_INTERVIEW -> executeCreateInterview(arguments);
-      case APPLY_RESUME_PATCHES -> executeApplyResumePatches(arguments);
+      case GET_RESUME_LIST -> executeGetResumeList(parse(tool, args));
+      case GET_SKILL_PROFILE -> executeGetSkillProfile(parse(tool, args));
+      case GET_RESUME_VERSION -> executeGetResumeVersion(parse(tool, args));
+      case GET_RESUME_ANALYSIS -> executeGetResumeAnalysis(parse(tool, args));
+      case GET_RESUME -> executeGetResume(parse(tool, args));
+      case GET_JOB -> executeGetJob(parse(tool, args));
+      case GET_INTERVIEW_HISTORY -> executeGetInterviewHistory(parse(tool, args));
+      case GET_INTERVIEW_REPORT -> executeGetInterviewReport(parse(tool, args));
+      case LIST_KNOWLEDGE_BASES -> executeListKnowledgeBases(parse(tool, args));
+      case SEARCH_KNOWLEDGE -> executeSearchKnowledge(parse(tool, args));
+      case LIST_SKILLS -> executeListSkills(parse(tool, args));
+      case CREATE_INTERVIEW -> executeCreateInterview(parse(tool, args));
+      case APPLY_RESUME_PATCHES -> executeApplyResumePatches(parse(tool, args));
     };
   }
 
   /** 简历列表：含最新分析分数与面试次数，用于 Agent 判断用户简历概况 */
-  private ToolResponse executeGetResumeList() {
+  private ToolResponse executeGetResumeList(AgentToolRequests.GetResumeList request) {
     return new ToolResponse(
         AgentToolName.GET_RESUME_LIST.getName(),
         resumeHistoryService.getAllResumes());
   }
 
   /** 技能画像：聚合分 + 证据明细，供 Agent 做「我 XX 水平怎么样」类回答 */
-  private ToolResponse executeGetSkillProfile() {
+  private ToolResponse executeGetSkillProfile(AgentToolRequests.GetSkillProfile request) {
     return new ToolResponse(
         AgentToolName.GET_SKILL_PROFILE.getName(),
         skillProfileQueryService.getProfileWithEvidence());
@@ -143,11 +138,10 @@ public class AgentToolService {
    * 简历结构化版本：优化子图取数入口。
    * 默认最新 ACTIVE 版本；带 version 时精确定位。
    */
-  private ToolResponse executeGetResumeVersion(Map<String, Object> arguments) {
-    Long resumeId = requireLong(arguments, "resumeId");
-    ResumeVersionEntity version = arguments.containsKey("version")
-        ? resumeVersionService.getByResumeVersion(resumeId, requireInt(arguments, "version"))
-        : resumeVersionService.getActiveVersion(resumeId);
+  private ToolResponse executeGetResumeVersion(AgentToolRequests.GetResumeVersion request) {
+    ResumeVersionEntity version = request.version() != null
+        ? resumeVersionService.getByResumeVersion(request.resumeId(), request.version())
+        : resumeVersionService.getActiveVersion(request.resumeId());
     return new ToolResponse(
         AgentToolName.GET_RESUME_VERSION.getName(),
         ResumeVersionDTO.from(version, objectMapper));
@@ -157,9 +151,8 @@ public class AgentToolService {
    * JD 完整内容：解析文本 + 元信息（P2-5）。
    * 简历优化 JD_TARGETED 模式与 JD 匹配分析的取数入口。
    */
-  private ToolResponse executeGetJob(Map<String, Object> arguments) {
-    Long jobId = requireLong(arguments, "jobId");
-    var job = jobDescriptionService.get(jobId);
+  private ToolResponse executeGetJob(AgentToolRequests.GetJob request) {
+    var job = jobDescriptionService.get(request.jobId());
     return new ToolResponse(
         AgentToolName.GET_JOB.getName(),
         new JobDetailPayload(job.getId(), job.getTitle(), job.getCompany(),
@@ -171,11 +164,11 @@ public class AgentToolService {
       Long id, String title, String company, String contentText, String createdAt) {}
 
   /** 简历最新分析结果：取最近一次分析，分析未完成或不存在时按业务错误返回 */
-  private ToolResponse executeGetResumeAnalysis(Map<String, Object> arguments) {
-    Long resumeId = requireLong(arguments, "resumeId");
-    ResumeAnalysisResponse analysis = resumePersistenceService.getLatestAnalysisAsDTO(resumeId)
-        .orElseThrow(() -> new BusinessException(ErrorCode.RESUME_ANALYSIS_NOT_FOUND,
-            "简历分析结果不存在: resumeId=" + resumeId));
+  private ToolResponse executeGetResumeAnalysis(AgentToolRequests.GetResumeAnalysis request) {
+    ResumeAnalysisResponse analysis =
+        resumePersistenceService.getLatestAnalysisAsDTO(request.resumeId())
+            .orElseThrow(() -> new BusinessException(ErrorCode.RESUME_ANALYSIS_NOT_FOUND,
+                "简历分析结果不存在: resumeId=" + request.resumeId()));
     return new ToolResponse(AgentToolName.GET_RESUME_ANALYSIS.getName(), analysis);
   }
 
@@ -185,18 +178,14 @@ public class AgentToolService {
    * <p>maxChars 可选，用于服务端截断（Token 纪律）；默认 20000 字符，
    * 覆盖绝大多数简历文本长度。
    */
-  private ToolResponse executeGetResume(Map<String, Object> arguments) {
-    Long resumeId = requireLong(arguments, "resumeId");
-    Integer maxChars = arguments.containsKey("maxChars")
-        ? requireInt(arguments, "maxChars")
-        : null;
-    ResumeEntity resume = resumePersistenceService.findById(resumeId)
+  private ToolResponse executeGetResume(AgentToolRequests.GetResume request) {
+    ResumeEntity resume = resumePersistenceService.findById(request.resumeId())
         .orElseThrow(() -> new BusinessException(
-            ErrorCode.RESUME_NOT_FOUND, "简历不存在: id=" + resumeId));
+            ErrorCode.RESUME_NOT_FOUND, "简历不存在: id=" + request.resumeId()));
 
     String text = resume.getResumeText();
-    if (text != null && maxChars != null && text.length() > maxChars) {
-      text = text.substring(0, Math.max(maxChars, 0));
+    if (text != null && request.maxChars() != null && text.length() > request.maxChars()) {
+      text = text.substring(0, Math.max(request.maxChars(), 0));
     }
     return new ToolResponse(AgentToolName.GET_RESUME.getName(), new ResumeContentDTO(
         resume.getId(),
@@ -210,9 +199,9 @@ public class AgentToolService {
    * 面试历史列表：带 resumeId 时按简历过滤，否则返回全部；
    * Entity 统一转换为 SessionListItemDTO，避免直接暴露 JPA 实体。
    */
-  private ToolResponse executeGetInterviewHistory(Map<String, Object> arguments) {
-    List<SessionListItemDTO> items = arguments.containsKey("resumeId")
-        ? interviewPersistenceService.findByResumeId(requireLong(arguments, "resumeId"))
+  private ToolResponse executeGetInterviewHistory(AgentToolRequests.GetInterviewHistory request) {
+    List<SessionListItemDTO> items = request.resumeId() != null
+        ? interviewPersistenceService.findByResumeId(request.resumeId())
             .stream()
             .map(SessionListItemDTO::from)
             .toList()
@@ -224,30 +213,27 @@ public class AgentToolService {
   }
 
   /** 单场面试完整报告（只读查询），供 Agent 分析用户表现 */
-  private ToolResponse executeGetInterviewReport(Map<String, Object> arguments) {
-    String sessionId = requireString(arguments, "sessionId");
-    InterviewDetailDTO detail = interviewHistoryService.getInterviewDetail(sessionId);
+  private ToolResponse executeGetInterviewReport(AgentToolRequests.GetInterviewReport request) {
+    InterviewDetailDTO detail = interviewHistoryService.getInterviewDetail(request.sessionId());
     return new ToolResponse(AgentToolName.GET_INTERVIEW_REPORT.getName(), detail);
   }
 
   /** 知识库列表：让 Agent 了解用户有哪些可用知识库，再决定是否检索 */
-  private ToolResponse executeListKnowledgeBases() {
+  private ToolResponse executeListKnowledgeBases(AgentToolRequests.ListKnowledgeBases request) {
     return new ToolResponse(
         AgentToolName.LIST_KNOWLEDGE_BASES.getName(),
         knowledgeBaseListService.listKnowledgeBases());
   }
 
   /** RAG 问答：复用 Java 侧知识库查询链路（查询改写 + pgvector 检索 + LLM 作答） */
-  private ToolResponse executeSearchKnowledge(Map<String, Object> arguments) {
-    List<Long> knowledgeBaseIds = requireLongList(arguments, "knowledgeBaseIds");
-    String question = requireString(arguments, "question");
+  private ToolResponse executeSearchKnowledge(AgentToolRequests.SearchKnowledge request) {
     QueryResponse response = knowledgeBaseQueryService.queryKnowledgeBase(
-        new QueryRequest(knowledgeBaseIds, question));
+        new QueryRequest(request.knowledgeBaseIds(), request.question()));
     return new ToolResponse(AgentToolName.SEARCH_KNOWLEDGE.getName(), response);
   }
 
   /** 面试技能方向列表：Agent 据此向用户推荐面试方向 */
-  private ToolResponse executeListSkills() {
+  private ToolResponse executeListSkills(AgentToolRequests.ListSkills request) {
     return new ToolResponse(
         AgentToolName.LIST_SKILLS.getName(),
         interviewSkillService.getAllSkills());
@@ -259,44 +245,22 @@ public class AgentToolService {
    * <p>薄封装：复用 Java Interview Engine 现有创建链路（含 requestId 幂等与
    * 未完成会话复用）。返回 InterviewSessionDTO，Agent 据此回传 sessionId 跳转。
    */
-  private ToolResponse executeCreateInterview(Map<String, Object> arguments) {
-    String skillId = requireString(arguments, "skillId");
-    Integer questionCount = arguments.containsKey("questionCount")
-        ? requireInt(arguments, "questionCount")
-        : null;
-    Long resumeId = arguments.containsKey("resumeId")
-        ? requireLong(arguments, "resumeId")
-        : null;
-    String resumeText = arguments.containsKey("resumeText")
-        ? (String) arguments.get("resumeText")
-        : null;
-    String difficulty = arguments.containsKey("difficulty")
-        ? requireString(arguments, "difficulty")
-        : null;
-    boolean forceCreate = Boolean.TRUE.equals(arguments.get("forceCreate"));
-    String requestId = arguments.containsKey("requestId")
-        ? requireString(arguments, "requestId")
-        : null;
-    // P3 待收口：提案依据技能画像给出的重点考察方向（按分类 key 或 label 匹配）
-    List<String> focusCategories = arguments.containsKey("focusCategories")
-        ? requireStringList(arguments, "focusCategories")
-        : List.of();
-
-    CreateInterviewRequest request = new CreateInterviewRequest(
-        resumeText,
-        questionCount != null ? questionCount : DEFAULT_QUESTION_COUNT,
-        resumeId,
-        forceCreate,
+  private ToolResponse executeCreateInterview(AgentToolRequests.CreateInterview request) {
+    CreateInterviewRequest createRequest = new CreateInterviewRequest(
+        request.resumeText(),
+        request.questionCount() != null ? request.questionCount() : DEFAULT_QUESTION_COUNT,
+        request.resumeId(),
+        Boolean.TRUE.equals(request.forceCreate()),
         null,
-        skillId,
-        difficulty,
+        request.skillId(),
+        request.difficulty(),
         null,
         null,
-        requestId,
+        request.requestId(),
         true,  // P4-3：Agent 发起的面试默认开启逐题评估+自适应选题
-        focusCategories
+        normalizeFocus(request.focusCategories())
     );
-    InterviewSessionDTO session = interviewSessionService.createSession(request);
+    InterviewSessionDTO session = interviewSessionService.createSession(createRequest);
     return new ToolResponse(AgentToolName.CREATE_INTERVIEW.getName(), session);
   }
 
@@ -306,108 +270,82 @@ public class AgentToolService {
    * <p>按 proposalId 读取已落库提案，逐条 JSON path 应用（oldValue 一致性校验），
    * 生成新版本（AI_OPTIMIZE，原版本不动）。返回新版本信息供 NavigationBlock 跳转。
    */
-  private ToolResponse executeApplyResumePatches(Map<String, Object> arguments) {
-    Long proposalId = requireLong(arguments, "proposalId");
-    List<String> patchIds = arguments.containsKey("patchIds")
-        ? requireStringList(arguments, "patchIds")
-        : List.of();
-
-    ResumeVersionEntity newVersion = resumePatchApplyService.applyPatches(proposalId, patchIds);
+  private ToolResponse executeApplyResumePatches(AgentToolRequests.ApplyResumePatches request) {
+    ResumeVersionEntity newVersion = resumePatchApplyService.applyPatches(
+        request.proposalId(), request.patchIds() != null ? request.patchIds() : List.of());
     return new ToolResponse(
         AgentToolName.APPLY_RESUME_PATCHES.getName(),
         Map.of(
-            "proposalId", proposalId,
+            "proposalId", request.proposalId(),
             "resumeId", newVersion.getResumeId(),
             "versionId", newVersion.getId(),
             "version", newVersion.getVersion()));
   }
 
-  /** 提取非空 String 列表参数（patch id 列表用） */
-  private List<String> requireStringList(Map<String, Object> arguments, String key) {
-    Object value = arguments.get(key);
-    if (value instanceof List<?> list) {
-      return list.stream()
-          .filter(item -> item instanceof String text && !text.isBlank())
-          .map(item -> (String) item)
-          .toList();
+  /** 去掉 focus 里的空白项（契约层不管格式细节，业务层按「未命中即忽略」处理） */
+  private List<String> normalizeFocus(List<String> focusCategories) {
+    if (focusCategories == null) {
+      return List.of();
     }
-    throw new BusinessException(
-        ErrorCode.AGENT_TOOL_ARGUMENT_INVALID, "参数缺失或类型错误: " + key);
+    return focusCategories.stream()
+        .filter(item -> item != null && !item.isBlank())
+        .toList();
   }
 
   /**
-   * 提取 Long 类型参数。兼容 JSON 数字与字符串两种形态；
-   * 缺失或类型无法转换时统一抛出参数错误，便于 Agent 修正后重试。
+   * 入参 → 类型化请求模型。
+   *
+   * <p>三步都给出**可读的失败原因**，而不是静默忽略：未知参数列出「实际传入」与「可用参数」；
+   * 类型不匹配指出字段；约束不满足给出中文说明。这样调用方（Agent）能直接看出要改什么。
    */
-  private Long requireLong(Map<String, Object> arguments, String key) {
-    Object value = arguments.get(key);
-    if (value instanceof Number number) {
-      return number.longValue();
+  @SuppressWarnings("unchecked")
+  private <T> T parse(AgentToolName tool, Map<String, Object> arguments) {
+    rejectUnknownParameters(tool, arguments);
+    Object parsed;
+    try {
+      parsed = objectMapper.convertValue(arguments, tool.getRequestType());
+    } catch (RuntimeException e) {
+      throw new BusinessException(ErrorCode.AGENT_TOOL_ARGUMENT_INVALID,
+          "参数类型错误（" + tool.getName() + "）: " + e.getMessage());
     }
-    if (value instanceof String text) {
-      try {
-        return Long.parseLong(text);
-      } catch (NumberFormatException e) {
-        // 非数字字符串，走下方统一参数错误
-      }
-    }
-    throw new BusinessException(
-        ErrorCode.AGENT_TOOL_ARGUMENT_INVALID, "参数缺失或类型错误: " + key);
+    validate(tool, parsed);
+    return (T) parsed;
   }
 
-  /** 提取非空 String 参数 */
-  private String requireString(Map<String, Object> arguments, String key) {
-    Object value = arguments.get(key);
-    if (value instanceof String text && !text.isBlank()) {
-      return text;
+  /** 未知参数直接拒绝：静默忽略会让「调用方以为传了、服务端其实没用」长期隐身 */
+  private void rejectUnknownParameters(AgentToolName tool, Map<String, Object> arguments) {
+    List<String> allowed = AgentToolSchemaExporter.parameterNames(tool.getRequestType());
+    List<String> unknown = arguments.keySet().stream()
+        .filter(key -> !allowed.contains(key))
+        .sorted()
+        .toList();
+    if (!unknown.isEmpty()) {
+      throw new BusinessException(ErrorCode.AGENT_TOOL_ARGUMENT_INVALID,
+          "存在未知参数（" + tool.getName() + "）: " + unknown + "；可用参数: " + allowed);
     }
-    throw new BusinessException(
-        ErrorCode.AGENT_TOOL_ARGUMENT_INVALID, "参数缺失或类型错误: " + key);
   }
 
-  /** 提取 Integer 参数（兼容 JSON 数字与字符串两种形态） */
-  private Integer requireInt(Map<String, Object> arguments, String key) {
-    Object value = arguments.get(key);
-    if (value instanceof Number number) {
-      return number.intValue();
+  /** jakarta validation 校验：约束与导出的 JSON Schema 同源（都写在同一份请求模型上） */
+  private void validate(AgentToolName tool, Object request) {
+    Set<ConstraintViolation<Object>> violations = validator.validate(request);
+    if (violations.isEmpty()) {
+      return;
     }
-    if (value instanceof String text) {
-      try {
-        return Integer.parseInt(text);
-      } catch (NumberFormatException e) {
-        // 非数字字符串，走下方统一参数错误
-      }
-    }
-    throw new BusinessException(
-        ErrorCode.AGENT_TOOL_ARGUMENT_INVALID, "参数缺失或类型错误: " + key);
+    String detail = violations.stream()
+        .sorted(Comparator.comparing(violation -> violation.getPropertyPath().toString()))
+        .map(violation -> violation.getPropertyPath() + " " + violation.getMessage())
+        .collect(Collectors.joining("；"));
+    throw new BusinessException(ErrorCode.AGENT_TOOL_ARGUMENT_INVALID,
+        "参数无效（" + tool.getName() + "）: " + detail);
   }
 
-  /**
-   * 提取非空 Long 列表参数（用于多知识库检索）。
-   * 列表为空或包含无法转换的元素时按参数错误处理。
-   */
-  private List<Long> requireLongList(Map<String, Object> arguments, String key) {
-    Object value = arguments.get(key);
-    if (value instanceof List<?> list && !list.isEmpty()) {
-      return list.stream()
-          .map(item -> {
-            if (item instanceof Number number) {
-              return number.longValue();
-            }
-            if (item instanceof String text) {
-              try {
-                return Long.parseLong(text);
-              } catch (NumberFormatException e) {
-                throw new BusinessException(
-                    ErrorCode.AGENT_TOOL_ARGUMENT_INVALID, "参数类型错误: " + key);
-              }
-            }
-            throw new BusinessException(
-                ErrorCode.AGENT_TOOL_ARGUMENT_INVALID, "参数类型错误: " + key);
-          })
-          .toList();
+  /** 导出该 Tool 的 JSON Schema 字符串；导出异常不影响 Discovery 的其他 Tool */
+  private String writeSchema(AgentToolName tool) {
+    try {
+      return objectMapper.writeValueAsString(AgentToolSchemaExporter.exportTool(tool));
+    } catch (RuntimeException e) {
+      log.error("导出 Tool Schema 失败: tool={}", tool.getName(), e);
+      return "{}";
     }
-    throw new BusinessException(
-        ErrorCode.AGENT_TOOL_ARGUMENT_INVALID, "参数缺失或类型错误: " + key);
   }
 }

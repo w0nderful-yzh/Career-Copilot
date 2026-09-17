@@ -50,7 +50,11 @@ export interface InterviewProposalBlock {
 
 /**
  * InterviewConfig：手动配置面板与 Agent 推荐收敛到的同一份面试配置。
- * CREATE_INTERVIEW action 的 payload 即此结构（camelCase，对齐后端 action 契约）。
+ *
+ * CREATE_INTERVIEW action 的 payload 在此基础上再带 `resumeId` 与 `requestId`
+ * （camelCase，对齐后端 action 契约）。requestId 是**创建幂等键**：
+ * 同一次确认流程（含网络重发/重试）必须复用同一值，配置变化时换新值——
+ * 沿用旧键会让 Java 侧命中幂等缓存、返回上一次那个配置不符的会话。
  */
 export interface InterviewConfig {
   direction: string;

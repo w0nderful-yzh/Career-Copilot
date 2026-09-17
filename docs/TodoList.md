@@ -179,9 +179,32 @@ React 展示本轮结果与下一步
   - Java 统一解析简历来源和版本，保存可追溯快照；Agent、手动面试等适用入口共用取数规则。
   - Python 传目标与会话意图；逐轮补齐相关问答、画像基线、覆盖摘要与候选，按话题裁剪。
   - 验收：只传简历 ID 也能问到真实项目 / 实习事实；明确指定但不可读的简历有可见原因；无经历不编造。
-- [ ] **ARCH-1 契约单一事实源**
-  - 以类型模型生成正式 Tool / API Schema 和 Python 参数模型，补齐输入校验及 CI 漂移检查。
-  - 增加「参数存在且真正影响业务」的契约行为测试，覆盖简历、版本、focus、时间预算和节奏动作。
+- [x] **ARCH-1 契约单一事实源**
+  - 事实源：`AgentToolRequests` 的 13 个类型化请求 record（jakarta validation 约束 + `@ToolParam` 语义说明），
+    `AgentToolName` 每个常量持有自己的请求模型。新增 Tool 时枚举 / 模型 / dispatch 三处一起加。
+  - 产物：`docs/contracts/agent-tools.json`（由类型模型导出，`version=1`）。导出器刻意用 LinkedHashMap 固定字段顺序——
+    `Map.of` 的迭代顺序不保证（每次 JVM 启动可能不同），会让 golden 文件时快时慢地「变化」、漂移检查随机失败（实测踩到）。
+  - 入参校验：`execute` 先按请求模型反序列化，再做「未知参数拒绝 + jakarta validation 校验」。
+    此前未知字段被**静默忽略**（调用方以为传了、服务端其实没用），现在错误信息列出「实际传入」与「可用参数」。
+  - Tool Discovery：`/api/agent/tools` 的 inputSchema 改为**实时导出真 JSON Schema**（此前是
+    `{"resumeId": Long, optional}` 这类连合法 JSON 都不是的手写字符串，是契约漂移的第二来源）。
+  - Python 侧：删除无消费者的 `TOOLS` / `ToolSpec`（已与 Java 漂移——create_interview 少 3 个参数、参数名 snake/camel 混用）；
+    新增 `career_copilot/contracts`，在 `BackendClient.call_tool` 之前用契约校验参数（pydantic 动态模型，
+    错误码与 Java `AGENT_TOOL_ARGUMENT_INVALID` 一致）。非法入参在**发请求之前**就被拒。
+  - 漂移检查（随现有 CI 自动执行）：Java 侧 `AgentToolContractTest` 比对「导出结果 vs golden 文件」；
+    Python 侧 `test_contracts.py` 比对「包内副本 vs golden」，并扫描 `BackendClient` 里写死的 Tool 名是否都在契约中。
+    再生成：`AGENT_TOOLS_SCHEMA_WRITE=true ./gradlew :app:test --tests "*AgentToolContractTest*"`，
+    再把 `docs/contracts/agent-tools.json` 复制到 `agent-service/src/career_copilot/contracts/`。
+  - 契约行为测试（「参数存在且真正影响业务」）：resumeId 决定取**哪一份**简历、focusCategories 真的到达面试引擎、
+    resumeText 透传（出题靠它判断是否存在简历题分支）、questionCount 改变题数（缺省 8）、
+    requestId 透传为幂等键，以及未知参数 / 类型错误 / 缺必填 / 超范围四类各有明确错误码与可读信息。
+  - 顺带补齐一类「参数存在但没人传」：`requestId` 此前 **Python 从不传**（幂等键形同虚设）——现在前端在每次确认流程
+    生成一次并原样回传，**配置变化时换新值**（沿用旧键会命中 Java 幂等缓存、返回配置不符的旧会话）。
+  - 已验证：Java **496** 测试 / 0 失败 / 54 跳过（本机 PG、Redis 离线，含 5 个 DB 依赖用例的预期跳过）；
+    Python ruff 0 / mypy 0 / pytest **112**（+11）；前端 12 个单测脚本 67 项 + build + E2E 11 项。
+    **未做**：真 HTTP 层调 `/api/agent/tools` 核对 Discovery 输出（应用起不来，本地依赖离线）——
+    该点改由单测覆盖：逐 Tool 断言 inputSchema 是合法 JSON 对象、`additionalProperties=false`，且与契约导出结果一致。
+  - 尚未覆盖（字段还不存在，等对应待办落地时补测）：时间预算与节奏动作类参数。
 - [ ] **ARCH-2 LLM 执行治理**
   - 统一配置版本、结构化输出契约、Prompt 资源与版本、错误分类和观测；实时与后台调用分别设置预算。
   - 限制重试责任层，覆盖意图分类、结构化输出失败与模型超时；区分调用失败和真实「无建议」。

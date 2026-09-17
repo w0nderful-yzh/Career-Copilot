@@ -1,61 +1,16 @@
-"""Agent Tool 注册表与薄封装。
+"""Agent Tool 结果的摘要与裁剪（Token 纪律）。
 
-Tool 只负责：参数整理、调用 BackendClient、结果裁剪（Token 纪律）。
-业务逻辑一律在 Java 侧，Python 不做业务复制。
+业务逻辑一律在 Java 侧，Python 不做业务复制；本模块只负责把 Tool 返回的结构化结果
+裁成适合放进 Prompt 的文本。
+
+Tool 的**参数契约**不在本模块：它由 Java 的类型化请求模型导出到
+`career_copilot/contracts/agent-tools.json`，由 `career_copilot.contracts` 在调用前校验。
+（此前这里有一份手写的 ToolSpec 列表，无任何消费者却已经开始与 Java 侧漂移，已删除。）
 """
 
-from dataclasses import dataclass, field
 from typing import Any
 
 from career_copilot.clients.backend import BackendClient
-
-
-@dataclass(frozen=True)
-class ToolSpec:
-    """Tool 元信息，供后续 Agent 决策与 Discovery 使用。"""
-
-    name: str
-    description: str
-    parameters: dict[str, str] = field(default_factory=dict)
-
-
-TOOLS: list[ToolSpec] = [
-    ToolSpec(
-        name="get_resume_list",
-        description="获取简历列表（含最新分析分数）",
-        parameters={"resume_id": "int (可选)"},
-    ),
-    ToolSpec(
-        name="get_interview_history",
-        description="获取模拟面试历史列表",
-        parameters={"resume_id": "int (可选)"},
-    ),
-    ToolSpec(
-        name="get_skill_profile",
-        description="获取用户技能画像（聚合分 + 可追溯证据）",
-        parameters={},
-    ),
-    ToolSpec(
-        name="search_knowledge",
-        description="基于 RAG 知识库回答问题",
-        parameters={"question": "str", "knowledge_base_ids": "list[int] (可选)"},
-    ),
-    ToolSpec(
-        name="list_skills",
-        description="获取可用的模拟面试技能方向列表（含分类与优先级）",
-        parameters={},
-    ),
-    ToolSpec(
-        name="create_interview",
-        description="创建模拟面试会话（需用户确认后执行）",
-        parameters={
-            "skillId": "str",
-            "difficulty": "str",
-            "questionCount": "int (可选)",
-            "resumeId": "int (可选)",
-        },
-    ),
-]
 
 
 async def summarize_resumes(resumes: list[dict[str, Any]], limit: int = 5) -> str:

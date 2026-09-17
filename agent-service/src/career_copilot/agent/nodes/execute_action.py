@@ -131,6 +131,11 @@ async def _create_interview_action(
     # focus 必须真正传给 Java：否则用户看到「重点考察 JVM」却仍被问 MySQL（P3 待收口）
     focus_categories = [f for f in (payload.get("focus") or []) if isinstance(f, str)]
 
+    # 幂等键：由前端在同一次确认流程中生成并原样回传（重发/重试复用同一值）。
+    # 缺失时为 None——那等于没有幂等保护，重复提交会重复建会话（ARCH-1 的契约行为测试盯这条）。
+    raw_request_id = payload.get("requestId")
+    request_id = raw_request_id if isinstance(raw_request_id, str) and raw_request_id else None
+
     emit_tool_started("create_interview")
     try:
         session = await deps.backend.create_interview(
@@ -140,6 +145,7 @@ async def _create_interview_action(
             resume_id=_as_int(payload.get("resumeId")) or state.get("active_resume_id"),
             resume_text=None,
             force_create=True,
+            request_id=request_id,
             focus_categories=focus_categories,
         )
     except BusinessToolError as exc:

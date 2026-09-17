@@ -8,6 +8,11 @@ from typing import Any
 
 import httpx
 
+from career_copilot import contracts
+
+#: 与 Java 侧 ErrorCode.AGENT_TOOL_ARGUMENT_INVALID 对应：参数不符合契约
+ARGUMENT_INVALID_CODE = 12002
+
 
 class BusinessToolError(Exception):
     """Java 后端业务错误，转换为 Agent 可理解的结构化错误。
@@ -52,8 +57,17 @@ class BackendClient:
         code != 200 表示业务失败，需转为 BusinessToolError。
         工具响应 data 为 ToolResponse{tool, data}，需再解包内层业务数据。
         timeout：单次请求超时覆盖（秒）；缺省用客户端默认 30s。
+
+        调用前先按 Java 导出的契约校验参数（ARCH-1）：不合契约就不必打后端，
+        错误也能立刻指出是哪个字段——而不是等 Java 侧静默忽略或返回业务错误。
         """
-        payload: dict[str, Any] = {"arguments": arguments or {}}
+        wire_arguments: dict[str, Any] = dict(arguments or {})
+        try:
+            contracts.validate_arguments(tool, wire_arguments)
+        except contracts.ContractViolation as exc:
+            raise BusinessToolError(ARGUMENT_INVALID_CODE, str(exc)) from exc
+
+        payload: dict[str, Any] = {"arguments": wire_arguments}
         try:
             response = await self._client.post(
                 f"/api/agent/tools/{tool}", json=payload, timeout=timeout
@@ -206,12 +220,16 @@ class BackendClient:
         resume_id: int | None = None,
         resume_text: str | None = None,
         force_create: bool = False,
+        request_id: str | None = None,
         focus_categories: list[str] | None = None,
     ) -> dict[str, Any]:
         """创建模拟面试会话（CONFIRM_WRITE，用户确认后才由 Agent 调用）。
 
         复用 Java Interview Engine 现有创建链路（含 requestId 幂等与未完成会话复用），
         返回 InterviewSessionDTO，sessionId 供前端跳转面试页。
+
+        request_id 是幂等键：**同一次用户确认的网络重试必须复用同一个值**，
+        否则重复点击/重发会创建多个会话（参数存在但没人传，等于没有幂等保护）。
 
         focus_categories 为重点考察的分类（key 或展示名）：Java 侧据此裁剪该方向的
         出题范围；未命中任何分类时按原方向全量出题（focus 是"重点"而非"只考这些"）。
@@ -228,6 +246,8 @@ class BackendClient:
             arguments["resumeText"] = resume_text
         if force_create:
             arguments["forceCreate"] = True
+        if request_id:
+            arguments["requestId"] = request_id
         if focus_categories:
             arguments["focusCategories"] = list(focus_categories)
         # LLM 同步出题可达 1-3 分钟：用长超时覆盖客户端默认 30s，

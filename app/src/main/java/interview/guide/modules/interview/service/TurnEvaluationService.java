@@ -4,6 +4,7 @@ import interview.guide.common.ai.StructuredOutputInvoker;
 import interview.guide.common.exception.ErrorCode;
 import interview.guide.modules.interview.model.InterviewQuestionDTO;
 import interview.guide.modules.interview.model.TurnEvaluation;
+import interview.guide.modules.interview.model.TurnEvaluationRequest;
 import interview.guide.modules.interview.model.TurnEvaluation.AnswerState;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,6 +18,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -30,12 +32,30 @@ import java.util.Set;
  * 延迟与容错：
  * - 「不会 / 跳过」等短回答直接短路 NO_ANSWER，不调 LLM；
  * - 模型失败经 StructuredOutputInvoker 重试后仍失败 → 中性回落，不阻塞答题；
- * - prompt 只含 当前题 + 期望要点 + 回答，token 保持最小。
+ * - prompt 只含当前题、回答与三类参照物（简历片段 / 最近相关问答 / 画像基线），均已按预算裁剪。
  */
 @Service
 public class TurnEvaluationService {
 
     private static final Logger log = LoggerFactory.getLogger(TurnEvaluationService.class);
+
+    /**
+     * 简历片段上限（P4Q-1）。
+     *
+     * <p>逐轮上下文直接吃 P95 ≤ 3s 的预算，所以只取与当前题相关的一段而不是整份简历；
+     * 这个数是先给的默认值，实测后再调（调它之前先看逐轮耗时的实测数据）。
+     */
+    static final int MAX_RESUME_SNIPPET_CHARS = 800;
+
+    /** 最近相关问答轮数上限：再多也只是重复同类信息，代价是每轮都在付 */
+    static final int MAX_RECENT_TURNS = 2;
+
+    /** 单条问答的截断长度（历史问答只作参照，不需要全文） */
+    private static final int MAX_HISTORY_ANSWER_CHARS = 120;
+
+    private static final String NO_RESUME_CONTEXT = "（本场没有简历依据，不要假定候选人有过任何经历）";
+    private static final String NO_RECENT_TURNS = "（该技能此前没有已回答的轮次）";
+    private static final String NO_PROFILE_BASELINE = "（该技能暂无画像数据，按题目难度独立判断）";
 
     /**
      * 跳过指令短路词表（P4Q-5，精确匹配）。
@@ -104,11 +124,11 @@ public class TurnEvaluationService {
      * 评估单轮回答。永不抛出：NO_ANSWER 短路 / LLM 失败均回落为确定性 TurnEvaluation。
      *
      * @param chatClient 评估用 LLM 客户端（由调用方按会话 provider 获取）
-     * @param question   当前被回答的题（使用 difficulty/expectedPoints/category）
-     * @param userAnswer 用户回答原文
+     * @param request    本轮输入：当前题、回答，以及三类参照物（简历片段 / 最近问答 / 画像基线）
      */
-    public TurnEvaluation evaluateTurn(ChatClient chatClient, InterviewQuestionDTO question, String userAnswer) {
-        String answer = userAnswer == null ? "" : userAnswer.trim();
+    public TurnEvaluation evaluateTurn(ChatClient chatClient, TurnEvaluationRequest request) {
+        InterviewQuestionDTO question = request.question();
+        String answer = request.answer() == null ? "" : request.answer().trim();
         if (answer.isEmpty()) {
             return TurnEvaluation.noAnswer();
         }
@@ -125,6 +145,9 @@ public class TurnEvaluationService {
             "difficultyLabel", difficultyLabel(question),
             "category", question.category() != null ? question.category() : "",
             "topicSummary", question.topicSummary() != null ? question.topicSummary() : "",
+            "resumeSnippet", optionalText(request.resumeSnippet(), NO_RESUME_CONTEXT),
+            "recentTurns", recentTurnsText(request.recentTurns()),
+            "profileBaseline", optionalText(request.profileBaseline(), NO_PROFILE_BASELINE),
             "question", question.question() == null ? "" : question.question(),
             "expectedPoints", expectedPointsText(question.expectedPoints()),
             "answer", answer
@@ -147,6 +170,96 @@ public class TurnEvaluationService {
                 question.questionIndex(), e.getMessage());
             return TurnEvaluation.unknownFallback();
         }
+    }
+
+    /**
+     * 从本场简历上下文里挑出与当前题最相关的一段。
+     *
+     * <p>逐轮上下文吃的是 P95 预算，不能把整份简历塞进去。策略：先按小节标题找与当前分类
+     * 语义相关的一段（如分类「项目经历」对应简历的「## 项目经历」），找不到就取开头——
+     * 开头通常是求职意向与最近的经历，信息密度最高。
+     */
+    static String resumeSnippetFor(String resumeContextText, String category) {
+        if (resumeContextText == null || resumeContextText.isBlank()) {
+            return null;
+        }
+        String matched = sectionMatching(resumeContextText, category);
+        String picked = (matched != null ? matched : resumeContextText).strip();
+        return picked.length() <= MAX_RESUME_SNIPPET_CHARS
+            ? picked
+            : picked.substring(0, MAX_RESUME_SNIPPET_CHARS) + "…（已截断）";
+    }
+
+    /** 按小节标题与分类名做双向子串匹配（大小写不敏感）；没有匹配返回 null */
+    private static String sectionMatching(String text, String category) {
+        if (category == null || category.isBlank()) {
+            return null;
+        }
+        String needle = category.strip().toLowerCase(Locale.ROOT);
+        for (String section : text.split("(?=\n## )")) {
+            String title = sectionTitle(section);
+            if (!title.isEmpty() && (title.contains(needle) || needle.contains(title))) {
+                return section;
+            }
+        }
+        return null;
+    }
+
+    /** 取小节首行标题（去掉 # 号与空白） */
+    private static String sectionTitle(String section) {
+        int lineEnd = section.indexOf('\n');
+        String firstLine = lineEnd > 0 ? section.substring(0, lineEnd) : section;
+        return firstLine.replace("#", "").strip().toLowerCase(Locale.ROOT);
+    }
+
+    /**
+     * 同技能的最近几轮问答（不含当前轮）。
+     *
+     * <p>判据是「该题确有作答记录」而不是索引位置：题单里含候选择问，被策略跳过的候选
+     * 从未发生过——把它们的空答案当历史，会让模型以为「用户当时什么都没说」。
+     */
+    static List<String> recentTurnsFor(List<InterviewQuestionDTO> questions, int currentIndex,
+                                       String category) {
+        if (questions == null || currentIndex <= 0) {
+            return List.of();
+        }
+        List<String> turns = new ArrayList<>();
+        for (int index = Math.min(currentIndex, questions.size()) - 1; index >= 0; index--) {
+            InterviewQuestionDTO candidate = questions.get(index);
+            if (!candidate.wasAsked() || candidate.userAnswer() == null
+                || candidate.userAnswer().isBlank()) {
+                continue;
+            }
+            if (category != null && !category.isBlank() && candidate.category() != null
+                && !candidate.category().equalsIgnoreCase(category)) {
+                continue;
+            }
+            turns.add(0, "- 问：" + shorten(candidate.question())
+                + "\n  答：" + shorten(candidate.userAnswer()));
+            if (turns.size() >= MAX_RECENT_TURNS) {
+                break;
+            }
+        }
+        return turns;
+    }
+
+    /** 参照物为空时给出可读说明：留白会让模型以为「这段本来就没有」而不是「没有内容」 */
+    private static String optionalText(String value, String placeholder) {
+        return value == null || value.isBlank() ? placeholder : value;
+    }
+
+    private static String recentTurnsText(List<String> recentTurns) {
+        return recentTurns == null || recentTurns.isEmpty()
+            ? NO_RECENT_TURNS
+            : String.join("\n", recentTurns);
+    }
+
+    /** 单条历史问答的截断（只作参照，不需要全文） */
+    private static String shorten(String text) {
+        String value = text == null ? "" : text.strip();
+        return value.length() <= MAX_HISTORY_ANSWER_CHARS
+            ? value
+            : value.substring(0, MAX_HISTORY_ANSWER_CHARS) + "…";
     }
 
     /**

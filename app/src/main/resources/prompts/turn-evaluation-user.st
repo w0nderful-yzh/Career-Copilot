@@ -3,6 +3,15 @@
 - 知识点摘要：{topicSummary}
 - 难度：{difficultyLabel}
 
+## 本场简历相关片段
+{resumeSnippet}
+
+## 最近相关问答（同技能）
+{recentTurns}
+
+## 画像基线（长期表现，仅供参考）
+{profileBaseline}
+
 ## 面试题
 {question}
 

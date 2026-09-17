@@ -56,6 +56,25 @@ public class SkillProfileQueryService {
   }
 
   /**
+   * 技能画像**不含证据明细**：给只需要「技能 → 分数」的消费方用（如逐轮评估的画像基线）。
+   *
+   * <p>刻意与 {@link #getProfileWithEvidence()} 分开：后者对每个技能各查一次证据（N+1），
+   * 在每轮问答里调用代价过高；这里只查一次画像表。
+   */
+  @Transactional(readOnly = true)
+  public List<SkillProfileResponse.SkillProfileDTO> listProfiles() {
+    return profileRepository.findByUserIdOrderByScoreDesc(ProfileConstants.DEFAULT_USER_ID)
+        .stream()
+        .map(profile -> new SkillProfileResponse.SkillProfileDTO(
+            profile.getSkill(),
+            profile.getScore(),
+            profile.getEvidenceCount(),
+            profile.getUpdatedAt(),
+            List.of()))
+        .toList();
+  }
+
+  /**
    * 简历已列、尚无评分证据的技能。
    *
    * <p>判据是「该技能存在 RESUME 声明证据，但不在 skill_profiles 里」——skill_profiles

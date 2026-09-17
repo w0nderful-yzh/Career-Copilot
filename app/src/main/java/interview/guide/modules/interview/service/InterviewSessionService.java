@@ -21,6 +21,7 @@ import interview.guide.modules.interview.model.SubmitAnswerRequest;
 import interview.guide.modules.interview.model.SubmitAnswerResponse;
 import interview.guide.modules.interview.model.InterviewSessionDTO.SessionStatus;
 import interview.guide.modules.interview.model.TurnEvaluation;
+import interview.guide.modules.interview.model.TurnEvaluationRequest;
 import interview.guide.modules.interview.policy.AdaptiveInterviewPolicy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -59,6 +60,10 @@ public class InterviewSessionService {
     private final RedisService redisService;
     private final TurnEvaluationService turnEvaluationService;
     private final InterviewResumeContextResolver resumeContextResolver;
+    private final interview.guide.modules.profile.service.SkillProfileQueryService skillProfileQueryService;
+
+    /** 逐轮基线里最多列几个相关技能（逐轮上下文吃 P95 预算，基线只是参照） */
+    private static final int MAX_BASELINE_SKILLS = 3;
 
     /**
      * 创建新的面试会话
@@ -532,7 +537,7 @@ public class InterviewSessionService {
         if (adaptive) {
             TurnEvaluation evaluation;
             if (answerState == InterviewAnswerEntity.AnswerState.ANSWERED) {
-                evaluation = evaluateTurn(sessionId, question, answer);
+                evaluation = evaluateTurn(session, questions, index, answer);
                 // 语义判定优先：模型识别出「要求跳过」时改判，本轮不计分也不追问
                 answerState = answerStateOf(evaluation);
             } else {
@@ -599,7 +604,10 @@ public class InterviewSessionService {
      * 逐题轻量评估（同步、低延迟）。评估永不抛出（内部已回落），失败时退化为中性结果，
      * 由决策引擎保守推进，保证答题流程不断。
      */
-    private TurnEvaluation evaluateTurn(String sessionId, InterviewQuestionDTO question, String answer) {
+    private TurnEvaluation evaluateTurn(CachedSession session, List<InterviewQuestionDTO> questions,
+                                        int index, String answer) {
+        String sessionId = session.getSessionId();
+        InterviewQuestionDTO question = questions.get(index);
         String provider = null;
         try {
             Optional<InterviewSessionEntity> entityOpt = persistenceService.findBySessionId(sessionId);
@@ -610,7 +618,39 @@ public class InterviewSessionService {
             log.warn("读取会话 provider 失败，使用默认模型评估: sessionId={}", sessionId);
         }
         ChatClient chatClient = llmProviderRegistry.getChatClientOrDefault(provider);
-        return turnEvaluationService.evaluateTurn(chatClient, question, answer);
+        // P4Q-1：喂进三类参照物——只看一道孤立的题，模型无法判断「他说的是不是自己简历里的事」
+        // 「这轮有没有新信息」「这次表现是否超出长期水平」
+        return turnEvaluationService.evaluateTurn(chatClient, new TurnEvaluationRequest(
+            question,
+            answer,
+            TurnEvaluationService.resumeSnippetFor(session.getResumeText(), question.category()),
+            TurnEvaluationService.recentTurnsFor(questions, index, question.category()),
+            profileBaselineFor(question.category())));
+    }
+
+    /**
+     * 当前题的画像基线（如「MySQL 44 分（2 条证据）」）；无匹配技能时返回 null。
+     *
+     * <p>用轻量画像查询（只查画像表、不带证据明细）：逐轮评估本身要等模型，
+     * 多一次无关联查询不是瓶颈；反过来，为省这一次查询去引入会话级缓存，
+     * 换来的是又一层需要同步的状态。
+     */
+    private String profileBaselineFor(String category) {
+        if (category == null || category.isBlank()) {
+            return null;
+        }
+        String needle = category.strip().toLowerCase(java.util.Locale.ROOT);
+        List<String> matched = skillProfileQueryService.listProfiles().stream()
+            .filter(profile -> profile.skill() != null)
+            .filter(profile -> {
+                String skill = profile.skill().strip().toLowerCase(java.util.Locale.ROOT);
+                return skill.contains(needle) || needle.contains(skill);
+            })
+            .limit(MAX_BASELINE_SKILLS)
+            .map(profile -> profile.skill() + " " + profile.score() + " 分（"
+                + profile.evidenceCount() + " 条证据）")
+            .toList();
+        return matched.isEmpty() ? null : String.join("；", matched);
     }
 
     /**

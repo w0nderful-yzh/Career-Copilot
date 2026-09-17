@@ -64,6 +64,9 @@ class InterviewSessionResumeContextWiringTest {
   @Mock
   private ResumePersistenceService resumePersistenceService;
 
+  @Mock
+  private interview.guide.modules.profile.service.SkillProfileQueryService skillProfileQueryService;
+
   private final ObjectMapper objectMapper = new ObjectMapper();
 
   private InterviewSessionService service;
@@ -81,7 +84,8 @@ class InterviewSessionResumeContextWiringTest {
         redisService,
         turnEvaluationService,
         new InterviewResumeContextResolver(
-            resumeVersionService, resumePersistenceService, objectMapper));
+            resumeVersionService, resumePersistenceService, objectMapper),
+        skillProfileQueryService);
 
     when(questionService.generateQuestionsBySkill(
         any(), anyString(), anyString(), any(), anyInt(), any(), any(), any(), any()))

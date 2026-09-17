@@ -61,6 +61,8 @@ class InterviewSessionAdaptiveTest {
   /** P4Q-1：简历上下文解析器（本类不验证取数，stub 为「无简历」以隔离关注点） */
   @Mock
   private InterviewResumeContextResolver resumeContextResolver;
+  @Mock
+  private interview.guide.modules.profile.service.SkillProfileQueryService skillProfileQueryService;
 
   private final ObjectMapper objectMapper = new ObjectMapper();
   private InterviewSessionService service;
@@ -77,7 +79,8 @@ class InterviewSessionAdaptiveTest {
         llmProviderRegistry,
         redisService,
         turnEvaluationService,
-        resumeContextResolver
+        resumeContextResolver,
+        skillProfileQueryService
     );
 
     lenient().when(resumeContextResolver.resolve(any(), any(), any()))
@@ -112,7 +115,7 @@ class InterviewSessionAdaptiveTest {
     assertThat(response.nextQuestion().question()).isEqualTo("Q2: Redis 持久化？");
     assertThat(response.currentIndex()).isEqualTo(2);
     // 「不会」是精确匹配的「明确不会」：P4Q-5 起在调用模型前就短路，省掉一次无意义的模型调用
-    verify(turnEvaluationService, never()).evaluateTurn(any(), any(), any());
+    verify(turnEvaluationService, never()).evaluateTurn(any(), any());
   }
 
   @Test
@@ -122,7 +125,7 @@ class InterviewSessionAdaptiveTest {
     when(sessionCache.getSession("session-abc")).thenReturn(Optional.of(cached(questions, 0, true)));
     when(persistenceService.findBySessionId("session-abc"))
         .thenReturn(Optional.of(entity("session-abc", true)));
-    when(turnEvaluationService.evaluateTurn(any(), any(), any()))
+    when(turnEvaluationService.evaluateTurn(any(), any()))
         .thenReturn(eval(AnswerState.GOOD));
 
     SubmitAnswerResponse response = service.submitAnswer(

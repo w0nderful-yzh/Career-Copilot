@@ -55,6 +55,8 @@ class InterviewSessionIdempotencyTest {
   /** P4Q-1：简历上下文解析器（本类不验证取数，stub 为「无简历」以隔离关注点） */
   @Mock
   private InterviewResumeContextResolver resumeContextResolver;
+  @Mock
+  private interview.guide.modules.profile.service.SkillProfileQueryService skillProfileQueryService;
 
   private ObjectMapper objectMapper;
   private InterviewSessionService service;
@@ -72,7 +74,8 @@ class InterviewSessionIdempotencyTest {
         llmProviderRegistry,
         redisService,
         turnEvaluationService,
-        resumeContextResolver
+        resumeContextResolver,
+        skillProfileQueryService
     );
 
     lenient().when(resumeContextResolver.resolve(any(), any(), any()))

@@ -75,6 +75,8 @@ class SkipSemanticsTest {
   /** P4Q-1：简历上下文解析器（本类不验证取数，stub 为「无简历」以隔离关注点） */
   @Mock
   private InterviewResumeContextResolver resumeContextResolver;
+  @Mock
+  private interview.guide.modules.profile.service.SkillProfileQueryService skillProfileQueryService;
 
   private final ObjectMapper objectMapper = new ObjectMapper();
   private final Map<String, CachedSession> cacheStore = new HashMap<>();
@@ -87,7 +89,8 @@ class SkipSemanticsTest {
         questionService, evaluationService, persistenceService, sessionCache,
         objectMapper, evaluateStreamProducer, llmProviderRegistry, redisService,
         turnEvaluationService,
-        resumeContextResolver);
+        resumeContextResolver,
+        skillProfileQueryService);
 
     lenient().when(resumeContextResolver.resolve(any(), any(), any()))
         .thenReturn(InterviewResumeContext.none());
@@ -121,7 +124,7 @@ class SkipSemanticsTest {
 
     assertThat(response.hasNextQuestion()).isTrue();
     assertThat(response.nextQuestion().questionIndex()).isEqualTo(2);
-    verify(turnEvaluationService, never()).evaluateTurn(any(), any(), any());
+    verify(turnEvaluationService, never()).evaluateTurn(any(), any());
   }
 
   @Test
@@ -141,7 +144,7 @@ class SkipSemanticsTest {
 
     service.submitAnswer(new SubmitAnswerRequest("s3", 0, "   "));
 
-    verify(turnEvaluationService, never()).evaluateTurn(any(), any(), any());
+    verify(turnEvaluationService, never()).evaluateTurn(any(), any());
   }
 
   @Test
@@ -152,7 +155,7 @@ class SkipSemanticsTest {
     SubmitAnswerResponse response = service.submitAnswer(new SubmitAnswerRequest("s4", 0, "跳过"));
 
     assertThat(response.nextQuestion().questionIndex()).isEqualTo(1);
-    verify(turnEvaluationService, never()).evaluateTurn(any(), any(), any());
+    verify(turnEvaluationService, never()).evaluateTurn(any(), any());
   }
 
   @Test
@@ -160,7 +163,7 @@ class SkipSemanticsTest {
   void semanticSkipIsPersistedWithoutScore() {
     putSession("s5", true);
     when(persistenceService.findBySessionId("s5")).thenReturn(Optional.empty());
-    when(turnEvaluationService.evaluateTurn(any(), any(), any()))
+    when(turnEvaluationService.evaluateTurn(any(), any()))
         .thenReturn(TurnEvaluation.skipped());
 
     service.submitAnswer(new SubmitAnswerRequest(
@@ -177,7 +180,7 @@ class SkipSemanticsTest {
   void noAnswerBecomesDeclined() {
     putSession("s6", true);
     when(persistenceService.findBySessionId("s6")).thenReturn(Optional.empty());
-    when(turnEvaluationService.evaluateTurn(any(), any(), any()))
+    when(turnEvaluationService.evaluateTurn(any(), any()))
         .thenReturn(TurnEvaluation.noAnswer());
 
     service.submitAnswer(new SubmitAnswerRequest("s6", 0, "这个原理我确实没搞明白"));
@@ -192,12 +195,12 @@ class SkipSemanticsTest {
   void realAnswerIsEvaluatedAndScored() {
     putSession("s7", true);
     when(persistenceService.findBySessionId("s7")).thenReturn(Optional.empty());
-    when(turnEvaluationService.evaluateTurn(any(), any(), any()))
+    when(turnEvaluationService.evaluateTurn(any(), any()))
         .thenReturn(new TurnEvaluation(80, 0.8, List.of("堆"), List.of(), TURN_GOOD, "", true));
 
     service.submitAnswer(new SubmitAnswerRequest("s7", 0, "堆和方法区……"));
 
-    verify(turnEvaluationService).evaluateTurn(any(), any(), any());
+    verify(turnEvaluationService).evaluateTurn(any(), any());
     verify(persistenceService).saveAnswer(
         eq("s7"), eq(0), anyString(), anyString(), anyString(), eq(0), isNull(),
         eq(AnswerState.ANSWERED));

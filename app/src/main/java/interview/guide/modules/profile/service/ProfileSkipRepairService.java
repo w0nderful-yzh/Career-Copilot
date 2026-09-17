@@ -5,6 +5,7 @@ import interview.guide.modules.interview.model.InterviewAnswerEntity;
 import interview.guide.modules.interview.model.InterviewAnswerEntity.AnswerState;
 import interview.guide.modules.interview.model.InterviewQuestionDTO;
 import interview.guide.modules.interview.model.TurnEvaluation;
+import interview.guide.modules.interview.model.TurnEvaluationRequest;
 import interview.guide.modules.interview.repository.InterviewAnswerRepository;
 import interview.guide.modules.interview.service.TurnEvaluationService;
 import interview.guide.modules.profile.model.SkillEvidenceEntity;
@@ -140,7 +141,7 @@ public class ProfileSkipRepairService {
     TurnEvaluation shortCircuit = TurnEvaluationService.shortCircuit(text);
     TurnEvaluation evaluation = shortCircuit != null
         ? shortCircuit
-        : turnEvaluationService.evaluateTurn(chatClient, questionOf(answer), text);
+        : turnEvaluationService.evaluateTurn(chatClient, TurnEvaluationRequest.of(questionOf(answer), text));
 
     if (evaluation.skipRequested()) {
       return AnswerState.SKIPPED;

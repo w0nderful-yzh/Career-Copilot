@@ -5,6 +5,7 @@ import interview.guide.common.exception.BusinessException;
 import interview.guide.common.exception.ErrorCode;
 import interview.guide.modules.interview.model.InterviewQuestionDTO;
 import interview.guide.modules.interview.model.TurnEvaluation;
+import interview.guide.modules.interview.model.TurnEvaluationRequest;
 import interview.guide.modules.interview.model.TurnEvaluation.AnswerState;
 import interview.guide.modules.interview.service.TurnEvaluationService.TurnEvalDTO;
 import org.junit.jupiter.api.BeforeEach;
@@ -58,7 +59,7 @@ class TurnEvaluationServiceTest {
   @DisplayName("空回答与「不会」类短语直接短路 NO_ANSWER，不调用 LLM")
   void shortAnswersShortCircuitWithoutLlm() {
     for (String answer : List.of("", "   ", "不会", "不知道", "忘了", "跳过", "i don't know", "没复习")) {
-      TurnEvaluation evaluation = service.evaluateTurn(chatClient, question(), answer);
+      TurnEvaluation evaluation = service.evaluateTurn(chatClient, TurnEvaluationRequest.of(question(), answer));
       assertThat(evaluation.answerState()).isEqualTo(AnswerState.NO_ANSWER);
       assertThat(evaluation.score()).isZero();
       assertThat(evaluation.evaluatedByLlm()).isFalse();
@@ -72,7 +73,7 @@ class TurnEvaluationServiceTest {
     TurnEvalDTO dto = new TurnEvalDTO(null, "PARTIAL", List.of("触发条件"), List.of("发生区域", "STW"), "GC 触发细节", null);
     when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(dto);
 
-    TurnEvaluation evaluation = service.evaluateTurn(chatClient, question(), "Young 代满会触发 Minor GC……");
+    TurnEvaluation evaluation = service.evaluateTurn(chatClient, TurnEvaluationRequest.of(question(), "Young 代满会触发 Minor GC……"));
 
     assertThat(evaluation.answerState()).isEqualTo(AnswerState.PARTIAL);
     assertThat(evaluation.score()).isEqualTo(55); // PARTIAL 默认分
@@ -88,13 +89,13 @@ class TurnEvaluationServiceTest {
   void clampsScoreAndDerivesStateWhenStateMissing() throws Exception {
     TurnEvalDTO high = new TurnEvalDTO(120, null, List.of(), List.of(), "", null);
     when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(high);
-    TurnEvaluation evaluation = service.evaluateTurn(chatClient, question(), "非常完整的回答……");
+    TurnEvaluation evaluation = service.evaluateTurn(chatClient, TurnEvaluationRequest.of(question(), "非常完整的回答……"));
     assertThat(evaluation.score()).isEqualTo(100);
     assertThat(evaluation.answerState()).isEqualTo(AnswerState.EXCELLENT);
 
     TurnEvalDTO negative = new TurnEvalDTO(-5, null, List.of(), List.of(), "", null);
     when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(negative);
-    TurnEvaluation low = service.evaluateTurn(chatClient, question(), "回答错误……");
+    TurnEvaluation low = service.evaluateTurn(chatClient, TurnEvaluationRequest.of(question(), "回答错误……"));
     assertThat(low.score()).isZero();
     assertThat(low.answerState()).isEqualTo(AnswerState.WRONG);
   }
@@ -104,7 +105,7 @@ class TurnEvaluationServiceTest {
   void keepsScoreAndStateWhenBothPresent() throws Exception {
     TurnEvalDTO dto = new TurnEvalDTO(88, "EXCELLENT", List.of("触发条件", "发生区域", "STW"), List.of(), "", null);
     when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(dto);
-    TurnEvaluation evaluation = service.evaluateTurn(chatClient, question(), "回答很完整……");
+    TurnEvaluation evaluation = service.evaluateTurn(chatClient, TurnEvaluationRequest.of(question(), "回答很完整……"));
     assertThat(evaluation.score()).isEqualTo(88);
     assertThat(evaluation.answerState()).isEqualTo(AnswerState.EXCELLENT);
     assertThat(evaluation.coverage()).isEqualTo(1.0);
@@ -115,7 +116,7 @@ class TurnEvaluationServiceTest {
   void fallsBackWhenLlmFails() throws Exception {
     when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any()))
         .thenThrow(new BusinessException(ErrorCode.INTERVIEW_EVALUATION_FAILED, "模型不可用"));
-    TurnEvaluation evaluation = service.evaluateTurn(chatClient, question(), "回答内容……");
+    TurnEvaluation evaluation = service.evaluateTurn(chatClient, TurnEvaluationRequest.of(question(), "回答内容……"));
     assertThat(evaluation.answerState()).isEqualTo(AnswerState.PARTIAL);
     assertThat(evaluation.score()).isEqualTo(50);
     assertThat(evaluation.evaluatedByLlm()).isFalse();
@@ -127,7 +128,7 @@ class TurnEvaluationServiceTest {
     InterviewQuestionDTO bare = InterviewQuestionDTO.create(0, "简单介绍下 JVM？", "JVM", "JVM");
     TurnEvalDTO dto = new TurnEvalDTO(80, "GOOD", List.of(), List.of(), "", null);
     when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(dto);
-    TurnEvaluation evaluation = service.evaluateTurn(chatClient, bare, "回答……");
+    TurnEvaluation evaluation = service.evaluateTurn(chatClient, TurnEvaluationRequest.of(bare, "回答……"));
     assertThat(evaluation.score()).isEqualTo(80);
     assertThat(evaluation.answerState()).isEqualTo(AnswerState.GOOD);
     assertThat(evaluation.coverage()).isEqualTo(0.5);

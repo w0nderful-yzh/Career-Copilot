@@ -9,6 +9,7 @@ import interview.guide.modules.interview.model.HistoricalQuestion;
 import interview.guide.modules.interview.model.InterviewAnswerEntity;
 import interview.guide.modules.interview.model.InterviewQuestionDTO;
 import interview.guide.modules.interview.model.InterviewReportDTO;
+import interview.guide.modules.interview.model.InterviewResumeContext;
 import interview.guide.modules.interview.model.InterviewSessionDTO;
 import interview.guide.modules.interview.model.InterviewSessionEntity;
 import interview.guide.modules.interview.repository.InterviewAnswerRepository;
@@ -57,7 +58,7 @@ public class InterviewPersistenceService {
                                               String skillId,
                                               String difficulty) {
         return saveSessionInternal(sessionId, resumeId, totalQuestions, questions, llmProvider,
-            skillId, difficulty, "NORMAL", null, null, null, false);
+            skillId, difficulty, "NORMAL", null, null, null, false, null);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -71,7 +72,7 @@ public class InterviewPersistenceService {
                                               Long knowledgeBaseId,
                                               String interviewCategory) {
         return saveSessionInternal(sessionId, resumeId, totalQuestions, questions, llmProvider,
-            skillId, difficulty, sourceType, knowledgeBaseId, interviewCategory, null, false);
+            skillId, difficulty, sourceType, knowledgeBaseId, interviewCategory, null, false, null);
     }
 
     /** P4-3：带 adaptive 标记保存（自适应面试会话） */
@@ -84,7 +85,7 @@ public class InterviewPersistenceService {
                                               String difficulty,
                                               boolean adaptive) {
         return saveSessionInternal(sessionId, resumeId, totalQuestions, questions, llmProvider,
-            skillId, difficulty, "NORMAL", null, null, null, adaptive);
+            skillId, difficulty, "NORMAL", null, null, null, adaptive, null);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -96,7 +97,7 @@ public class InterviewPersistenceService {
                                                         String difficulty,
                                                         String requestId) {
         return saveSessionInternal(sessionId, resumeId, totalQuestions, questions, llmProvider,
-            skillId, difficulty, "NORMAL", null, null, requestId, false);
+            skillId, difficulty, "NORMAL", null, null, requestId, false, null);
     }
 
     /** P4-3：带 adaptive 标记的幂等保存 */
@@ -110,7 +111,36 @@ public class InterviewPersistenceService {
                                                         String requestId,
                                                         boolean adaptive) {
         return saveSessionInternal(sessionId, resumeId, totalQuestions, questions, llmProvider,
-            skillId, difficulty, "NORMAL", null, null, requestId, adaptive);
+            skillId, difficulty, "NORMAL", null, null, requestId, adaptive, null);
+    }
+
+    /** P4Q-1：带简历上下文快照的保存（普通面试创建链路） */
+    @Transactional(rollbackFor = Exception.class)
+    public InterviewSessionEntity saveSession(String sessionId, Long resumeId,
+                                              int totalQuestions,
+                                              List<InterviewQuestionDTO> questions,
+                                              String llmProvider,
+                                              String skillId,
+                                              String difficulty,
+                                              boolean adaptive,
+                                              InterviewResumeContext resumeContext) {
+        return saveSessionInternal(sessionId, resumeId, totalQuestions, questions, llmProvider,
+            skillId, difficulty, "NORMAL", null, null, null, adaptive, resumeContext);
+    }
+
+    /** P4Q-1：带简历上下文快照的幂等保存 */
+    @Transactional(rollbackFor = Exception.class)
+    public InterviewSessionEntity saveIdempotentSession(String sessionId, Long resumeId,
+                                                        int totalQuestions,
+                                                        List<InterviewQuestionDTO> questions,
+                                                        String llmProvider,
+                                                        String skillId,
+                                                        String difficulty,
+                                                        String requestId,
+                                                        boolean adaptive,
+                                                        InterviewResumeContext resumeContext) {
+        return saveSessionInternal(sessionId, resumeId, totalQuestions, questions, llmProvider,
+            skillId, difficulty, "NORMAL", null, null, requestId, adaptive, resumeContext);
     }
 
     private InterviewSessionEntity saveSessionInternal(String sessionId, Long resumeId,
@@ -123,7 +153,8 @@ public class InterviewPersistenceService {
                                                        Long knowledgeBaseId,
                                                        String interviewCategory,
                                                        String requestId,
-                                                       boolean adaptive) {
+                                                       boolean adaptive,
+                                                       InterviewResumeContext resumeContext) {
         try {
             InterviewSessionEntity session = new InterviewSessionEntity();
             session.setSessionId(sessionId);
@@ -139,6 +170,12 @@ public class InterviewPersistenceService {
             session.setKnowledgeBaseId(knowledgeBaseId);
             session.setInterviewCategory(interviewCategory);
             session.setAdaptive(adaptive);
+            // P4Q-1：简历上下文快照——报告与复盘要能说清「这场基于哪份简历的哪个版本」
+            if (resumeContext != null) {
+                session.setResumeSource(resumeContext.source().name());
+                session.setResumeVersion(resumeContext.version());
+                session.setResumeContextText(resumeContext.text());
+            }
 
             // 简历可选：有 resumeId 则关联简历
             if (resumeId != null) {

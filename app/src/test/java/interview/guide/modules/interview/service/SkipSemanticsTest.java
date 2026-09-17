@@ -38,6 +38,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import tools.jackson.databind.ObjectMapper;
+import interview.guide.modules.interview.model.InterviewResumeContext;
 
 /**
  * 跳过与答案语义分离（P4Q-5）。
@@ -71,6 +72,9 @@ class SkipSemanticsTest {
   private RedisService redisService;
   @Mock
   private TurnEvaluationService turnEvaluationService;
+  /** P4Q-1：简历上下文解析器（本类不验证取数，stub 为「无简历」以隔离关注点） */
+  @Mock
+  private InterviewResumeContextResolver resumeContextResolver;
 
   private final ObjectMapper objectMapper = new ObjectMapper();
   private final Map<String, CachedSession> cacheStore = new HashMap<>();
@@ -82,7 +86,11 @@ class SkipSemanticsTest {
     service = new InterviewSessionService(
         questionService, evaluationService, persistenceService, sessionCache,
         objectMapper, evaluateStreamProducer, llmProviderRegistry, redisService,
-        turnEvaluationService);
+        turnEvaluationService,
+        resumeContextResolver);
+
+    lenient().when(resumeContextResolver.resolve(any(), any(), any()))
+        .thenReturn(InterviewResumeContext.none());
 
     lenient().when(sessionCache.getSession(anyString())).thenAnswer(
         invocation -> Optional.ofNullable(cacheStore.get(invocation.getArgument(0, String.class))));

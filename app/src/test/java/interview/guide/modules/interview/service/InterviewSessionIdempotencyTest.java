@@ -29,6 +29,8 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import interview.guide.modules.interview.model.InterviewResumeContext;
+import static org.mockito.Mockito.lenient;
 
 @ExtendWith(MockitoExtension.class)
 @DisplayName("文本面试创建幂等性")
@@ -50,6 +52,9 @@ class InterviewSessionIdempotencyTest {
   private RedisService redisService;
   @Mock
   private TurnEvaluationService turnEvaluationService;
+  /** P4Q-1：简历上下文解析器（本类不验证取数，stub 为「无简历」以隔离关注点） */
+  @Mock
+  private InterviewResumeContextResolver resumeContextResolver;
 
   private ObjectMapper objectMapper;
   private InterviewSessionService service;
@@ -66,8 +71,12 @@ class InterviewSessionIdempotencyTest {
         evaluateStreamProducer,
         llmProviderRegistry,
         redisService,
-        turnEvaluationService
+        turnEvaluationService,
+        resumeContextResolver
     );
+
+    lenient().when(resumeContextResolver.resolve(any(), any(), any()))
+        .thenReturn(InterviewResumeContext.none());
     when(redisService.executeWithLock(anyString(), anyLong(), anyLong(), any(), any()))
         .thenAnswer(invocation -> {
           RedisService.LockedOperation<?> operation = invocation.getArgument(4);

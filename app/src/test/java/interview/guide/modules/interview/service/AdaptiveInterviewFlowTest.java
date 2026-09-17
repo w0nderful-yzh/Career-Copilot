@@ -40,6 +40,7 @@ import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import interview.guide.modules.interview.model.InterviewResumeContext;
 
 /**
  * 自适应面试端到端流程回归（P4 待修正）。
@@ -70,6 +71,9 @@ class AdaptiveInterviewFlowTest {
   private RedisService redisService;
   @Mock
   private TurnEvaluationService turnEvaluationService;
+  /** P4Q-1：简历上下文解析器（本类不验证取数，stub 为「无简历」以隔离关注点） */
+  @Mock
+  private InterviewResumeContextResolver resumeContextResolver;
 
   private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -94,8 +98,12 @@ class AdaptiveInterviewFlowTest {
         evaluateStreamProducer,
         llmProviderRegistry,
         redisService,
-        turnEvaluationService
+        turnEvaluationService,
+        resumeContextResolver
     );
+
+    lenient().when(resumeContextResolver.resolve(any(), any(), any()))
+        .thenReturn(InterviewResumeContext.none());
 
     // 纯策略用例（合并 / 跳过追问）不经过服务，故与下面的写入桩一同声明为 lenient
     lenient().when(sessionCache.getSession(anyString())).thenAnswer(

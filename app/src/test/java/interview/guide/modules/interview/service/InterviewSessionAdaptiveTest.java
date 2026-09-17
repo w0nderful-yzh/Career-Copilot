@@ -31,6 +31,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import interview.guide.modules.interview.model.InterviewResumeContext;
+import static org.mockito.Mockito.lenient;
 
 /**
  * P4-3 自适应面试接线：submitAnswer 在 adaptive 会话下调用逐题评估并按决策选题；
@@ -56,6 +58,9 @@ class InterviewSessionAdaptiveTest {
   private RedisService redisService;
   @Mock
   private TurnEvaluationService turnEvaluationService;
+  /** P4Q-1：简历上下文解析器（本类不验证取数，stub 为「无简历」以隔离关注点） */
+  @Mock
+  private InterviewResumeContextResolver resumeContextResolver;
 
   private final ObjectMapper objectMapper = new ObjectMapper();
   private InterviewSessionService service;
@@ -71,8 +76,12 @@ class InterviewSessionAdaptiveTest {
         evaluateStreamProducer,
         llmProviderRegistry,
         redisService,
-        turnEvaluationService
+        turnEvaluationService,
+        resumeContextResolver
     );
+
+    lenient().when(resumeContextResolver.resolve(any(), any(), any()))
+        .thenReturn(InterviewResumeContext.none());
   }
 
   private static List<InterviewQuestionDTO> linearSession() {

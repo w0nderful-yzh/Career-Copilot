@@ -121,6 +121,18 @@ public class InterviewSessionEntity {
     @Column(nullable = false)
     private Boolean adaptive = false;
 
+    // 简历来源（P4Q-1）：RESUME_VERSION / RESUME_TEXT / EXPLICIT_TEXT / NONE
+    @Column(name = "resume_source", length = 24)
+    private String resumeSource;
+
+    // 出题使用的简历版本号（来源为 RESUME_VERSION 时有值）
+    @Column(name = "resume_version")
+    private Integer resumeVersion;
+
+    // 出题实际使用的简历上下文文本快照（简历后续被修改/删除也能追溯当时依据）
+    @Column(name = "resume_context_text", columnDefinition = "TEXT")
+    private String resumeContextText;
+
     public enum SessionStatus {
         CREATED,      // 会话已创建
         IN_PROGRESS,  // 面试进行中
@@ -336,6 +348,30 @@ public class InterviewSessionEntity {
 
     public void setAdaptive(Boolean adaptive) {
         this.adaptive = adaptive;
+    }
+
+    public String getResumeSource() {
+        return resumeSource;
+    }
+
+    public void setResumeSource(String resumeSource) {
+        this.resumeSource = resumeSource;
+    }
+
+    public Integer getResumeVersion() {
+        return resumeVersion;
+    }
+
+    public void setResumeVersion(Integer resumeVersion) {
+        this.resumeVersion = resumeVersion;
+    }
+
+    public String getResumeContextText() {
+        return resumeContextText;
+    }
+
+    public void setResumeContextText(String resumeContextText) {
+        this.resumeContextText = resumeContextText;
     }
 
     public void addAnswer(InterviewAnswerEntity answer) {

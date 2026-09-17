@@ -182,6 +182,60 @@ def summarize_resume_for_interview(resume: dict[str, Any], max_chars: int = 1200
     return f"[简历：{filename}]\n{text}" if text else f"[简历：{filename}]（无解析文本）"
 
 
+def summarize_resume_version(version: dict[str, Any], max_chars: int = 1200) -> str:
+    """把已确认的结构化简历版本裁剪为面试推荐摘要（Token 纪律）。
+
+    为什么用结构化版本而不是原文：它是用户**确认过**的事实，比 PDF 解析文本干净，
+    也不会把解析噪声当成候选经历推荐出去（P4Q-1）。
+    """
+    content = version.get("content") or {}
+    lines: list[str] = [f"[简历结构化版本 v{version.get('version')}]"]
+
+    basic = content.get("basicInfo") or {}
+    if basic.get("jobIntention"):
+        lines.append(f"求职意向：{basic['jobIntention']}")
+
+    for item in content.get("experience") or []:
+        head = _join_facts(item.get("company"), item.get("position"), _period(item))
+        if head:
+            lines.append(f"实习/工作：{head}")
+        lines.extend(f"  · {bullet}" for bullet in (item.get("bullets") or []) if bullet)
+
+    for item in content.get("projects") or []:
+        head = _join_facts(
+            item.get("name"), item.get("role"), item.get("techStack"), _period(item)
+        )
+        if head:
+            lines.append(f"项目：{head}")
+        lines.extend(f"  · {bullet}" for bullet in (item.get("bullets") or []) if bullet)
+
+    skills = [
+        _join_facts(item.get("category"), item.get("content"))
+        for item in (content.get("skills") or [])
+    ]
+    present_skills = [skill for skill in skills if skill]
+    if present_skills:
+        lines.append("技能：" + "；".join(present_skills))
+
+    text = "\n".join(line for line in lines if line)
+    if len(text) > max_chars:
+        text = text[:max_chars] + "\n…（已截断）"
+    return text
+
+
+def _join_facts(*parts: Any) -> str:
+    """拼接非空片段（跳过 None / 空串），避免出现「 · · 」这类噪声。"""
+    return " · ".join(str(part).strip() for part in parts if part and str(part).strip())
+
+
+def _period(item: dict[str, Any]) -> str:
+    """起止时间：只有一端时如实显示一端，不补造另一端。"""
+    start, end = item.get("startDate"), item.get("endDate")
+    if start and end:
+        return f"{start} - {end}"
+    return str(start or end or "")
+
+
 async def resolve_knowledge_base_ids(client: BackendClient) -> list[int]:
     """解析默认检索的知识库：未显式指定时使用全部已存在知识库。"""
     knowledge_bases = await client.list_knowledge_bases()

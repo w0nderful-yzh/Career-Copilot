@@ -25,7 +25,7 @@ from career_copilot.agent.state import CareerAgentState, RunStatus
 from career_copilot.clients.backend import BusinessToolError
 from career_copilot.config import settings
 from career_copilot.tools import (
-    summarize_resume_for_interview,
+    summarize_resume_version,
     summarize_skill_profile,
     summarize_skills,
 )
@@ -100,24 +100,24 @@ async def interview_proposal(
         profile = {}
     emit_tool_completed("get_skill_profile")
 
-    # 3. 目标简历（复用 resolve_context 的活动简历；失败不阻断推荐）
+    # 3. 目标简历：优先用**已确认的结构化版本**（与简历优化同一取数入口）。
+    #    明确指定了简历却读不到时如实说明原因，不静默退化成通用面试——
+    #    用户以为在面自己的简历、实际拿到通用题，是最糟的失败方式（P4Q-1）。
     resume_context: str | None = None
     resume_id: int | None = None
     raw_resume_id = state.get("active_resume_id")
     if raw_resume_id is not None:
         resume_id = int(raw_resume_id)
-        emit_tool_started("resume_query")
+        emit_tool_started("resume_version")
         try:
-            resume = await deps.backend.get_resume(
-                resume_id, max_chars=settings.resume_context_max_chars
-            )
-            resume_context = summarize_resume_for_interview(resume)
+            version = await deps.backend.get_resume_version(resume_id)
         except BusinessToolError as exc:
-            logger.info(
-                "面试推荐读取简历失败，回退通用推荐: resumeId=%s code=%s", resume_id, exc.code
-            )
-        finally:
-            emit_tool_completed("resume_query")
+            logger.info("面试推荐读取简历版本失败: resumeId=%s code=%s", resume_id, exc.code)
+            emit_tool_completed("resume_version")
+            emit_tool_completed("interview_proposal")
+            return {"plan": StreamPlan(text=static_text(_resume_unavailable_message(exc)))}
+        resume_context = summarize_resume_version(version)
+        emit_tool_completed("resume_version")
 
     emit_tool_completed("interview_proposal")
 
@@ -322,3 +322,12 @@ def _direction_name(skills: list[dict[str, Any]], direction: str) -> str:
         if skill.get("id") == direction:
             return str(skill.get("name") or direction)
     return direction
+
+
+def _resume_unavailable_message(exc: BusinessToolError) -> str:
+    """简历读不到时的**可见原因与下一步**（不静默变成通用面试）。"""
+    return (
+        f"这份简历现在还不能用来出题：{exc.message}。"
+        "你可以先在简历库完成解析并确认版本，然后让我重新推荐；"
+        "也可以直接说「来一场通用面试」，我就不参考简历。"
+    )

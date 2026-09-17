@@ -13,6 +13,7 @@ import interview.guide.modules.interview.model.CreateInterviewRequest;
 import interview.guide.modules.interview.model.HistoricalQuestion;
 import interview.guide.modules.interview.model.InterviewAnswerEntity;
 import interview.guide.modules.interview.model.InterviewQuestionDTO;
+import interview.guide.modules.interview.model.InterviewResumeContext;
 import interview.guide.modules.interview.model.InterviewReportDTO;
 import interview.guide.modules.interview.model.InterviewSessionDTO;
 import interview.guide.modules.interview.model.InterviewSessionEntity;
@@ -57,6 +58,7 @@ public class InterviewSessionService {
     private final LlmProviderRegistry llmProviderRegistry;
     private final RedisService redisService;
     private final TurnEvaluationService turnEvaluationService;
+    private final InterviewResumeContextResolver resumeContextResolver;
 
     /**
      * 创建新的面试会话
@@ -127,12 +129,18 @@ public class InterviewSessionService {
         List<HistoricalQuestion> historicalQuestions =
             persistenceService.getHistoricalQuestions(skillId, request.resumeId());
 
+        // P4Q-1：简历上下文由 Java 统一解析（明确指定版本 → ACTIVE 结构化版本 → 原文 → 无），
+        // 出题与快照用同一份文本。调用方传的 resumeText 只在**没有 resumeId** 时作为显式文本通道生效——
+        // 此前 Java 只认调用方传的文本，而 Agent 侧恒传 null，简历题分支从未生效。
+        InterviewResumeContext resumeContext = resumeContextResolver.resolve(
+            request.resumeId(), null, request.resumeText());
+
         // 基于 Skill 生成面试问题（focusCategories 为提案依据画像给出的重点考察方向）
         List<InterviewQuestionDTO> questions = questionService.generateQuestionsBySkill(
             request.llmProvider(),
             skillId,
             difficulty,
-            request.resumeText(),
+            resumeContext.text(),
             request.questionCount(),
             historicalQuestions,
             request.customCategories(),
@@ -151,7 +159,8 @@ public class InterviewSessionService {
                     skillId,
                     difficulty,
                     requestId,
-                    adaptive
+                    adaptive,
+                    resumeContext
                 );
             } catch (Exception e) {
                 Optional<InterviewSessionEntity> concurrentlyCreated =
@@ -165,35 +174,44 @@ public class InterviewSessionService {
         } else {
             try {
                 persistenceService.saveSession(sessionId, request.resumeId(),
-                    questions.size(), questions, request.llmProvider(), skillId, difficulty, adaptive);
+                    questions.size(), questions, request.llmProvider(), skillId, difficulty,
+                    adaptive, resumeContext);
             } catch (Exception e) {
                 log.warn("保存面试会话到数据库失败: {}", e.getMessage());
             }
         }
 
         // 幂等请求必须先成功落库，再写入易失缓存，保证进程异常后可从数据库恢复。
+        // 缓存里存「出题实际依据的文本」而非调用方入参：读取路径（DTO / 恢复）看到的应与出题一致
+        String contextText = resumeContext.text() != null ? resumeContext.text() : "";
         sessionCache.saveSession(
             sessionId,
-            request.resumeText() != null ? request.resumeText() : "",
+            contextText,
             request.resumeId(),
             null,
             null,
             questions,
             0,
             SessionStatus.CREATED,
-            adaptive
+            adaptive,
+            resumeContext.source().name(),
+            resumeContext.version()
         );
 
         return new InterviewSessionDTO(
             sessionId,
-            request.resumeText() != null ? request.resumeText() : "",
+            contextText,
             questions.size(),
             0,
             questions,
             SessionStatus.CREATED,
             null,
             null,
-            adaptive
+            adaptive,
+            null,
+            null,
+            resumeContext.source().name(),
+            resumeContext.version()
         );
     }
 
@@ -293,7 +311,8 @@ public class InterviewSessionService {
             .map(entity -> new InterviewSessionDTO(
                 dto.sessionId(), dto.resumeText(), dto.totalQuestions(), dto.currentQuestionIndex(),
                 dto.questions(), dto.status(), dto.knowledgeBaseId(), dto.interviewCategory(),
-                dto.adaptive(), entity.getEvaluateStatus(), entity.getEvaluateError()))
+                dto.adaptive(), entity.getEvaluateStatus(), entity.getEvaluateError(),
+                dto.resumeSource(), dto.resumeVersion()))
             .orElse(dto);
     }
 
@@ -815,7 +834,9 @@ public class InterviewSessionService {
             session.getInterviewCategory(),
             Boolean.TRUE.equals(session.getAdaptive()),
             evaluateStatus,
-            evaluateError
+            evaluateError,
+            session.getResumeSource(),
+            session.getResumeVersion()
         );
     }
 }

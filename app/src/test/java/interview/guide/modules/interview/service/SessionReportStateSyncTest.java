@@ -30,6 +30,8 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.util.List;
 import java.util.Optional;
+import interview.guide.modules.interview.model.InterviewResumeContext;
+import static org.mockito.Mockito.lenient;
 
 /**
  * 报告评估状态的缓存 / 数据库一致性（P4Q-4）。
@@ -61,6 +63,9 @@ class SessionReportStateSyncTest {
   private RedisService redisService;
   @Mock
   private TurnEvaluationService turnEvaluationService;
+  /** P4Q-1：简历上下文解析器（本类不验证取数，stub 为「无简历」以隔离关注点） */
+  @Mock
+  private InterviewResumeContextResolver resumeContextResolver;
 
   private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -77,8 +82,12 @@ class SessionReportStateSyncTest {
         evaluateStreamProducer,
         llmProviderRegistry,
         redisService,
-        turnEvaluationService
+        turnEvaluationService,
+        resumeContextResolver
     );
+
+    lenient().when(resumeContextResolver.resolve(any(), any(), any()))
+        .thenReturn(InterviewResumeContext.none());
   }
 
   private CachedSession cached(String sessionId, SessionStatus status) {

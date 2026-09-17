@@ -58,6 +58,9 @@ public class InterviewSessionCache {
         private int currentIndex;
         private SessionStatus status;
         private Boolean adaptive = false;  // P4-3 是否自适应（逐题评估+决策选题）
+        // P4Q-1 简历上下文的来源与版本（出题实际依据；供 DTO 展示与追溯，null = 未记录）
+        private String resumeSource;
+        private Integer resumeVersion;
 
         public CachedSession() {
         }
@@ -66,6 +69,15 @@ public class InterviewSessionCache {
                             String interviewCategory,
                             List<InterviewQuestionDTO> questions, int currentIndex,
                             SessionStatus status, Boolean adaptive, ObjectMapper objectMapper) {
+            this(sessionId, resumeText, resumeId, knowledgeBaseId, interviewCategory, questions,
+                currentIndex, status, adaptive, null, null, objectMapper);
+        }
+
+        public CachedSession(String sessionId, String resumeText, Long resumeId, Long knowledgeBaseId,
+                            String interviewCategory,
+                            List<InterviewQuestionDTO> questions, int currentIndex,
+                            SessionStatus status, Boolean adaptive,
+                            String resumeSource, Integer resumeVersion, ObjectMapper objectMapper) {
             this.sessionId = sessionId;
             this.resumeText = resumeText;
             this.resumeId = resumeId;
@@ -74,6 +86,8 @@ public class InterviewSessionCache {
             this.currentIndex = currentIndex;
             this.status = status;
             this.adaptive = adaptive != null ? adaptive : false;
+            this.resumeSource = resumeSource;
+            this.resumeVersion = resumeVersion;
             try {
                 this.questionsJson = objectMapper.writeValueAsString(questions);
             } catch (JacksonException e) {
@@ -106,10 +120,20 @@ public class InterviewSessionCache {
                            String interviewCategory,
                            List<InterviewQuestionDTO> questions, int currentIndex,
                            SessionStatus status, Boolean adaptive) {
+        saveSession(sessionId, resumeText, resumeId, knowledgeBaseId, interviewCategory,
+            questions, currentIndex, status, adaptive, null, null);
+    }
+
+    /** P4Q-1：带简历上下文来源与版本的保存（普通面试创建链路） */
+    public void saveSession(String sessionId, String resumeText, Long resumeId, Long knowledgeBaseId,
+                           String interviewCategory,
+                           List<InterviewQuestionDTO> questions, int currentIndex,
+                           SessionStatus status, Boolean adaptive,
+                           String resumeSource, Integer resumeVersion) {
         String key = buildSessionKey(sessionId);
         CachedSession cachedSession = new CachedSession(
             sessionId, resumeText, resumeId, knowledgeBaseId, interviewCategory,
-            questions, currentIndex, status, adaptive, objectMapper
+            questions, currentIndex, status, adaptive, resumeSource, resumeVersion, objectMapper
         );
 
         redisService.set(key, cachedSession, SESSION_TTL);

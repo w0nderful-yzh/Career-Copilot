@@ -17,6 +17,9 @@ import interview.guide.modules.interview.model.InterviewResumeContext;
 import interview.guide.modules.interview.model.InterviewReportDTO;
 import interview.guide.modules.interview.model.InterviewSessionDTO;
 import interview.guide.modules.interview.model.InterviewSessionEntity;
+import interview.guide.modules.interview.model.InterviewTurnCommit;
+import interview.guide.modules.interview.model.InterviewTurnRequestEntity;
+import interview.guide.modules.interview.model.InterviewTurnResult;
 import interview.guide.modules.interview.model.SubmitAnswerRequest;
 import interview.guide.modules.interview.model.SubmitAnswerResponse;
 import interview.guide.modules.interview.model.InterviewSessionDTO.SessionStatus;
@@ -27,9 +30,13 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.stereotype.Service;
+import tools.jackson.core.JacksonException;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -49,6 +56,15 @@ public class InterviewSessionService {
     private static final String CREATE_LOCK_PREFIX = "interview:create:";
     private static final String CREATE_RESULT_PREFIX = "interview:create:result:";
     private static final Duration CREATE_RESULT_TTL = Duration.ofDays(1);
+
+    /** 「这个请求正在处理中」的占位键前缀（P4-9a），按会话 + 请求标识隔离 */
+    private static final String TURN_INFLIGHT_PREFIX = "interview:turn:inflight:";
+
+    /**
+     * 占位存活时间：够覆盖一次实时模型调用即可。进程异常时按 TTL 自动过期，
+     * 不会永久挡住用户对同一标识的重试。
+     */
+    private static final Duration TURN_INFLIGHT_TTL = Duration.ofSeconds(120);
 
     private final InterviewQuestionService questionService;
     private final AnswerEvaluationService evaluationService;
@@ -71,7 +87,7 @@ public class InterviewSessionService {
      * 前端应该先调用 findUnfinishedSession 检查，或者使用 forceCreate 参数强制创建
      */
     public InterviewSessionDTO createSession(CreateInterviewRequest request) {
-        String requestId = normalizeRequestId(request.requestId());
+        String requestId = normalizeRequestId(request.requestId(), "requestId");
         if (requestId == null) {
             return createSessionInternal(request);
         }
@@ -249,14 +265,19 @@ public class InterviewSessionService {
         );
     }
 
-    private String normalizeRequestId(String requestId) {
+    /**
+     * 请求标识格式校验（创建面试的幂等键与逐轮提交的请求标识共用同一规则）。
+     *
+     * @param fieldLabel 出错时说明是哪个字段，便于前端与日志定位
+     */
+    private String normalizeRequestId(String requestId, String fieldLabel) {
         if (requestId == null || requestId.isBlank()) {
             return null;
         }
 
         String normalized = requestId.trim();
         if (!normalized.matches("[A-Za-z0-9_-]{8,64}")) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "requestId 格式不正确");
+            throw new BusinessException(ErrorCode.BAD_REQUEST, fieldLabel + " 格式不正确");
         }
         return normalized;
     }
@@ -310,14 +331,14 @@ public class InterviewSessionService {
         return toDTO(cached, entity.getEvaluateStatus(), entity.getEvaluateError());
     }
 
-    /** 补齐评估状态字段（缓存未命中路径：已经读过数据库，顺手带上） */
+    /** 补齐评估状态字段（缓存未命中路径：已经读过数据库，顺手带上版本与评估状态） */
     private InterviewSessionDTO withReportState(InterviewSessionDTO dto, String sessionId) {
         return persistenceService.findBySessionId(sessionId)
             .map(entity -> new InterviewSessionDTO(
                 dto.sessionId(), dto.resumeText(), dto.totalQuestions(), dto.currentQuestionIndex(),
                 dto.questions(), dto.status(), dto.knowledgeBaseId(), dto.interviewCategory(),
                 dto.adaptive(), entity.getEvaluateStatus(), entity.getEvaluateError(),
-                dto.resumeSource(), dto.resumeVersion()))
+                dto.resumeSource(), dto.resumeVersion(), entity.getTurnVersion()))
             .orElse(dto);
     }
 
@@ -416,6 +437,10 @@ public class InterviewSessionService {
             log.info("从数据库恢复会话到 Redis: sessionId={}, currentIndex={}, status={}",
                 entity.getSessionId(), entity.getCurrentQuestionIndex(), entity.getStatus());
 
+            // 版本补进缓存：restore 是权威重建路径，少了它前端会拿到过期的 expectedVersion，
+            // 下一次提交会被判成过期（P4-9a）
+            sessionCache.updateTurnVersion(entity.getSessionId(), entity.getTurnVersion());
+
             // 返回缓存的会话
             return sessionCache.getSession(entity.getSessionId()).orElse(null);
         } catch (Exception e) {
@@ -483,7 +508,8 @@ public class InterviewSessionService {
      * 如果是最后一题，自动触发异步评估
      */
     public SubmitAnswerResponse submitAnswer(SubmitAnswerRequest request) {
-        return recordTurn(request.sessionId(), request.questionIndex(), request.answer(), null);
+        return recordTurn(request.sessionId(), request.questionIndex(), request.answer(), null,
+            request.requestId(), request.expectedVersion());
     }
 
     /**
@@ -494,21 +520,96 @@ public class InterviewSessionService {
      * 自适应会话按「答不上来」处理：中断当前追问组，切下一主问题。
      */
     public SubmitAnswerResponse skipQuestion(String sessionId, int questionIndex) {
-        return recordTurn(sessionId, questionIndex, null,
-            InterviewAnswerEntity.AnswerState.SKIPPED);
+        return skipQuestion(sessionId, questionIndex, null, null);
     }
 
     /**
-     * 记录一轮（作答或跳过）并推进到下一题。
+     * 跳过当前题（带逐轮提交一致性控制，P4-9a）。
      *
-     * @param answer      作答内容；跳过时为 null
-     * @param forcedState 调用方已确定的状态（如显式跳过）；null 表示按作答内容判定
+     * <p>跳过与提交答案共用同一条推进链路，因此共享同一套并发边界：请求标识、预期版本、
+     * 待答题校验、单事务落库、缓存跟随提交。
+     */
+    public SubmitAnswerResponse skipQuestion(String sessionId, int questionIndex, String requestId,
+                                             Integer expectedVersion) {
+        return recordTurn(sessionId, questionIndex, null,
+            InterviewAnswerEntity.AnswerState.SKIPPED, requestId, expectedVersion);
+    }
+
+    /**
+     * 记录一轮（作答或跳过）并推进到下一题（P4-9a）。
+     *
+     * <p>执行顺序刻意分成三段，每段的边界都是可验证的事实：
+     * <ol>
+     *   <li><b>幂等与占位</b>：已处理过的标识返回原结果；同一标识正在处理中直接拒绝。
+     *       两条都不再推进、也不再花一次模型调用。</li>
+     *   <li><b>校验与决策</b>：从数据库读权威状态，校验会话状态、待答题与提交方版本；
+     *       逐题评估（模型调用）发生在这里，**在任何事务之外**。</li>
+     *   <li><b>一次性落库</b>：会话版本 / 索引 / 状态 / 评估请求、答案事实、幂等记录
+     *       在同一个短事务里提交。缓存更新与评估入队都在提交之后。</li>
+     * </ol>
+     *
+     * @param answer          作答内容；跳过时为 null
+     * @param forcedState     调用方已确定的状态（如显式跳过）；null 表示按作答内容判定
+     * @param requestId       请求标识；null 表示调用方未提供（只保留并发闸门，不做重放保护）
+     * @param expectedVersion 提交方看到的会话版本；null 表示以数据库当前版本为准
      */
     private SubmitAnswerResponse recordTurn(String sessionId, int index, String answer,
-                                            InterviewAnswerEntity.AnswerState forcedState) {
+                                            InterviewAnswerEntity.AnswerState forcedState,
+                                            String requestId, Integer expectedVersion) {
+        String normalizedRequestId = normalizeRequestId(requestId, "requestId");
+        String action = forcedState == InterviewAnswerEntity.AnswerState.SKIPPED ? "SKIP" : "ANSWER";
+        String payloadHash = turnPayloadHash(action, index, answer);
+
+        Optional<InterviewTurnRequestEntity> handled =
+            persistenceService.findTurnRequest(sessionId, normalizedRequestId);
+        if (handled.isPresent()) {
+            log.info("逐轮提交重放，返回原结果: sessionId={}, requestId={}", sessionId,
+                normalizedRequestId);
+            return replayTurnResponse(handled.get(), payloadHash);
+        }
+
+        String inflightKey = turnInflightKey(sessionId, normalizedRequestId);
+        if (inflightKey != null && !redisService.setIfAbsent(inflightKey, "1", TURN_INFLIGHT_TTL)) {
+            // 同一标识的请求正在处理中：不允许第二次独立推进
+            Optional<InterviewTurnRequestEntity> finished =
+                persistenceService.findTurnRequest(sessionId, normalizedRequestId);
+            if (finished.isEmpty()) {
+                log.warn("同标识请求正在处理中，拒绝重复推进: sessionId={}, requestId={}", sessionId,
+                    normalizedRequestId);
+                throw new BusinessException(ErrorCode.INTERVIEW_TURN_IN_PROGRESS);
+            }
+            // 临界情况：刚好处理完成而占位还没释放——按重放返回原结果
+            return replayTurnResponse(finished.get(), payloadHash);
+        }
+
+        try {
+            return commitTurn(sessionId, index, answer, forcedState, normalizedRequestId,
+                expectedVersion, action, payloadHash);
+        } finally {
+            if (inflightKey != null) {
+                // 成功时幂等记录已在库，重放走记录；失败时必须释放，否则用户重试会被自己挡住
+                redisService.delete(inflightKey);
+            }
+        }
+    }
+
+    /**
+     * 校验提交并一次性落库（P4-9a）。
+     *
+     * <p>权威状态直接读数据库：并发闸门、会话状态、待答题、LLM provider 都用同一份实体，
+     * 缓存只是可恢复副本。版本与待答题在**条件更新**里再校验一次，因此即使两个请求同时
+     * 通过了这里的前置校验，也只有一个能真正推进。
+     */
+    private SubmitAnswerResponse commitTurn(String sessionId, int index, String answer,
+                                            InterviewAnswerEntity.AnswerState forcedState,
+                                            String requestId, Integer expectedVersion,
+                                            String action, String payloadHash) {
+        InterviewSessionEntity entity = persistenceService.findBySessionId(sessionId)
+            .orElseThrow(() -> new BusinessException(ErrorCode.INTERVIEW_SESSION_NOT_FOUND));
+        int baseVersion = assertTurnAcceptable(entity, index, expectedVersion);
+
         CachedSession session = getOrRestoreSession(sessionId);
         List<InterviewQuestionDTO> questions = session.getQuestions(objectMapper);
-
         if (index < 0 || index >= questions.size()) {
             throw new BusinessException(ErrorCode.INTERVIEW_QUESTION_NOT_FOUND, "无效的问题索引: " + index);
         }
@@ -537,7 +638,7 @@ public class InterviewSessionService {
         if (adaptive) {
             TurnEvaluation evaluation;
             if (answerState == InterviewAnswerEntity.AnswerState.ANSWERED) {
-                evaluation = evaluateTurn(session, questions, index, answer);
+                evaluation = evaluateTurn(entity, session, questions, index, answer);
                 // 语义判定优先：模型识别出「要求跳过」时改判，本轮不计分也不追问
                 answerState = answerStateOf(evaluation);
             } else {
@@ -561,27 +662,164 @@ public class InterviewSessionService {
         questions.set(index, question.withAnswer(answer).withAnswerState(answerState));
 
         // 本轮只保存答案事实；正式评分由异步报告回填，不写可被误提取为证据的占位分
-        persistSubmittedAnswer(sessionId, index, question, answer, answerState, nextIndex, newStatus);
+        SubmitAnswerResponse response = new SubmitAnswerResponse(hasNextQuestion, nextQuestion,
+            nextIndex, questions.size(), baseVersion + 1);
+        InterviewTurnResult result = commitOrFail(InterviewTurnCommit.ofTurn(
+            sessionId, requestId, action, payloadHash, baseVersion, index, nextIndex,
+            newStatus == SessionStatus.COMPLETED, index, question.question(), question.category(),
+            answer, answerState, serializeTurnResponse(response)));
 
-        // 更新 Redis 缓存。DB 已经持久化成功，缓存失败时可由后续读取从数据库恢复。
-        sessionCache.updateQuestions(sessionId, questions);
-        sessionCache.updateCurrentIndex(sessionId, nextIndex);
-        if (newStatus == SessionStatus.COMPLETED) {
-            sessionCache.updateSessionStatus(sessionId, SessionStatus.COMPLETED);
-            enqueueEvaluationTask(sessionId);
-        }
+        // 缓存跟随数据库提交：只有落库成功才会走到这里，缓存写失败可由后续读取回源数据库恢复
+        updateCacheAfterTurn(sessionId, questions, nextIndex, newStatus, result.turnVersion());
 
         log.info("会话 {} 记录轮次: 问题{}, state={}, adaptive={}, 剩余{}题",
             sessionId, index, answerState, adaptive,
             adaptive ? (hasNextQuestion ? questions.size() - nextIndex - 1 : 0)
                 : questions.size() - nextIndex);
 
-        return new SubmitAnswerResponse(
-            hasNextQuestion,
-            nextQuestion,
-            nextIndex,
-            questions.size()
-        );
+        if (newStatus == SessionStatus.COMPLETED) {
+            enqueueEvaluationTask(sessionId, result.evaluateEpoch());
+        }
+
+        return new SubmitAnswerResponse(hasNextQuestion, nextQuestion, nextIndex, questions.size(),
+            result.turnVersion());
+    }
+
+    /**
+     * 逐轮提交的前置校验（P4-9a）：会话状态、提交方版本、待答题。
+     *
+     * <p>版本或待答题对不上时，先用数据库实体重建一次缓存再报错——用户看到的是「已同步最新进度」，
+     * 而不是被一个陈旧副本反复拒绝。自愈只发生在被拒绝的路径上，正常提交不额外打库。
+     *
+     * @return 本次提交应据以更新的会话版本
+     */
+    private int assertTurnAcceptable(InterviewSessionEntity entity, int index, Integer expectedVersion) {
+        if (entity.getStatus() == InterviewSessionEntity.SessionStatus.COMPLETED
+            || entity.getStatus() == InterviewSessionEntity.SessionStatus.EVALUATED) {
+            // 已结束的会话不得再产出「下一题」，也不得被写回进行中（晚到的提交走这里）
+            throw new BusinessException(ErrorCode.INTERVIEW_ALREADY_COMPLETED);
+        }
+
+        int baseVersion = assertVersionAcceptable(entity, expectedVersion);
+
+        Integer currentIndex = entity.getCurrentQuestionIndex();
+        if (currentIndex == null || currentIndex != index) {
+            log.info("逐轮提交的题号不是当前待答题: sessionId={}, submitted={}, current={}",
+                entity.getSessionId(), index, currentIndex);
+            restoreSessionFromEntity(entity);
+            throw new BusinessException(ErrorCode.INTERVIEW_TURN_INDEX_MISMATCH);
+        }
+
+        return baseVersion;
+    }
+
+    /**
+     * 校验提交方看到的版本（P4-9a）。版本对不上时先用数据库实体重建缓存再报错——
+     * 用户看到的是「已同步最新进度」，而不是被一个陈旧副本反复拒绝。
+     *
+     * @return 本次提交应据以更新的会话版本
+     */
+    private int assertVersionAcceptable(InterviewSessionEntity entity, Integer expectedVersion) {
+        int baseVersion = entity.getTurnVersion() != null ? entity.getTurnVersion() : 0;
+        if (expectedVersion != null && expectedVersion != baseVersion) {
+            log.info("逐轮提交版本过期，按数据库自愈缓存: sessionId={}, expected={}, actual={}",
+                entity.getSessionId(), expectedVersion, baseVersion);
+            restoreSessionFromEntity(entity);
+            throw new BusinessException(ErrorCode.INTERVIEW_TURN_STALE);
+        }
+        return baseVersion;
+    }
+
+    /**
+     * 缓存跟随提交（P4-9a）：题目列表、索引、状态、版本一次写齐。
+     *
+     * <p>四个字段分开写会出现「索引更新了但版本还是旧的」这种中间态，而版本是提交方的
+     * 判据——中间态会让下一次提交被误判为过期。
+     */
+    private void updateCacheAfterTurn(String sessionId, List<InterviewQuestionDTO> questions,
+                                      int nextIndex, SessionStatus status, int turnVersion) {
+        sessionCache.updateQuestions(sessionId, questions);
+        sessionCache.updateCurrentIndex(sessionId, nextIndex);
+        if (status == SessionStatus.COMPLETED) {
+            sessionCache.updateSessionStatus(sessionId, SessionStatus.COMPLETED);
+        }
+        sessionCache.updateTurnVersion(sessionId, turnVersion);
+    }
+
+    /** 已处理请求的原结果（重放）：载荷不一致说明是「同一标识不同载荷」，明确拒绝 */
+    private SubmitAnswerResponse replayTurnResponse(InterviewTurnRequestEntity record,
+                                                    String payloadHash) {
+        assertSamePayload(record, payloadHash);
+        try {
+            return objectMapper.readValue(record.getResponseJson(), SubmitAnswerResponse.class);
+        } catch (JacksonException e) {
+            log.error("读取已处理提交的原结果失败: sessionId={}, requestId={}",
+                record.getSessionId(), record.getRequestId(), e);
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "读取上次提交结果失败");
+        }
+    }
+
+    /**
+     * 原子提交本轮；落库失败一律转成可见的业务失败。
+     *
+     * <p>事务已经在持久化层回滚，这里只负责让失败以「可重试的业务错误」而不是 500 冒出去——
+     * 用户需要的是一次干净重试，而不是一个看起来像服务端崩溃的响应。
+     */
+    private InterviewTurnResult commitOrFail(InterviewTurnCommit commit) {
+        try {
+            return persistenceService.applyTurn(commit);
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("逐轮提交落库失败已回滚: sessionId={}, action={}, index={}",
+                commit.sessionId(), commit.action(), commit.questionIndex(), e);
+            throw new BusinessException(ErrorCode.INTERVIEW_ANSWER_SAVE_FAILED, "保存本轮进度失败，请稍后重试", e);
+        }
+    }
+
+    private static void assertSamePayload(InterviewTurnRequestEntity record, String payloadHash) {
+        if (!record.getPayloadHash().equals(payloadHash)) {
+            throw new BusinessException(ErrorCode.INTERVIEW_TURN_REQUEST_CONFLICT);
+        }
+    }
+
+    private String serializeTurnResponse(SubmitAnswerResponse response) {
+        try {
+            return objectMapper.writeValueAsString(response);
+        } catch (JacksonException e) {
+            // 序列化失败发生在事务之前：本轮不推进，客户端可原样重试
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "序列化本轮结果失败");
+        }
+    }
+
+    /** 占位键按「会话 + 请求标识」隔离：挡住的只有同一次提交的重复，不影响同一会话的其他操作 */
+    private String turnInflightKey(String sessionId, String requestId) {
+        return requestId == null ? null : TURN_INFLIGHT_PREFIX + sessionId + ":" + requestId;
+    }
+
+    /**
+     * 载荷指纹（动作 + 题号 + 作答内容）。
+     *
+     * <p>用于把「重放同一次提交」与「同一个标识换了内容」分开：前者返回原结果，
+     * 后者必须拒绝——否则标识就成了可随意改写历史的开关。
+     *
+     * <p>包级可见是为了让同包测试能构造出「与本次提交完全一致的记录」，
+     * 而不是把算法复制一份到测试里（复制品会随实现漂移而失去意义）。
+     */
+    static String turnPayloadHash(String action, int index, String answer) {
+        String raw = action + "|" + index + "|" + (answer == null ? "" : answer);
+        try {
+            byte[] hash = MessageDigest.getInstance("SHA-256")
+                .digest(raw.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder(hash.length * 2);
+            for (byte b : hash) {
+                hex.append(Character.forDigit((b >> 4) & 0xF, 16))
+                    .append(Character.forDigit(b & 0xF, 16));
+            }
+            return hex.toString();
+        } catch (NoSuchAlgorithmException e) {
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "计算请求指纹失败");
+        }
     }
 
     /**
@@ -607,21 +845,15 @@ public class InterviewSessionService {
     /**
      * 逐题轻量评估（同步、低延迟）。评估失败时返回未知质量，
      * 由决策引擎保守推进，保证答题流程不断。
+     *
+     * <p>provider 与简历文本都来自调用方已经读到的实体/缓存，不再自己回查一次数据库。
      */
-    private TurnEvaluation evaluateTurn(CachedSession session, List<InterviewQuestionDTO> questions,
+    private TurnEvaluation evaluateTurn(InterviewSessionEntity entity, CachedSession session,
+                                        List<InterviewQuestionDTO> questions,
                                         int index, String answer) {
         String sessionId = session.getSessionId();
         InterviewQuestionDTO question = questions.get(index);
-        String provider = null;
-        try {
-            Optional<InterviewSessionEntity> entityOpt = persistenceService.findBySessionId(sessionId);
-            if (entityOpt.isPresent()) {
-                provider = entityOpt.get().getLlmProvider();
-            }
-        } catch (Exception e) {
-            log.warn("读取会话 provider 失败，使用默认模型评估: sessionId={}", sessionId);
-        }
-        ChatClient chatClient = llmProviderRegistry.getChatClientOrDefault(provider);
+        ChatClient chatClient = llmProviderRegistry.getChatClientOrDefault(entity.getLlmProvider());
         // P4Q-1：喂进三类参照物——只看一道孤立的题，模型无法判断「他说的是不是自己简历里的事」
         // 「这轮有没有新信息」「这次表现是否超出长期水平」
         return turnEvaluationService.evaluateTurn(chatClient, new TurnEvaluationRequest(
@@ -658,39 +890,14 @@ public class InterviewSessionService {
     }
 
     /**
-     * 落库这一轮的事实。
+     * 触发评估（P4-9a）：评估状态与代次已在本轮事务里写好，这里只负责投递。
      *
-     * <p>正式报告生成前一律不写占位分；逐题评估只服务选题，不能把未知质量或默认值
-     * 当作报告评分。真实作答仍保留 ANSWERED 状态，供异步报告回填与后续证据提取。
+     * <p>投递失败由生产者把评估状态标成 FAILED，前端有重试入口；代次保证重复触发不会
+     * 产出第二份报告与第二批画像证据。
      */
-    private void persistSubmittedAnswer(String sessionId, int index,
-                                        InterviewQuestionDTO question, String answer,
-                                        InterviewAnswerEntity.AnswerState answerState,
-                                        int newIndex, SessionStatus newStatus) {
-        try {
-            persistenceService.saveAnswer(
-                sessionId, index,
-                question.question(), question.category(),
-                answer, null, null, answerState
-            );
-            persistenceService.updateCurrentQuestionIndex(sessionId, newIndex);
-            persistenceService.updateSessionStatus(sessionId,
-                newStatus == SessionStatus.COMPLETED
-                    ? InterviewSessionEntity.SessionStatus.COMPLETED
-                    : InterviewSessionEntity.SessionStatus.IN_PROGRESS);
-        } catch (BusinessException e) {
-            throw e;
-        } catch (Exception e) {
-            log.error("保存答案到数据库失败: sessionId={}, questionIndex={}", sessionId, index, e);
-            throw new BusinessException(ErrorCode.INTERVIEW_ANSWER_SAVE_FAILED,
-                "保存答案失败，请稍后重试");
-        }
-    }
-
-    private void enqueueEvaluationTask(String sessionId) {
-        persistenceService.updateEvaluateStatus(sessionId, AsyncTaskStatus.PENDING, null);
-        evaluateStreamProducer.sendEvaluateTask(sessionId);
-        log.info("会话 {} 已完成所有问题，评估任务已入队", sessionId);
+    private void enqueueEvaluationTask(String sessionId, long evaluateEpoch) {
+        evaluateStreamProducer.sendEvaluateTask(sessionId, evaluateEpoch);
+        log.info("会话 {} 已完成所有问题，评估任务已入队（epoch={}）", sessionId, evaluateEpoch);
     }
 
     /**
@@ -738,29 +945,65 @@ public class InterviewSessionService {
      * 提前交卷（触发异步评估）
      */
     public void completeInterview(String sessionId) {
-        CachedSession session = getOrRestoreSession(sessionId);
+        completeInterview(sessionId, null, null);
+    }
 
-        if (session.getStatus() == SessionStatus.COMPLETED || session.getStatus() == SessionStatus.EVALUATED) {
-            throw new BusinessException(ErrorCode.INTERVIEW_ALREADY_COMPLETED);
+    /**
+     * 提前交卷（带逐轮提交一致性控制，P4-9a）。
+     *
+     * <p>结束与逐轮推进共用同一并发边界：请求标识、预期版本、以及「只允许进行中的会话被置为
+     * COMPLETED」的条件更新。因此「用户点了结束」和「某次提交的晚到模型结果」之间没有竞态——
+     * 先落库的赢，另一个只会拿到可见的过期原因，不会把已结束的会话写回进行中。
+     */
+    public void completeInterview(String sessionId, String requestId, Integer expectedVersion) {
+        String normalizedRequestId = normalizeRequestId(requestId, "requestId");
+        String payloadHash = turnPayloadHash(InterviewTurnCommit.ACTION_COMPLETE, -1, null);
+
+        Optional<InterviewTurnRequestEntity> handled =
+            persistenceService.findTurnRequest(sessionId, normalizedRequestId);
+        if (handled.isPresent()) {
+            assertSamePayload(handled.get(), payloadHash);
+            log.info("提前交卷重放，忽略重复请求: sessionId={}, requestId={}", sessionId,
+                normalizedRequestId);
+            return;
         }
 
-        // 更新 Redis 缓存
-        sessionCache.updateSessionStatus(sessionId, SessionStatus.COMPLETED);
+        String inflightKey = turnInflightKey(sessionId, normalizedRequestId);
+        if (inflightKey != null && !redisService.setIfAbsent(inflightKey, "1", TURN_INFLIGHT_TTL)) {
+            Optional<InterviewTurnRequestEntity> finished =
+                persistenceService.findTurnRequest(sessionId, normalizedRequestId);
+            if (finished.isEmpty()) {
+                throw new BusinessException(ErrorCode.INTERVIEW_TURN_IN_PROGRESS);
+            }
+            assertSamePayload(finished.get(), payloadHash);
+            return;
+        }
 
-        // 更新数据库状态
         try {
-            persistenceService.updateSessionStatus(sessionId,
-                InterviewSessionEntity.SessionStatus.COMPLETED);
-            // 设置评估状态为 PENDING
-            persistenceService.updateEvaluateStatus(sessionId, AsyncTaskStatus.PENDING, null);
-        } catch (Exception e) {
-            log.warn("更新会话状态失败: {}", e.getMessage());
+            InterviewSessionEntity entity = persistenceService.findBySessionId(sessionId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.INTERVIEW_SESSION_NOT_FOUND));
+            if (entity.getStatus() == InterviewSessionEntity.SessionStatus.COMPLETED
+                || entity.getStatus() == InterviewSessionEntity.SessionStatus.EVALUATED) {
+                throw new BusinessException(ErrorCode.INTERVIEW_ALREADY_COMPLETED);
+            }
+            int baseVersion = assertVersionAcceptable(entity, expectedVersion);
+            int currentIndex = entity.getCurrentQuestionIndex() != null
+                ? entity.getCurrentQuestionIndex() : 0;
+
+            InterviewTurnResult result = commitOrFail(InterviewTurnCommit.ofFinish(
+                sessionId, normalizedRequestId, payloadHash, baseVersion, currentIndex, "{}"));
+
+            // 状态与版本在提交成功之后才写缓存（缓存跟随数据库提交）
+            sessionCache.updateSessionStatus(sessionId, SessionStatus.COMPLETED);
+            sessionCache.updateTurnVersion(sessionId, result.turnVersion());
+            enqueueEvaluationTask(sessionId, result.evaluateEpoch());
+
+            log.info("会话 {} 提前交卷，评估任务已入队（version={}）", sessionId, result.turnVersion());
+        } finally {
+            if (inflightKey != null) {
+                redisService.delete(inflightKey);
+            }
         }
-
-        // 发送评估任务到 Redis Stream
-        evaluateStreamProducer.sendEvaluateTask(sessionId);
-
-        log.info("会话 {} 提前交卷，评估任务已入队", sessionId);
     }
 
     /**
@@ -784,10 +1027,17 @@ public class InterviewSessionService {
         if (reportReady) {
             log.info("报告已存在，忽略重复的评估重试: sessionId={}", sessionId);
         } else {
-            // enqueueEvaluationTask 会把状态重置为 PENDING，让消费端的「已完成则跳过」判据不生效
-            enqueueEvaluationTask(sessionId);
-            log.info("评估任务已重新入队: sessionId={}, 上次状态={}",
-                sessionId, entity.getEvaluateStatus());
+            // 代次 +1 并置回 PENDING（P4-9a）：否则消费端的「已完成则跳过」或「代次落后」判据
+            // 会让重试静默无效，也挡不住上一轮尚未跑完的旧任务
+            Optional<Long> epoch = persistenceService.requestEvaluation(sessionId);
+            if (epoch.isPresent()) {
+                enqueueEvaluationTask(sessionId, epoch.get());
+                log.info("评估任务已重新入队: sessionId={}, 上次状态={}, epoch={}",
+                    sessionId, entity.getEvaluateStatus(), epoch.get());
+            } else {
+                log.warn("会话状态不允许请求评估，忽略重试: sessionId={}, status={}",
+                    sessionId, entity.getStatus());
+            }
         }
         return getSession(sessionId);
     }

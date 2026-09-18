@@ -133,6 +133,16 @@ public class InterviewSessionEntity {
     @Column(name = "resume_context_text", columnDefinition = "TEXT")
     private String resumeContextText;
 
+    // 会话推进版本（P4-9a）：作答 / 跳过 / 结束各 +1，逐轮提交用它做乐观并发控制。
+    // 只由「推进会话」的路径递增，报告回填与评估状态更新不动它——否则异步任务会把
+    // 用户正在进行的提交判成过期。
+    @Column(name = "turn_version", nullable = false)
+    private Integer turnVersion = 0;
+
+    // 评估任务代次（P4-9a）：每次请求评估 +1，随 Stream 消息投递，消费端据此丢弃过期触发
+    @Column(name = "evaluate_epoch", nullable = false)
+    private Long evaluateEpoch = 0L;
+
     public enum SessionStatus {
         CREATED,      // 会话已创建
         IN_PROGRESS,  // 面试进行中
@@ -372,6 +382,22 @@ public class InterviewSessionEntity {
 
     public void setResumeContextText(String resumeContextText) {
         this.resumeContextText = resumeContextText;
+    }
+
+    public Integer getTurnVersion() {
+        return turnVersion;
+    }
+
+    public void setTurnVersion(Integer turnVersion) {
+        this.turnVersion = turnVersion;
+    }
+
+    public Long getEvaluateEpoch() {
+        return evaluateEpoch;
+    }
+
+    public void setEvaluateEpoch(Long evaluateEpoch) {
+        this.evaluateEpoch = evaluateEpoch;
     }
 
     public void addAnswer(InterviewAnswerEntity answer) {

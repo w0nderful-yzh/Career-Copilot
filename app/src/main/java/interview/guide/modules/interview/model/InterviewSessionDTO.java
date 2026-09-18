@@ -32,7 +32,15 @@ public record InterviewSessionDTO(
      */
     String resumeSource,
     /** 出题使用的简历版本号（来源为 RESUME_VERSION 时有值） */
-    Integer resumeVersion
+    Integer resumeVersion,
+    /**
+     * 会话推进版本（P4-9a）：作答 / 跳过 / 结束各 +1。
+     *
+     * <p>前端提交下一轮时把它当作 expectedVersion 回传；服务端据此拒绝过期请求
+     * （例如另一个标签页已经答完这题、或用户已经结束面试）。版本对不上时服务端会先
+     * 同步最新进度再返回可见原因，不会静默改写历史。
+     */
+    Integer turnVersion
 ) {
 
     /** 兼容早期构造点（无简历来源/版本，也未带评估状态） */
@@ -41,7 +49,7 @@ public record InterviewSessionDTO(
         List<InterviewQuestionDTO> questions, SessionStatus status,
         Long knowledgeBaseId, String interviewCategory, boolean adaptive) {
         this(sessionId, resumeText, totalQuestions, currentQuestionIndex, questions, status,
-            knowledgeBaseId, interviewCategory, adaptive, null, null, null, null);
+            knowledgeBaseId, interviewCategory, adaptive, null, null, null, null, 0);
     }
 
     /** 兼容构造点（带评估状态但未带简历来源：评估链路只关心进度与失败原因） */
@@ -51,7 +59,7 @@ public record InterviewSessionDTO(
         Long knowledgeBaseId, String interviewCategory, boolean adaptive,
         AsyncTaskStatus evaluateStatus, String evaluateError) {
         this(sessionId, resumeText, totalQuestions, currentQuestionIndex, questions, status,
-            knowledgeBaseId, interviewCategory, adaptive, evaluateStatus, evaluateError, null, null);
+            knowledgeBaseId, interviewCategory, adaptive, evaluateStatus, evaluateError, null, null, 0);
     }
 
     /** 兼容旧构造点（无 adaptive 与评估状态），默认非自适应 */
@@ -60,7 +68,19 @@ public record InterviewSessionDTO(
         List<InterviewQuestionDTO> questions, SessionStatus status,
         Long knowledgeBaseId, String interviewCategory) {
         this(sessionId, resumeText, totalQuestions, currentQuestionIndex, questions,
-            status, knowledgeBaseId, interviewCategory, false, null, null, null, null);
+            status, knowledgeBaseId, interviewCategory, false, null, null, null, null, 0);
+    }
+
+    /** 兼容构造点（带简历来源与版本，对话版本由上游补） */
+    public InterviewSessionDTO(
+        String sessionId, String resumeText, int totalQuestions, int currentQuestionIndex,
+        List<InterviewQuestionDTO> questions, SessionStatus status,
+        Long knowledgeBaseId, String interviewCategory, boolean adaptive,
+        AsyncTaskStatus evaluateStatus, String evaluateError,
+        String resumeSource, Integer resumeVersion) {
+        this(sessionId, resumeText, totalQuestions, currentQuestionIndex, questions, status,
+            knowledgeBaseId, interviewCategory, adaptive, evaluateStatus, evaluateError,
+            resumeSource, resumeVersion, 0);
     }
 
     public enum SessionStatus {

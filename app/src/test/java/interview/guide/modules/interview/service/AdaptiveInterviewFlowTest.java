@@ -3,7 +3,6 @@ package interview.guide.modules.interview.service;
 import interview.guide.common.ai.LlmProviderRegistry;
 import interview.guide.common.exception.BusinessException;
 import interview.guide.common.exception.ErrorCode;
-import interview.guide.common.model.AsyncTaskStatus;
 import interview.guide.infrastructure.redis.InterviewSessionCache;
 import interview.guide.infrastructure.redis.InterviewSessionCache.CachedSession;
 import interview.guide.infrastructure.redis.RedisService;
@@ -13,6 +12,8 @@ import interview.guide.modules.interview.model.InterviewQuestionDTO;
 import interview.guide.modules.interview.model.InterviewSessionDTO;
 import interview.guide.modules.interview.model.InterviewSessionDTO.SessionStatus;
 import interview.guide.modules.interview.model.InterviewSessionEntity;
+import interview.guide.modules.interview.model.InterviewTurnCommit;
+import interview.guide.modules.interview.model.InterviewTurnResult;
 import interview.guide.modules.interview.model.TurnEvaluation;
 import interview.guide.modules.interview.model.TurnEvaluation.AnswerState;
 import interview.guide.modules.interview.policy.AdaptiveInterviewPolicy;
@@ -35,7 +36,9 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -88,6 +91,8 @@ class AdaptiveInterviewFlowTest {
   private final Map<String, CachedSession> cacheStore = new HashMap<>();
 
   private InterviewSessionService service;
+  /** 最近一次落库的提交命令（P4-9a） */
+  private InterviewTurnCommit committed;
 
   @BeforeEach
   void setUp() {
@@ -111,6 +116,12 @@ class AdaptiveInterviewFlowTest {
     // 纯策略用例（合并 / 跳过追问）不经过服务，故与下面的写入桩一同声明为 lenient
     lenient().when(sessionCache.getSession(anyString())).thenAnswer(
         invocation -> Optional.ofNullable(cacheStore.get(invocation.getArgument(0, String.class))));
+    // P4-9a：逐轮提交以数据库为权威，并在同一个事务里落库
+    lenient().when(persistenceService.applyTurn(any())).thenAnswer(invocation -> {
+      committed = invocation.getArgument(0, InterviewTurnCommit.class);
+      return new InterviewTurnResult(committed.expectedVersion() + 1, 1L);
+    });
+    lenient().when(redisService.setIfAbsent(anyString(), any(), any())).thenReturn(true);
 
     // 只有「DB 恢复」路径会写缓存，其余用例不触发，故声明为 lenient
     lenient().doAnswer(invocation -> {
@@ -124,6 +135,16 @@ class AdaptiveInterviewFlowTest {
       return null;
     }).when(sessionCache).saveSession(
         anyString(), anyString(), any(), any(), any(), anyList(), anyInt(), any(), anyBoolean());
+  }
+
+  /** 进行中的会话实体（数据库权威那份） */
+  private static InterviewSessionEntity inProgress(String sessionId, int currentIndex) {
+    InterviewSessionEntity entity = entity(sessionId, true);
+    entity.setStatus(InterviewSessionEntity.SessionStatus.IN_PROGRESS);
+    entity.setCurrentQuestionIndex(currentIndex);
+    entity.setTurnVersion(0);
+    entity.setEvaluateEpoch(0L);
+    return entity;
   }
 
   // ===== 题库构造 =====
@@ -271,30 +292,36 @@ class AdaptiveInterviewFlowTest {
   // ===== 4. 提前结束 =====
 
   @Test
-  @DisplayName("提前结束：置 COMPLETED、清空当前题语义并入队整场评估")
-  void earlyFinishMarksCompletedAndEnqueuesEvaluation() throws Exception {
+  @DisplayName("提前结束：置 COMPLETED、写版本、请求评估并入队整场评估")
+  void earlyFinishMarksCompletedAndEnqueuesEvaluation() {
     cacheStore.put("s1", new CachedSession("s1", "", null, null, null,
         mergedPool(), 2, SessionStatus.IN_PROGRESS, true, objectMapper));
+    when(persistenceService.findBySessionId("s1")).thenReturn(Optional.of(inProgress("s1", 2)));
 
     service.completeInterview("s1");
 
+    // 结束与逐轮推进同一条路径：状态、评估请求、版本一次提交（P4-9a）
+    assertThat(committed.action()).isEqualTo("COMPLETE");
     verify(sessionCache).updateSessionStatus("s1", SessionStatus.COMPLETED);
-    verify(persistenceService).updateSessionStatus("s1", InterviewSessionEntity.SessionStatus.COMPLETED);
-    verify(persistenceService).updateEvaluateStatus("s1", AsyncTaskStatus.PENDING, null);
-    verify(evaluateStreamProducer).sendEvaluateTask("s1");
+    verify(sessionCache).updateTurnVersion("s1", 1);
+    verify(evaluateStreamProducer).sendEvaluateTask(eq("s1"), anyLong());
   }
 
   @Test
   @DisplayName("提前结束：已结束的会话不允许重复交卷")
-  void rejectsSecondFinish() throws Exception {
+  void rejectsSecondFinish() {
     cacheStore.put("s1", new CachedSession("s1", "", null, null, null,
         mergedPool(), 5, SessionStatus.COMPLETED, true, objectMapper));
+    // 已结束的判据在数据库（缓存只是副本）
+    InterviewSessionEntity finished = inProgress("s1", 5);
+    finished.setStatus(InterviewSessionEntity.SessionStatus.COMPLETED);
+    when(persistenceService.findBySessionId("s1")).thenReturn(Optional.of(finished));
 
     assertThatThrownBy(() -> service.completeInterview("s1"))
         .isInstanceOf(BusinessException.class)
         .hasFieldOrPropertyWithValue("code", ErrorCode.INTERVIEW_ALREADY_COMPLETED.getCode());
 
-    verify(evaluateStreamProducer, never()).sendEvaluateTask(anyString());
+    verify(evaluateStreamProducer, never()).sendEvaluateTask(anyString(), anyLong());
   }
 
   @Test

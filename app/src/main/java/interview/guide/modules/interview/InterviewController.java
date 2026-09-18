@@ -1,13 +1,12 @@
 package interview.guide.modules.interview;
 
 import interview.guide.common.annotation.RateLimit;
-import interview.guide.common.exception.BusinessException;
-import interview.guide.common.exception.ErrorCode;
 import interview.guide.common.result.Result;
 import interview.guide.modules.interview.model.CreateInterviewRequest;
 import interview.guide.modules.interview.model.InterviewDetailDTO;
 import interview.guide.modules.interview.model.InterviewReportDTO;
 import interview.guide.modules.interview.model.InterviewSessionDTO;
+import interview.guide.modules.interview.model.InterviewTurnRequests;
 import interview.guide.modules.interview.model.SessionListItemDTO;
 import interview.guide.modules.interview.model.SubmitAnswerRequest;
 import interview.guide.modules.interview.model.SubmitAnswerResponse;
@@ -15,6 +14,7 @@ import interview.guide.modules.interview.service.InterviewHistoryService;
 import interview.guide.modules.interview.service.InterviewPersistenceService;
 import interview.guide.modules.interview.service.InterviewSessionService;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
@@ -89,19 +89,18 @@ public class InterviewController {
     }
     
     /**
-     * 提交答案
+     * 提交答案（P4-9a：带请求标识与预期会话版本）。
      */
     @PostMapping("/api/interview/sessions/{sessionId}/answers")
     @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 10)
     public Result<SubmitAnswerResponse> submitAnswer(
             @PathVariable String sessionId,
-            @RequestBody Map<String, Object> body) {
-        Integer questionIndex = (Integer) body.get("questionIndex");
-        String answer = (String) body.get("answer");
-        log.info("提交答案: 会话{}, 问题{}", sessionId, questionIndex);
-        SubmitAnswerRequest request = new SubmitAnswerRequest(sessionId, questionIndex, answer);
-        SubmitAnswerResponse response = sessionService.submitAnswer(request);
-        return Result.success(response);
+            @Valid @RequestBody InterviewTurnRequests.SubmitAnswerBody body) {
+        log.info("提交答案: 会话{}, 问题{}, 版本={}, requestId={}",
+            sessionId, body.questionIndex(), body.expectedVersion(), body.requestId());
+        SubmitAnswerRequest request = new SubmitAnswerRequest(sessionId, body.questionIndex(),
+            body.answer(), body.requestId(), body.expectedVersion());
+        return Result.success(sessionService.submitAnswer(request));
     }
     
     /**
@@ -124,20 +123,18 @@ public class InterviewController {
     }
     
     /**
-     * 跳过当前题（P4Q-5 一等动作）。
+     * 跳过当前题（P4Q-5 一等动作，P4-9a 与提交共用同一条推进链路）。
      *
      * <p>不调模型、不追问、不计分、不产生画像证据——与「答错」严格区分。
      */
     @PostMapping("/api/interview/sessions/{sessionId}/skip")
     public Result<SubmitAnswerResponse> skipQuestion(
             @PathVariable String sessionId,
-            @RequestBody Map<String, Object> body) {
-        Integer questionIndex = (Integer) body.get("questionIndex");
-        if (questionIndex == null) {
-            throw new BusinessException(ErrorCode.AGENT_TOOL_ARGUMENT_INVALID, "缺少 questionIndex");
-        }
-        log.info("跳过当前题: 会话{}, 问题{}", sessionId, questionIndex);
-        return Result.success(sessionService.skipQuestion(sessionId, questionIndex));
+            @Valid @RequestBody InterviewTurnRequests.SkipBody body) {
+        log.info("跳过当前题: 会话{}, 问题{}, 版本={}, requestId={}",
+            sessionId, body.questionIndex(), body.expectedVersion(), body.requestId());
+        return Result.success(sessionService.skipQuestion(sessionId, body.questionIndex(),
+            body.requestId(), body.expectedVersion()));
     }
 
     /**
@@ -156,12 +153,16 @@ public class InterviewController {
     }
     
     /**
-     * 提前交卷
+     * 提前交卷（P4-9a：与逐轮推进同一并发边界，可通过请求标识安全重试）
      */
     @PostMapping("/api/interview/sessions/{sessionId}/complete")
-    public Result<Void> completeInterview(@PathVariable String sessionId) {
-        log.info("提前交卷: {}", sessionId);
-        sessionService.completeInterview(sessionId);
+    public Result<Void> completeInterview(
+            @PathVariable String sessionId,
+            @RequestBody(required = false) InterviewTurnRequests.CompleteBody body) {
+        log.info("提前交卷: {}, requestId={}", sessionId, body != null ? body.requestId() : null);
+        sessionService.completeInterview(sessionId,
+            body != null ? body.requestId() : null,
+            body != null ? body.expectedVersion() : null);
         return Result.success(null);
     }
     

@@ -62,7 +62,13 @@ public class EvaluateStreamConsumer extends AbstractStreamConsumer<EvaluateStrea
         this.profileAggregator = profileAggregator;
     }
 
-    record EvaluatePayload(String sessionId) {}
+    /**
+     * 评估任务载荷（P4-9a）。
+     *
+     * @param epoch 触发这次评估时的评估代次；代次低于会话当前值时说明这条触发已被更新的
+     *              一次请求取代（例如用户点了「重试报告生成」），应当丢弃而不是再评一遍
+     */
+    record EvaluatePayload(String sessionId, long epoch) {}
 
     @Override
     protected String taskDisplayName() {
@@ -96,24 +102,50 @@ public class EvaluateStreamConsumer extends AbstractStreamConsumer<EvaluateStrea
             log.warn("消息格式错误，跳过: messageId={}", messageId);
             return null;
         }
-        return new EvaluatePayload(sessionId);
+        long epoch = parseEpoch(data.get(AsyncTaskStreamConstants.FIELD_EVALUATE_EPOCH));
+        return new EvaluatePayload(sessionId, epoch);
+    }
+
+    /** 旧格式消息（P4-9a 之前入队、尚无代次字段）按 0 处理，行为与改造前一致 */
+    private static long parseEpoch(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return 0L;
+        }
+        try {
+            return Long.parseLong(raw.trim());
+        } catch (NumberFormatException e) {
+            return 0L;
+        }
     }
 
     @Override
     protected String payloadIdentifier(EvaluatePayload payload) {
-        return "sessionId=" + payload.sessionId();
+        return "sessionId=" + payload.sessionId() + ", epoch=" + payload.epoch();
     }
 
     @Override
     protected boolean shouldSkip(EvaluatePayload payload) {
         return sessionRepository.findBySessionId(payload.sessionId())
-            .map(session -> session.getEvaluateStatus() == AsyncTaskStatus.COMPLETED)
+            .map(session -> session.getEvaluateStatus() == AsyncTaskStatus.COMPLETED
+                // 代次落后 = 这条触发已被更新的一次请求取代（P4-9a）
+                || (session.getEvaluateEpoch() != null
+                    && session.getEvaluateEpoch() > payload.epoch()))
             .orElse(true);
     }
 
     @Override
     protected void markProcessing(EvaluatePayload payload) {
         updateEvaluateStatus(payload.sessionId(), AsyncTaskStatus.PROCESSING, null);
+    }
+
+    /**
+     * 原子领取（P4-9a）：只有「代次与消息一致且尚未完成」时才能领到。
+     *
+     * <p>重复投递的同一代次消息里只有一个会真正执行，因此不会产出两份报告与两批画像证据。
+     */
+    @Override
+    protected boolean tryMarkProcessing(EvaluatePayload payload) {
+        return persistenceService.claimEvaluation(payload.sessionId(), payload.epoch());
     }
 
     @Override
@@ -171,8 +203,13 @@ public class EvaluateStreamConsumer extends AbstractStreamConsumer<EvaluateStrea
     protected void retryMessage(EvaluatePayload payload, int retryCount) {
         String sessionId = payload.sessionId();
         try {
+            // 重试必须先把评估状态置回 PENDING：否则原子领取的「尚未完成」判据（此时是
+            // PROCESSING）会让重试静默无效，用户只能看到一直停在「评估中」
+            updateEvaluateStatus(sessionId, AsyncTaskStatus.PENDING, null);
+
             Map<String, String> message = Map.of(
                 AsyncTaskStreamConstants.FIELD_SESSION_ID, sessionId,
+                AsyncTaskStreamConstants.FIELD_EVALUATE_EPOCH, String.valueOf(payload.epoch()),
                 AsyncTaskStreamConstants.FIELD_RETRY_COUNT, String.valueOf(retryCount)
             );
 
@@ -181,7 +218,8 @@ public class EvaluateStreamConsumer extends AbstractStreamConsumer<EvaluateStrea
                 message,
                 AsyncTaskStreamConstants.STREAM_MAX_LEN
             );
-            log.info("评估任务已重新入队: sessionId={}, retryCount={}", sessionId, retryCount);
+            log.info("评估任务已重新入队: sessionId={}, epoch={}, retryCount={}", sessionId,
+                payload.epoch(), retryCount);
 
         } catch (Exception e) {
             log.error("重试入队失败: sessionId={}, error={}", sessionId, e.getMessage(), e);

@@ -3,6 +3,7 @@ package interview.guide.modules.interview.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -179,7 +180,7 @@ class SessionReportStateSyncTest {
     assertThatThrownBy(() -> service.retryEvaluation("s5"))
         .isInstanceOf(BusinessException.class)
         .hasFieldOrPropertyWithValue("code", ErrorCode.INTERVIEW_NOT_COMPLETED.getCode());
-    verify(evaluateStreamProducer, never()).sendEvaluateTask(anyString());
+    verify(evaluateStreamProducer, never()).sendEvaluateTask(anyString(), anyLong());
   }
 
   @Test
@@ -194,23 +195,24 @@ class SessionReportStateSyncTest {
     InterviewSessionDTO dto = service.retryEvaluation("s6");
 
     assertThat(dto.status()).isEqualTo(SessionStatus.EVALUATED);
-    verify(evaluateStreamProducer, never()).sendEvaluateTask(anyString());
-    // 幂等路径不应把评估状态重置回 PENDING
-    verify(persistenceService, never()).updateEvaluateStatus(anyString(), any(), any());
+    verify(evaluateStreamProducer, never()).sendEvaluateTask(anyString(), anyLong());
+    // 幂等路径不应重新请求评估：既不重置状态，也不递增评估代次
+    verify(persistenceService, never()).requestEvaluation(anyString());
   }
 
   @Test
-  @DisplayName("重试评估：失败后重置为 PENDING 并重新入队")
+  @DisplayName("重试评估：失败后重置为 PENDING、递增代次并重新入队")
   void retryReenqueuesAfterFailure() {
     when(sessionCache.getSession("s7"))
         .thenReturn(Optional.of(cached("s7", SessionStatus.COMPLETED)));
     when(persistenceService.findBySessionId("s7")).thenReturn(Optional.of(
         entity("s7", InterviewSessionEntity.SessionStatus.COMPLETED,
             AsyncTaskStatus.FAILED, "模型超时")));
+    // 代次递增是重试能生效的前提（消费端按代次丢弃过期触发）
+    when(persistenceService.requestEvaluation("s7")).thenReturn(Optional.of(2L));
 
     service.retryEvaluation("s7");
 
-    verify(persistenceService).updateEvaluateStatus("s7", AsyncTaskStatus.PENDING, null);
-    verify(evaluateStreamProducer).sendEvaluateTask("s7");
+    verify(evaluateStreamProducer).sendEvaluateTask("s7", 2L);
   }
 }

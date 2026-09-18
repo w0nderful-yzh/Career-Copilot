@@ -20,6 +20,23 @@ const RESULT_BLOB_PARSE_LIMIT = 64 * 1024;
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
 
+/**
+ * 带业务错误码的请求失败。
+ *
+ * 后端约定 HTTP 200 + Result（code !== 200 即业务失败），只把 message 抛出去会让调用方
+ * 无法区分「这份提交已经过期（可以刷新后重试）」和「网络抖了（原样重试即可）」
+ * ——两者需要的用户动作完全不同（P4-9a 的逐轮提交就依赖这个区分）。
+ */
+export class ApiError extends Error {
+  readonly code?: number;
+
+  constructor(message: string, code?: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.code = code;
+  }
+}
+
 const instance: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
   timeout: 60000,
@@ -39,7 +56,7 @@ export function getResultError(value: unknown): Error | null {
   if (!isResult(value) || value.code === SUCCESS_CODE) {
     return null;
   }
-  return new Error(value.message || '请求失败');
+  return new ApiError(value.message || '请求失败', value.code);
 }
 
 function parseResultText(text: string): Result | null {
@@ -100,7 +117,7 @@ async function getErrorFromResponseData(data: unknown): Promise<Error | null> {
     return null;
   }
 
-  return new Error(result.message || '请求失败');
+  return new ApiError(result.message || '请求失败', result.code);
 }
 
 /**
@@ -125,8 +142,8 @@ instance.interceptors.response.use(
         response.data = result.data;
         return response;
       }
-      // 失败：直接抛出 message
-      return Promise.reject(new Error(result.message || '请求失败'));
+      // 失败：直接抛出 message（带业务码，便于调用方区分「过期」与「网络失败」）
+      return Promise.reject(new ApiError(result.message || '请求失败', result.code));
     }
     
     // 非 Result 格式，直接返回

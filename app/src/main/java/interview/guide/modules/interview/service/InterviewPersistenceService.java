@@ -12,8 +12,12 @@ import interview.guide.modules.interview.model.InterviewReportDTO;
 import interview.guide.modules.interview.model.InterviewResumeContext;
 import interview.guide.modules.interview.model.InterviewSessionDTO;
 import interview.guide.modules.interview.model.InterviewSessionEntity;
+import interview.guide.modules.interview.model.InterviewTurnCommit;
+import interview.guide.modules.interview.model.InterviewTurnRequestEntity;
+import interview.guide.modules.interview.model.InterviewTurnResult;
 import interview.guide.modules.interview.repository.InterviewAnswerRepository;
 import interview.guide.modules.interview.repository.InterviewSessionRepository;
+import interview.guide.modules.interview.repository.InterviewTurnRequestRepository;
 import interview.guide.modules.profile.service.SkillProfileAggregator;
 import interview.guide.modules.resume.model.ResumeEntity;
 import interview.guide.modules.resume.repository.ResumeRepository;
@@ -41,6 +45,7 @@ public class InterviewPersistenceService {
 
     private final InterviewSessionRepository sessionRepository;
     private final InterviewAnswerRepository answerRepository;
+    private final InterviewTurnRequestRepository turnRequestRepository;
     private final ResumeRepository resumeRepository;
     private final ObjectMapper objectMapper;
     private final SkillProfileAggregator profileAggregator;
@@ -257,7 +262,130 @@ public class InterviewPersistenceService {
             sessionRepository.save(session);
         }
     }
-    
+
+    // ==================== 逐轮推进（P4-9a） ====================
+
+    /** 会话可以进行逐轮推进的状态；以此作为条件更新的一部分，已结束的会话不可能被写回进行中 */
+    private static final List<InterviewSessionEntity.SessionStatus> ACTIVE_STATUSES =
+        List.of(InterviewSessionEntity.SessionStatus.CREATED,
+            InterviewSessionEntity.SessionStatus.IN_PROGRESS);
+
+    /**
+     * 查已处理过的逐轮请求（重放时返回原结果）。
+     */
+    public Optional<InterviewTurnRequestEntity> findTurnRequest(String sessionId, String requestId) {
+        if (requestId == null) {
+            return Optional.empty();
+        }
+        return turnRequestRepository.findBySessionIdAndRequestId(sessionId, requestId);
+    }
+
+    /**
+     * 一次性提交一轮推进：会话（版本 / 索引 / 状态 / 评估请求）+ 答案事实 + 幂等记录。
+     *
+     * <p>**这是逐轮提交唯一的写入口，模型调用必须已经在事务之外完成。** 三个写入同生共死：
+     * 条件更新影响 0 行（版本过期 / 该题已不是待答题 / 会话已结束）→ 抛
+     * {@link ErrorCode#INTERVIEW_TURN_STALE}，事务回滚，不会留下「答案写了但索引没动」这类半状态。
+     *
+     * @return 推进后的会话版本与评估代次
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public InterviewTurnResult applyTurn(InterviewTurnCommit commit) {
+        String sessionId = commit.sessionId();
+        LocalDateTime completedAt = commit.completing() ? LocalDateTime.now() : null;
+
+        // 三种推进方式同一套闸门（版本 + 进行中状态），区别只在「是否动索引」：
+        // 提前交卷不动索引，作答/跳过要移到下一题（最后一轮同时请求评估）
+        int updated;
+        if (commit.finishing()) {
+            updated = sessionRepository.applyFinish(
+                sessionId, commit.expectedVersion(),
+                InterviewSessionEntity.SessionStatus.COMPLETED, AsyncTaskStatus.PENDING,
+                completedAt, ACTIVE_STATUSES);
+        } else if (commit.completing()) {
+            updated = sessionRepository.applyTurnRequestingEvaluation(
+                sessionId, commit.expectedVersion(), commit.expectedIndex(), commit.newIndex(),
+                InterviewSessionEntity.SessionStatus.COMPLETED, AsyncTaskStatus.PENDING,
+                completedAt, ACTIVE_STATUSES);
+        } else {
+            updated = sessionRepository.applyTurn(
+                sessionId, commit.expectedVersion(), commit.expectedIndex(), commit.newIndex(),
+                InterviewSessionEntity.SessionStatus.IN_PROGRESS, completedAt, ACTIVE_STATUSES);
+        }
+
+        if (updated == 0) {
+            // 版本 / 待答题 / 会话状态三者任一不匹配都在这里收敛成同一个可见结果：
+            // 调用方已经拿到权威状态，直接告诉用户「刷新后重试」，绝不默默再推进一次
+            log.warn("逐轮提交被拒绝（会话已被其他请求推进或已结束）: sessionId={}, action={}, expectedVersion={}, expectedIndex={}",
+                sessionId, commit.action(), commit.expectedVersion(), commit.expectedIndex());
+            throw new BusinessException(ErrorCode.INTERVIEW_TURN_STALE);
+        }
+
+        // 条件更新绕过持久化上下文，必须重新加载才能拿到新版本
+        InterviewSessionEntity session = sessionRepository.findBySessionId(sessionId)
+            .orElseThrow(() -> new BusinessException(ErrorCode.INTERVIEW_SESSION_NOT_FOUND));
+
+        if (commit.writesAnswer()) {
+            upsertAnswer(session, commit.questionIndex(), commit.question(), commit.category(),
+                commit.answer(), null, null, commit.answerState());
+        }
+
+        if (commit.requestId() != null) {
+            InterviewTurnRequestEntity record = new InterviewTurnRequestEntity();
+            record.setSessionId(sessionId);
+            record.setRequestId(commit.requestId());
+            record.setAction(commit.action());
+            record.setPayloadHash(commit.payloadHash());
+            record.setBaseVersion(commit.expectedVersion());
+            record.setResultVersion(commit.expectedVersion() + 1);
+            record.setResponseJson(commit.responseJson());
+            turnRequestRepository.save(record);
+        }
+
+        log.info("逐轮提交已落库: sessionId={}, action={}, index={}→{}, version={}, requestId={}",
+            sessionId, commit.action(), commit.expectedIndex(), commit.newIndex(),
+            session.getTurnVersion(), commit.requestId());
+
+        return new InterviewTurnResult(session.getTurnVersion(),
+            session.getEvaluateEpoch() != null ? session.getEvaluateEpoch() : 0L);
+    }
+
+    /**
+     * 重新请求评估（P4-9a）：把评估状态置回 PENDING 并把代次 +1。
+     *
+     * <p>代次递增是重试能生效的前提——否则消费端会认为「这条触发已经被处理过」而跳过；
+     * 同时也让上一次尚未跑完的旧代次任务过期，不会写出第二份报告。
+     *
+     * @return 新的评估代次；会话不存在或尚未结束评估时返回空
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public Optional<Long> requestEvaluation(String sessionId) {
+        int updated = sessionRepository.requestEvaluation(sessionId, AsyncTaskStatus.PENDING,
+            List.of(InterviewSessionEntity.SessionStatus.COMPLETED,
+                InterviewSessionEntity.SessionStatus.EVALUATED));
+        if (updated == 0) {
+            return Optional.empty();
+        }
+        return sessionRepository.findEvaluateEpoch(sessionId);
+    }
+
+    /**
+     * 原子领取评估任务（P4-9a）。
+     *
+     * <p>只有「代次与消息一致」且「尚未完成」时才能领到：同一代次的重复投递只有一个会执行，
+     * 用户重试产生的新代次不受影响。领取失败即代表这次触发应当被丢弃。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public boolean claimEvaluation(String sessionId, long epoch) {
+        return sessionRepository.claimEvaluation(sessionId, epoch,
+            AsyncTaskStatus.PROCESSING, AsyncTaskStatus.COMPLETED) > 0;
+    }
+
+    /** 当前评估代次（消费端据此丢弃过期触发） */
+    public Optional<Long> findEvaluateEpoch(String sessionId) {
+        return sessionRepository.findEvaluateEpoch(sessionId);
+    }
+
     /**
      * 保存面试答案（默认按「真实作答」写入，兼容旧调用点）
      */
@@ -280,16 +408,27 @@ public class InterviewPersistenceService {
                                             String question, String category,
                                             String userAnswer, Integer score, String feedback,
                                             InterviewAnswerEntity.AnswerState answerState) {
-        Optional<InterviewSessionEntity> sessionOpt = sessionRepository.findBySessionId(sessionId);
-        if (sessionOpt.isEmpty()) {
-            throw new BusinessException(ErrorCode.INTERVIEW_SESSION_NOT_FOUND);
-        }
+        InterviewSessionEntity session = sessionRepository.findBySessionId(sessionId)
+            .orElseThrow(() -> new BusinessException(ErrorCode.INTERVIEW_SESSION_NOT_FOUND));
+        return upsertAnswer(session, questionIndex, question, category, userAnswer, score, feedback,
+            answerState);
+    }
 
+    /**
+     * 写入 / 覆盖一条答案事实（调用方须已在事务内并持有会话实体）。
+     *
+     * <p>已存在的行按状态覆盖（重新作答 / 状态修正场景）。
+     */
+    private InterviewAnswerEntity upsertAnswer(InterviewSessionEntity session, int questionIndex,
+                                               String question, String category,
+                                               String userAnswer, Integer score, String feedback,
+                                               InterviewAnswerEntity.AnswerState answerState) {
+        String sessionId = session.getSessionId();
         InterviewAnswerEntity answer = answerRepository
             .findBySession_SessionIdAndQuestionIndex(sessionId, questionIndex)
             .orElseGet(() -> {
                 InterviewAnswerEntity created = new InterviewAnswerEntity();
-                created.setSession(sessionOpt.get());
+                created.setSession(session);
                 created.setQuestionIndex(questionIndex);
                 return created;
             });

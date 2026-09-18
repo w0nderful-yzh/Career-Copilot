@@ -42,6 +42,11 @@ public enum ErrorCode {
     INTERVIEW_NOT_COMPLETED(3007, "面试尚未完成"),
     INTERVIEW_ANSWER_SAVE_FAILED(3008, "面试答案保存失败"),
     INTERVIEW_QUESTION_INSUFFICIENT(3009, "符合条件的面试问题不足"),
+    // 逐轮提交一致性（P4-9a）：同一标识不同载荷、版本过期、正在处理中、不是当前待答题
+    INTERVIEW_TURN_REQUEST_CONFLICT(3010, "该提交标识已用于另一次提交，请刷新后重试"),
+    INTERVIEW_TURN_STALE(3011, "提交的会话版本已过期，已为你同步最新进度"),
+    INTERVIEW_TURN_IN_PROGRESS(3012, "上一次提交仍在处理中，请稍后重试"),
+    INTERVIEW_TURN_INDEX_MISMATCH(3013, "该题已不是当前待答题，请刷新后重试"),
     
     // ========== 存储模块错误 4xxx ==========
     STORAGE_UPLOAD_FAILED(4001, "文件上传失败"),

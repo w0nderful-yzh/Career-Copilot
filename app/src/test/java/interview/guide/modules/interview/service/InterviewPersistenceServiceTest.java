@@ -1,11 +1,18 @@
 package interview.guide.modules.interview.service;
 
+import interview.guide.common.exception.BusinessException;
+import interview.guide.common.exception.ErrorCode;
 import interview.guide.common.model.AsyncTaskStatus;
 import interview.guide.infrastructure.redis.InterviewSessionCache;
+import interview.guide.modules.interview.model.InterviewAnswerEntity;
 import interview.guide.modules.interview.model.InterviewSessionDTO;
 import interview.guide.modules.interview.model.InterviewSessionEntity;
+import interview.guide.modules.interview.model.InterviewTurnCommit;
+import interview.guide.modules.interview.model.InterviewTurnRequestEntity;
+import interview.guide.modules.interview.model.InterviewTurnResult;
 import interview.guide.modules.interview.repository.InterviewAnswerRepository;
 import interview.guide.modules.interview.repository.InterviewSessionRepository;
+import interview.guide.modules.interview.repository.InterviewTurnRequestRepository;
 import interview.guide.modules.profile.service.SkillProfileAggregator;
 import interview.guide.modules.resume.repository.ResumeRepository;
 import org.junit.jupiter.api.DisplayName;
@@ -20,7 +27,11 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -33,6 +44,9 @@ class InterviewPersistenceServiceTest {
 
   @Mock
   private InterviewAnswerRepository answerRepository;
+
+  @Mock
+  private InterviewTurnRequestRepository turnRequestRepository;
 
   @Mock
   private ResumeRepository resumeRepository;
@@ -124,10 +138,87 @@ class InterviewPersistenceServiceTest {
     assertThat(session.getEvaluateError()).isEqualTo("模型超时");
   }
 
+  @Test
+  @DisplayName("逐轮提交：条件更新没命中就整体不落任何写入（P4-9a）")
+  void applyTurnRejectsWhenConditionalUpdateMisses() {
+    when(sessionRepository.applyTurn(anyString(), anyInt(), anyInt(), anyInt(), any(), any(), anyList()))
+        .thenReturn(0);
+
+    assertThatThrownBy(() -> newService().applyTurn(answerCommit()))
+        .isInstanceOf(BusinessException.class)
+        .hasFieldOrPropertyWithValue("code", ErrorCode.INTERVIEW_TURN_STALE.getCode());
+
+    // 版本过期 / 已结束 / 不是当前待答题：答案与幂等记录都不该出现
+    verify(answerRepository, never()).save(any());
+    verify(turnRequestRepository, never()).save(any());
+  }
+
+  @Test
+  @DisplayName("逐轮提交：答案事实与幂等记录跟着同一次条件更新落地（P4-9a）")
+  void applyTurnWritesAnswerAndIdempotencyRecord() {
+    when(sessionRepository.applyTurn(anyString(), anyInt(), anyInt(), anyInt(), any(), any(), anyList()))
+        .thenReturn(1);
+    InterviewSessionEntity session = new InterviewSessionEntity();
+    session.setSessionId("sid-turn");
+    session.setTurnVersion(3);
+    session.setEvaluateEpoch(7L);
+    when(sessionRepository.findBySessionId("sid-turn")).thenReturn(Optional.of(session));
+    when(answerRepository.findBySession_SessionIdAndQuestionIndex("sid-turn", 1))
+        .thenReturn(Optional.empty());
+    when(answerRepository.save(any(InterviewAnswerEntity.class)))
+        .thenAnswer(invocation -> invocation.getArgument(0));
+
+    InterviewTurnResult result = newService().applyTurn(answerCommit());
+
+    assertThat(result.turnVersion()).isEqualTo(3);
+    assertThat(result.evaluateEpoch()).isEqualTo(7L);
+
+    ArgumentCaptor<InterviewAnswerEntity> answerCaptor =
+        ArgumentCaptor.forClass(InterviewAnswerEntity.class);
+    verify(answerRepository).save(answerCaptor.capture());
+    assertThat(answerCaptor.getValue().getAnswerState())
+        .isEqualTo(InterviewAnswerEntity.AnswerState.ANSWERED);
+    assertThat(answerCaptor.getValue().getUserAnswer()).isEqualTo("堆和栈……");
+
+    ArgumentCaptor<InterviewTurnRequestEntity> recordCaptor =
+        ArgumentCaptor.forClass(InterviewTurnRequestEntity.class);
+    verify(turnRequestRepository).save(recordCaptor.capture());
+    assertThat(recordCaptor.getValue().getRequestId()).isEqualTo("turn-req-0001");
+    assertThat(recordCaptor.getValue().getBaseVersion()).isEqualTo(2);
+    assertThat(recordCaptor.getValue().getResultVersion()).isEqualTo(3);
+  }
+
+  @Test
+  @DisplayName("提前交卷走「不推进索引」的条件更新（P4-9a）")
+  void finishCommitUsesFinishUpdate() {
+    when(sessionRepository.applyFinish(anyString(), anyInt(), any(), any(), any(), anyList()))
+        .thenReturn(1);
+    InterviewSessionEntity session = new InterviewSessionEntity();
+    session.setSessionId("sid-turn");
+    session.setTurnVersion(5);
+    session.setEvaluateEpoch(2L);
+    when(sessionRepository.findBySessionId("sid-turn")).thenReturn(Optional.of(session));
+
+    newService().applyTurn(
+        InterviewTurnCommit.ofFinish("sid-turn", "req-finish-1", "hash", 4, 1, "{}"));
+
+    verify(sessionRepository).applyFinish(anyString(), anyInt(), any(), any(), any(), anyList());
+    verify(sessionRepository, never())
+        .applyTurn(anyString(), anyInt(), anyInt(), anyInt(), any(), any(), anyList());
+  }
+
+  /** 一轮作答的提交命令（版本 2 → 3） */
+  private static InterviewTurnCommit answerCommit() {
+    return InterviewTurnCommit.ofTurn("sid-turn", "turn-req-0001", "ANSWER", "hash", 2, 1, 2,
+        false, 1, "Q2", "Redis", "堆和栈……",
+        InterviewAnswerEntity.AnswerState.ANSWERED, "{}");
+  }
+
   private InterviewPersistenceService newService() {
     return new InterviewPersistenceService(
         sessionRepository,
         answerRepository,
+        turnRequestRepository,
         resumeRepository,
         objectMapper,
         profileAggregator,

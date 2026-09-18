@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Bot, Clock, Loader2, RotateCcw, Sparkles, User, X } from 'lucide-react';
 import { interviewApi } from '../../api/interview';
+import { ApiError } from '../../api/request';
 import type { InterviewModeState } from '../../types/copilot';
 import type { InterviewQuestion, ProfileImpact } from '../../types/interview';
 import {
@@ -9,6 +10,14 @@ import {
   toInterviewerTurn,
   type InterviewTurn as Turn,
 } from '../../utils/interviewTurns';
+import {
+  applyTurnResult,
+  initialTurnSyncState,
+  isStaleTurnErrorCode,
+  requestIdForAttempt,
+  syncVersionFromSession,
+  type TurnSyncState,
+} from '../../utils/interviewTurnSync';
 import {
   decideEvaluationPhase,
   EVALUATION_POLL_INTERVAL_MS,
@@ -31,6 +40,16 @@ function formatSeconds(total: number): string {
   const m = Math.floor(total / 60);
   const s = total % 60;
   return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+/**
+ * 是否属于「提交一致性冲突」（P4-9a）。
+ *
+ * 服务端在这些情况下已经同步了权威进度（会话被另一处推进 / 已结束 / 版本过期 /
+ * 不是当前待答题），前端应当回源重读，而不是把它当成网络抖动原样重试。
+ */
+function isTurnConflict(err: unknown): boolean {
+  return err instanceof ApiError && isStaleTurnErrorCode(err.code);
 }
 
 export default function InterviewWorkspace({
@@ -69,6 +88,10 @@ export default function InterviewWorkspace({
   const pollAttemptRef = useRef(0);
   /** 错误来自「报告生成失败/超时」而非会话加载：决定错误态给哪个重试动作 */
   const [evaluationFailed, setEvaluationFailed] = useState(false);
+  /** 逐轮提交的同步状态（P4-9a）：会话版本 + 待确认的请求标识 */
+  const turnSyncRef = useRef<TurnSyncState>(initialTurnSyncState());
+  /** 提交一致性冲突的可见说明（原文由服务端给出，前端只负责呈现与回源） */
+  const [turnNotice, setTurnNotice] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const stopTimers = useCallback(() => {
@@ -89,6 +112,8 @@ export default function InterviewWorkspace({
       setMainIndexes(view.mainIndexes);
       setPoolTotal(view.poolTotal);
       setAdaptive(view.adaptive);
+      // 会话推进版本跟随权威会话（P4-9a）：提交时原样回传，服务端据此拒绝过期请求
+      turnSyncRef.current = syncVersionFromSession(turnSyncRef.current, s.turnVersion);
       if (s.status === 'COMPLETED' || s.status === 'EVALUATED') {
         onChangeStatus({ ...mode, status: 'evaluating' });
         if (pollRef.current) window.clearInterval(pollRef.current);
@@ -106,20 +131,42 @@ export default function InterviewWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode.sessionId]);
 
+  /** 提交一致性冲突：给出来自服务端的可见说明，并回源同步权威进度（P4-9a） */
+  const resyncAfterTurnConflict = useCallback(
+    (err: unknown) => {
+      setTurnNotice(err instanceof Error ? err.message : '会话已更新，已为你同步最新进度');
+      void load();
+    },
+    [load],
+  );
+
   // 提交答案 → Java 决策引擎返回下一题
   const submit = useCallback(async () => {
     if (!current || !answer.trim() || submitting) return;
     const text = answer.trim();
+    const questionIndex = current.questionIndex;
     setAnswer('');
     setSubmitting(true);
+    setTurnNotice(null);
     // 乐观追加用户答（Java 为权威，失败可重试）
     setTurns((prev) => [...prev, { role: 'user', answer: text }]);
+    // 同一次提交（同题同内容）的重试复用同一个标识：服务端据此返回原结果，不再推进第二次
+    const attempt = requestIdForAttempt(
+      turnSyncRef.current,
+      `answer:${questionIndex}:${text}`,
+      () => `turn-${crypto.randomUUID()}`,
+    );
+    turnSyncRef.current = attempt.state;
     try {
       const res = await interviewApi.submitAnswer({
         sessionId: mode.sessionId,
-        questionIndex: current.questionIndex,
+        questionIndex,
         answer: text,
+        requestId: attempt.requestId,
+        expectedVersion: turnSyncRef.current.turnVersion ?? undefined,
       });
+      // 版本跟随服务端提交结果：下一次提交必须基于它，否则会被判成过期请求
+      turnSyncRef.current = applyTurnResult(turnSyncRef.current, res.turnVersion);
       const next = res.hasNextQuestion ? res.nextQuestion : null;
       if (next) {
         setCurrent(next);
@@ -141,10 +188,11 @@ export default function InterviewWorkspace({
       // 移除乐观的用户答，允许重试
       setTurns((prev) => prev.slice(0, -1));
       setAnswer(text);
+      if (isTurnConflict(err)) resyncAfterTurnConflict(err);
     } finally {
       setSubmitting(false);
     }
-  }, [current, answer, submitting, mode, onChangeStatus]);
+  }, [current, answer, submitting, mode, onChangeStatus, resyncAfterTurnConflict]);
 
   const pollEvaluation = useCallback(async () => {
     try {
@@ -199,9 +247,23 @@ export default function InterviewWorkspace({
     const skippedIndex = current.questionIndex;
     setSubmitting(true);
     setAnswer('');
+    setTurnNotice(null);
     setTurns((prev) => [...prev, { role: 'user', answer: '（已跳过本题）', answerState: 'SKIPPED' }]);
+    // 跳过与提交走同一条推进链路，因此用同一套标识 / 版本约定（P4-9a）
+    const attempt = requestIdForAttempt(
+      turnSyncRef.current,
+      `skip:${skippedIndex}`,
+      () => `turn-${crypto.randomUUID()}`,
+    );
+    turnSyncRef.current = attempt.state;
     try {
-      const res = await interviewApi.skipQuestion(mode.sessionId, skippedIndex);
+      const res = await interviewApi.skipQuestion(
+        mode.sessionId,
+        skippedIndex,
+        attempt.requestId,
+        turnSyncRef.current.turnVersion ?? undefined,
+      );
+      turnSyncRef.current = applyTurnResult(turnSyncRef.current, res.turnVersion);
       const next = res.hasNextQuestion ? res.nextQuestion : null;
       if (next) {
         setCurrent(next);
@@ -220,10 +282,11 @@ export default function InterviewWorkspace({
     } catch (err) {
       console.error('跳过失败:', err);
       setTurns((prev) => prev.slice(0, -1));
+      if (isTurnConflict(err)) resyncAfterTurnConflict(err);
     } finally {
       setSubmitting(false);
     }
-  }, [current, submitting, mode, onChangeStatus, pollEvaluation]);
+  }, [current, submitting, mode, onChangeStatus, pollEvaluation, resyncAfterTurnConflict]);
 
   /** 重试生成报告：重置轮询计数后重新入队并继续轮询 */
   const retryEvaluation = useCallback(async () => {
@@ -245,8 +308,20 @@ export default function InterviewWorkspace({
 
   // 结束面试（提前交卷）→ Java 置 COMPLETED → 进入评估轮询
   const finish = useCallback(async () => {
+    setTurnNotice(null);
+    // 结束与逐轮推进同一并发边界：带标识即可安全重试，不会重复入队评估（P4-9a）
+    const attempt = requestIdForAttempt(
+      turnSyncRef.current,
+      'complete',
+      () => `turn-${crypto.randomUUID()}`,
+    );
+    turnSyncRef.current = attempt.state;
     try {
-      await interviewApi.completeInterview(mode.sessionId);
+      await interviewApi.completeInterview(
+        mode.sessionId,
+        attempt.requestId,
+        turnSyncRef.current.turnVersion ?? undefined,
+      );
       setCurrent(null);
       setEvaluationFailed(false);
       onChangeStatus({ ...mode, status: 'evaluating' });
@@ -258,8 +333,9 @@ export default function InterviewWorkspace({
       );
     } catch (err) {
       console.error('结束面试失败:', err);
+      if (isTurnConflict(err)) resyncAfterTurnConflict(err);
     }
-  }, [mode, onChangeStatus]);
+  }, [mode, onChangeStatus, pollEvaluation, resyncAfterTurnConflict]);
 
   useEffect(() => {
     void load();
@@ -438,6 +514,7 @@ export default function InterviewWorkspace({
         visible={!isEvaluating && !isDone && !!current}
         submitting={submitting}
         answer={answer}
+        notice={turnNotice}
         onAnswerChange={setAnswer}
         onSubmit={() => void submit()}
         onSkip={() => void skip()}
@@ -451,6 +528,7 @@ function InterviewAnswerBar({
   visible,
   submitting,
   answer,
+  notice,
   onAnswerChange,
   onSubmit,
   onSkip,
@@ -458,6 +536,8 @@ function InterviewAnswerBar({
   visible: boolean;
   submitting: boolean;
   answer: string;
+  /** 提交一致性提示（P4-9a）：服务端已同步权威进度时告知用户，而不是静默失败 */
+  notice: string | null;
   onAnswerChange: (value: string) => void;
   onSubmit: () => void;
   /** 跳过本题：一等动作，不等同于答错（P4Q-5） */
@@ -466,6 +546,11 @@ function InterviewAnswerBar({
   if (!visible) return null;
   return (
     <div className="mx-auto w-full max-w-4xl px-5 pb-4 lg:px-8">
+      {notice && (
+        <p className="mb-2 rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-900/30 dark:text-amber-200">
+          {notice}
+        </p>
+      )}
       <div className="rounded-2xl border border-slate-200 bg-white p-2.5 shadow-[0_12px_35px_rgba(15,23,42,0.08)] transition dark:border-slate-700 dark:bg-slate-800 dark:shadow-none">
         <div className="flex items-end gap-2">
           <textarea

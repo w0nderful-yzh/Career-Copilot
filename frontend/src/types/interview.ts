@@ -28,6 +28,13 @@ export interface InterviewSession {
   evaluateStatus?: AsyncTaskStatus | null;
   /** 评估失败原因（evaluateStatus = FAILED 时展示） */
   evaluateError?: string | null;
+  /**
+   * 会话推进版本（P4-9a）：每次作答 / 跳过 / 结束 +1。
+   *
+   * 提交下一轮时把它作为 expectedVersion 回传；服务端据此拒绝过期请求
+   * （另一个标签页已答完这题、或用户已结束面试），不会静默改写历史。
+   */
+  turnVersion?: number | null;
 }
 
 export type AsyncTaskStatus = 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
@@ -101,6 +108,13 @@ export interface SubmitAnswerRequest {
   sessionId: string;
   questionIndex: number;
   answer: string;
+  /**
+   * 请求标识（P4-9a）：同一次提交的重试必须复用同一个标识，
+   * 服务端据此返回原结果而不是再次推进（可选：不带时只保留并发闸门）。
+   */
+  requestId?: string;
+  /** 预期会话版本（P4-9a）：取自上次响应或会话读取的 turnVersion */
+  expectedVersion?: number;
 }
 
 export interface SubmitAnswerResponse {
@@ -108,6 +122,8 @@ export interface SubmitAnswerResponse {
   nextQuestion: InterviewQuestion | null;
   currentIndex: number;
   totalQuestions: number;
+  /** 推进后的会话版本（P4-9a）：下一次提交要原样回传 */
+  turnVersion?: number;
 }
 
 export interface CurrentQuestionResponse {

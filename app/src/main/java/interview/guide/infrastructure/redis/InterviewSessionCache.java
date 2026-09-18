@@ -61,6 +61,14 @@ public class InterviewSessionCache {
         // P4Q-1 简历上下文的来源与版本（出题实际依据；供 DTO 展示与追溯，null = 未记录）
         private String resumeSource;
         private Integer resumeVersion;
+        /**
+         * 会话推进版本（P4-9a）：与数据库 interview_sessions.turn_version 对应。
+         *
+         * <p>缓存里的它是一个**副本**，权威值在数据库——写缓存永远发生在数据库提交之后，
+         * 且提交被拒绝时服务端会用数据库的实体重建缓存。因此这里读到旧值时不会被当成事实
+         * 写回数据库，只会让客户端拿到「刷新后重试」的可见原因。
+         */
+        private Integer turnVersion = 0;
 
         public CachedSession() {
         }
@@ -196,6 +204,20 @@ public class InterviewSessionCache {
             String key = buildSessionKey(sessionId);
             redisService.set(key, session, SESSION_TTL);
             log.debug("更新会话进度: sessionId={}, currentIndex={}", sessionId, currentIndex);
+        });
+    }
+
+    /**
+     * 更新推进版本（P4-9a）。
+     *
+     * <p>单独一个方法而不是塞进 saveSession 的参数表：saveSession 已有十几个位置参数，
+     * 再加一个只会让调用点更难读；版本只在「提交完成后」和「从数据库重建后」两个时机更新。
+     */
+    public void updateTurnVersion(String sessionId, Integer turnVersion) {
+        getSession(sessionId).ifPresent(session -> {
+            session.setTurnVersion(turnVersion != null ? turnVersion : 0);
+            String key = buildSessionKey(sessionId);
+            redisService.set(key, session, SESSION_TTL);
         });
     }
 

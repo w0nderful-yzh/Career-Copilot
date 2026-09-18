@@ -69,6 +69,17 @@ public class RedisService {
     }
 
     /**
+     * 仅当键不存在时写入，返回是否写入成功（P4-9a 的「处理中」占位）。
+     *
+     * <p>用它做短时占位而不是分布式锁：占位方才是「这个请求正在处理」，与业务写操作无关，
+     * 因此不会被长时间持有的锁拖住其他请求。
+     */
+    public <T> boolean setIfAbsent(String key, T value, Duration ttl) {
+        RBucket<T> bucket = redissonClient.getBucket(key);
+        return bucket.setIfAbsent(value, ttl);
+    }
+
+    /**
      * 获取值
      */
     public <T> T get(String key) {

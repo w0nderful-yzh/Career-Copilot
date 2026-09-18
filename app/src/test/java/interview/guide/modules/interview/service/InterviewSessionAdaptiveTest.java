@@ -1,17 +1,16 @@
 package interview.guide.modules.interview.service;
 
 import interview.guide.common.ai.LlmProviderRegistry;
-import interview.guide.common.model.AsyncTaskStatus;
 import interview.guide.infrastructure.redis.InterviewSessionCache;
 import interview.guide.infrastructure.redis.InterviewSessionCache.CachedSession;
 import interview.guide.infrastructure.redis.RedisService;
 import interview.guide.modules.interview.listener.EvaluateStreamProducer;
-import interview.guide.modules.interview.model.CreateInterviewRequest;
 import interview.guide.modules.interview.model.InterviewAnswerEntity;
 import interview.guide.modules.interview.model.InterviewQuestionDTO;
-import interview.guide.modules.interview.model.InterviewSessionDTO;
 import interview.guide.modules.interview.model.InterviewSessionDTO.SessionStatus;
 import interview.guide.modules.interview.model.InterviewSessionEntity;
+import interview.guide.modules.interview.model.InterviewTurnCommit;
+import interview.guide.modules.interview.model.InterviewTurnResult;
 import interview.guide.modules.interview.model.SubmitAnswerRequest;
 import interview.guide.modules.interview.model.SubmitAnswerResponse;
 import interview.guide.modules.interview.model.TurnEvaluation;
@@ -33,22 +32,28 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import interview.guide.modules.interview.model.InterviewResumeContext;
-import static org.mockito.Mockito.lenient;
 
 /**
  * P4-3 自适应面试接线：submitAnswer 在 adaptive 会话下调用逐题评估并按决策选题；
  * 非自适应会话保持原「顺序下一题」。
+ *
+ * <p>P4-9a 起逐轮推进以**数据库**为权威（缓存只是可恢复副本），并且整轮决定
+ * （答案 / 索引 / 状态）在同一个事务里提交，因此本类断言的对象是
+ * {@link InterviewTurnCommit}（提交命令）而不是三次分散的写库调用。
  */
 @DisplayName("自适应面试会话答题链路（P4-3）")
 @ExtendWith(MockitoExtension.class)
 class InterviewSessionAdaptiveTest {
+
+  private static final String SESSION = "session-abc";
 
   @Mock
   private InterviewQuestionService questionService;
@@ -74,6 +79,8 @@ class InterviewSessionAdaptiveTest {
 
   private final ObjectMapper objectMapper = new ObjectMapper();
   private InterviewSessionService service;
+  /** 唯一一次落库的提交命令（P4-9a 的断言对象） */
+  private InterviewTurnCommit committed;
 
   @BeforeEach
   void setUp() {
@@ -93,6 +100,13 @@ class InterviewSessionAdaptiveTest {
 
     lenient().when(resumeContextResolver.resolve(any(), any(), any()))
         .thenReturn(InterviewResumeContext.none());
+    // 「这个请求正在处理中」占位默认成功；并发重复请求的场景由 P4-9a 专项用例覆盖
+    lenient().when(redisService.setIfAbsent(anyString(), any(), any())).thenReturn(true);
+    // 落库默认成功，并记录提交内容供断言
+    lenient().when(persistenceService.applyTurn(any())).thenAnswer(invocation -> {
+      committed = invocation.getArgument(0, InterviewTurnCommit.class);
+      return new InterviewTurnResult(committed.expectedVersion() + 1, 1L);
+    });
   }
 
   private static List<InterviewQuestionDTO> linearSession() {
@@ -105,18 +119,38 @@ class InterviewSessionAdaptiveTest {
   }
 
   private CachedSession cached(List<InterviewQuestionDTO> questions, int index, boolean adaptive) {
-    return new CachedSession("session-abc", "", null, null, null,
+    return new CachedSession(SESSION, "", null, null, null,
         questions, index, SessionStatus.IN_PROGRESS, adaptive, objectMapper);
+  }
+
+  /**
+   * 会话的权威实体（数据库那份）：待答题索引与缓存一致，否则提交会被判成「不是当前待答题」
+   */
+  private static InterviewSessionEntity authoritative(int index) {
+    InterviewSessionEntity entity = new InterviewSessionEntity();
+    entity.setSessionId(SESSION);
+    entity.setStatus(InterviewSessionEntity.SessionStatus.IN_PROGRESS);
+    entity.setCurrentQuestionIndex(index);
+    entity.setTurnVersion(0);
+    entity.setEvaluateEpoch(0L);
+    entity.setLlmProvider("glm");
+    return entity;
+  }
+
+  /** 一次会话的准备：缓存副本 + 数据库权威实体（索引一致） */
+  private void givenSession(List<InterviewQuestionDTO> questions, int index, boolean adaptive) {
+    when(sessionCache.getSession(SESSION)).thenReturn(Optional.of(cached(questions, index, adaptive)));
+    when(persistenceService.findBySessionId(SESSION)).thenReturn(Optional.of(authoritative(index)));
   }
 
   @Test
   @DisplayName("自适应会话：答不上 → 中断追问组切到下一主问题（且不花模型调用）")
   void adaptiveSessionSkipsFollowUpToNextMain() {
     List<InterviewQuestionDTO> questions = linearSession();
-    when(sessionCache.getSession("session-abc")).thenReturn(Optional.of(cached(questions, 0, true)));
+    givenSession(questions, 0, true);
 
     SubmitAnswerResponse response = service.submitAnswer(
-        new SubmitAnswerRequest("session-abc", 0, "不会"));
+        new SubmitAnswerRequest(SESSION, 0, "不会"));
 
     assertThat(response.hasNextQuestion()).isTrue();
     // 决策跳到 Q2（index 2），而不是顺序的 F1a（index 1）
@@ -130,14 +164,12 @@ class InterviewSessionAdaptiveTest {
   @DisplayName("自适应会话：答得好 → 进入该主问题的追问池")
   void adaptiveSessionEntersFollowUpOnGoodAnswer() {
     List<InterviewQuestionDTO> questions = linearSession();
-    when(sessionCache.getSession("session-abc")).thenReturn(Optional.of(cached(questions, 0, true)));
-    when(persistenceService.findBySessionId("session-abc"))
-        .thenReturn(Optional.of(entity("session-abc", true)));
+    givenSession(questions, 0, true);
     when(turnEvaluationService.evaluateTurn(any(), any()))
         .thenReturn(eval(AnswerState.GOOD));
 
     SubmitAnswerResponse response = service.submitAnswer(
-        new SubmitAnswerRequest("session-abc", 0, "堆/栈……"));
+        new SubmitAnswerRequest(SESSION, 0, "堆/栈……"));
 
     assertThat(response.hasNextQuestion()).isTrue();
     assertThat(response.nextQuestion().question()).isEqualTo("F1a: 堆区分代？");
@@ -147,41 +179,33 @@ class InterviewSessionAdaptiveTest {
   @DisplayName("非自适应会话：无论评估结果都按顺序推进下一题")
   void nonAdaptiveSessionKeepsSequentialOrder() {
     List<InterviewQuestionDTO> questions = linearSession();
-    when(sessionCache.getSession("session-abc")).thenReturn(Optional.of(cached(questions, 0, false)));
+    givenSession(questions, 0, false);
 
     SubmitAnswerResponse response = service.submitAnswer(
-        new SubmitAnswerRequest("session-abc", 0, "不会"));
+        new SubmitAnswerRequest(SESSION, 0, "不会"));
 
     // 顺序下一题 = F1a（追问也按顺序问），即使回答是「不会」
     assertThat(response.hasNextQuestion()).isTrue();
     assertThat(response.nextQuestion().question()).isEqualTo("F1a: 堆区分代？");
   }
 
-  private static InterviewSessionEntity entity(String sessionId, boolean adaptive) {
-    InterviewSessionEntity e = new InterviewSessionEntity();
-    e.setSessionId(sessionId);
-    e.setAdaptive(adaptive);
-    e.setLlmProvider("glm");
-    return e;
-  }
-
   @ParameterizedTest
   @MethodSource("unavailableEvaluations")
   @DisplayName("评估不可用仍保存真实答案，直接换主问题且不写占位评分")
   void unavailableEvaluationPreservesAnswerWithoutScore(TurnEvaluation evaluation) {
-    when(sessionCache.getSession("session-abc"))
-        .thenReturn(Optional.of(cached(linearSession(), 0, true)));
+    givenSession(linearSession(), 0, true);
     when(turnEvaluationService.evaluateTurn(any(), any())).thenReturn(evaluation);
 
     SubmitAnswerResponse response = service.submitAnswer(
-        new SubmitAnswerRequest("session-abc", 0, "堆和栈的区别是……"));
+        new SubmitAnswerRequest(SESSION, 0, "堆和栈的区别是……"));
 
     assertThat(response.nextQuestion().questionIndex()).isEqualTo(2);
     assertThat(response.nextQuestion().isFollowUp()).isFalse();
-    verify(persistenceService).saveAnswer(eq("session-abc"), eq(0), anyString(), anyString(),
-        eq("堆和栈的区别是……"), isNull(), isNull(), eq(InterviewAnswerEntity.AnswerState.ANSWERED));
-    verify(persistenceService).updateCurrentQuestionIndex("session-abc", 2);
-    verify(evaluateStreamProducer, never()).sendEvaluateTask(anyString());
+    assertThat(committed.questionIndex()).isEqualTo(0);
+    assertThat(committed.answer()).isEqualTo("堆和栈的区别是……");
+    assertThat(committed.answerState()).isEqualTo(InterviewAnswerEntity.AnswerState.ANSWERED);
+    assertThat(committed.newIndex()).isEqualTo(2);
+    verify(evaluateStreamProducer, never()).sendEvaluateTask(anyString(), anyLong());
   }
 
   private static Stream<TurnEvaluation> unavailableEvaluations() {
@@ -192,20 +216,18 @@ class InterviewSessionAdaptiveTest {
   @MethodSource("unavailableEvaluations")
   @DisplayName("末个主问题评估不可用时不追问，保留答案并照常进入异步报告")
   void unavailableLastEvaluationStillCompletesInterview(TurnEvaluation evaluation) {
-    when(sessionCache.getSession("session-abc"))
-        .thenReturn(Optional.of(cached(linearSession(), 2, true)));
+    givenSession(linearSession(), 2, true);
     when(turnEvaluationService.evaluateTurn(any(), any())).thenReturn(evaluation);
 
     SubmitAnswerResponse response = service.submitAnswer(
-        new SubmitAnswerRequest("session-abc", 2, "Redis 支持 RDB 与 AOF……"));
+        new SubmitAnswerRequest(SESSION, 2, "Redis 支持 RDB 与 AOF……"));
 
     assertThat(response.hasNextQuestion()).isFalse();
     assertThat(response.nextQuestion()).isNull();
-    verify(persistenceService).saveAnswer(eq("session-abc"), eq(2), anyString(), anyString(),
-        eq("Redis 支持 RDB 与 AOF……"), isNull(), isNull(), eq(InterviewAnswerEntity.AnswerState.ANSWERED));
-    verify(persistenceService).updateSessionStatus("session-abc", InterviewSessionEntity.SessionStatus.COMPLETED);
-    verify(persistenceService).updateEvaluateStatus("session-abc", AsyncTaskStatus.PENDING, null);
-    verify(evaluateStreamProducer).sendEvaluateTask("session-abc");
+    assertThat(committed.completing()).isTrue();
+    assertThat(committed.answer()).isEqualTo("Redis 支持 RDB 与 AOF……");
+    assertThat(committed.answerState()).isEqualTo(InterviewAnswerEntity.AnswerState.ANSWERED);
+    verify(evaluateStreamProducer).sendEvaluateTask(eq(SESSION), anyLong());
   }
 
   private static TurnEvaluation eval(AnswerState state) {

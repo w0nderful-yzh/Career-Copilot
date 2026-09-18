@@ -154,12 +154,6 @@ React 展示本轮结果与下一步
 
 ### 4.1 第一批：逐轮提交一致性与实时预算
 
-- [ ] **P4-9a 逐轮请求幂等与会话推进一致性**
-  - 在已有「创建面试幂等」之外，为逐轮提交增加请求标识与预期会话版本；校验当前待答问题和会话状态。
-  - 已处理请求返回原结果，同一标识的不同载荷及过期请求明确拒绝；处理中重复请求不得再次独立推进。
-  - 答案、最终决策、下一题及会话状态在一个短事务内提交，模型调用在事务外；结束与跳过遵循相同并发边界。
-  - 缓存更新跟随数据库提交并可自愈；评估任务触发可重试且不重复产生业务效果。
-  - 验收：重复提交仅推进一次；部分写入失败不留下半状态；用户结束或其他请求推进后，晚到模型结果不得回退 / 重开会话。
 - [ ] **ARCH-2b 实时调用治理收口**
   - 保留已完成的 Python 执行器；将 Java 逐题评估纳入明确的实时调用预算，复用 StructuredOutputInvoker 而不另造调用栈。
   - Python 解析重试共享整个操作的截止时间，不为每次尝试重置完整额度；Java 同样按剩余预算执行。
@@ -363,7 +357,31 @@ POST /api/profile/repair/skip-semantics     复核「已标记作答但得 0 分
 - [x] **ARCH-1 契约单一事实源**：AgentToolRequests 类型化请求导出正式 Schema，Java / Python 两侧校验未知参数、类型与约束；Java 导出产物、文档 golden 和 Python 包内副本由漂移测试校验。
   - 契约产物：`docs/contracts/agent-tools.json` 与 `agent-service/src/career_copilot/contracts/agent-tools.json`。
   - 再生成：`AGENT_TOOLS_SCHEMA_WRITE=true ./gradlew :app:test --tests "*AgentToolContractTest*"`，再将文档产物同步到 Python 包内副本并运行两侧契约测试。
-  - 已接入简历、focus 等参数行为测试；新时间 / 节奏 / 逐轮幂等契约随对应开发批次补测。
+  - 已接入简历、focus 等参数行为测试；时间 / 节奏相关参数随第二批补测（逐轮幂等由前端直连 Java、不经 Agent Tool，见 7.8）。
 - [x] **创建面试请求幂等透传**：前端确认流程生成稳定 requestId，Python 传至 Java；配置变化换新标识。此项仅覆盖创建，逐轮提交一致性见 P4-9a。
 - [x] **ARCH-2a Python 执行器与 Prompt 治理**：模型调用收敛到 LlmExecutor，结构化解析与契约校验、错误分类、结果状态、逻辑尝试次数和耗时可观测；Prompt 资源具有 ID 与版本，流式不由执行器重放。
   - 已有实时 / 后台预算配置和有限解析重试；每操作共享截止时间、底层 SDK 重试配置及 Java 实时评估治理尚未收口，见 ARCH-2b，不能据此宣称端到端延迟达标。
+
+### 7.8 逐轮提交幂等与推进一致性（P4-9a）
+
+- [x] **请求标识 + 预期版本 + 单事务落库**：逐轮提交（作答 / 跳过 / 结束）带请求标识与预期会话版本；
+  `interview_sessions.turn_version` 随每次推进 +1，条件更新同时校验「版本 / 当前待答题 / 会话仍在进行中」，
+  影响 0 行即拒绝。答案事实、索引、状态、评估请求与幂等记录在**同一个短事务**里提交，模型调用仍在其外。
+- [x] **幂等记录表 `interview_turn_requests`**（`V20260919`）：`(session_id, request_id)` 唯一，保存动作、载荷指纹、原结果与前后版本。
+  已处理请求返回原结果；同一标识换了载荷返回 `INTERVIEW_TURN_REQUEST_CONFLICT`；
+  处理中重复请求由 Redis 占位拒绝（`INTERVIEW_TURN_IN_PROGRESS`），不再重复花模型调用。
+- [x] **旧调用兼容与结束边界**：不带标识时退化为「索引 + 状态」闸门（版本取数据库当前值）；
+  已结束的会话一律拒绝，不再出现「提交把 COMPLETED 写回 IN_PROGRESS」。
+- [x] **缓存跟随提交并可自愈**：题目列表 / 索引 / 状态 / 版本在提交成功后一次写齐；版本或待答题不匹配时，
+  先用数据库实体重建缓存再返回可见原因（`INTERVIEW_TURN_STALE` / `INTERVIEW_TURN_INDEX_MISMATCH`）。
+- [x] **评估触发不重复产生业务效果**：`evaluate_epoch` 随 Stream 消息投递，消费端原子领取「代次一致且未完成」的任务，
+  代次落后的触发直接丢弃；重试先把评估状态置回 PENDING 再入队（否则领取判据会让重试静默无效）。
+- [x] **前端接入**：Interview Mode 的提交 / 跳过 / 结束生成请求标识（同一次提交的重试复用同一标识）并回传 `turnVersion`；
+  请求层保留业务错误码，过期类错误触发回源同步并给出可见提示。
+- [x] **已验证**（2026-09-18，本机）：
+  - Java：`./gradlew :app:test --no-daemon` 全绿，其中 `InterviewTurnConsistencyTest` 11 例（幂等 / 冲突 / 过期 / 处理中 / 已结束 / 非当前题）、
+    `InterviewTurnConsistencyIntegrationTest` 4 例**真跑本地 dev 库**（重复推进只生效一次且只留一行答案、版本不符的提交不落任何写入、
+    最后一轮的状态与评估请求同批落地、晚到提交无法重开已结束会话）；`SkillProfilePipelineIntegrationTest` 复用同一数据库门控类。
+  - 前端：`pnpm run build`、13 个 `test:*` 脚本（新增 `test:interview-turn-sync` 并已同步进 CI）、`pnpm run test:e2e` 11 例通过。
+  - 集成测试抓到并修掉一处被 mock 掩盖的缺陷：提前交卷曾按「普通作答」推进（把已结束的会话写回 IN_PROGRESS + 移动索引）。
+  - 逐轮提交由前端直连 Java，不经 Agent Tool，因此本次没有新增契约产物。

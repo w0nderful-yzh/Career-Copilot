@@ -120,6 +120,11 @@ public final class AsyncTaskStreamConstants {
      */
     public static final String FIELD_SESSION_ID = "sessionId";
 
+    /**
+     * 评估代次字段（P4-9a）：每次请求评估 +1，消费端只执行不低于当前代次的消息
+     */
+    public static final String FIELD_EVALUATE_EPOCH = "evaluateEpoch";
+
     // ========== 语音面试评估 Stream 配置 ==========
 
     /**

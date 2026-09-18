@@ -58,12 +58,19 @@ export const interviewApi = {
   },
 
   /**
-   * 提交答案
+   * 提交答案（P4-9a：带请求标识与预期会话版本）。
+   *
+   * 重复发送同一个 requestId 时服务端返回原结果，不会再次推进——重试可以直接复用标识。
    */
   async submitAnswer(req: SubmitAnswerRequest): Promise<SubmitAnswerResponse> {
     return request.post<SubmitAnswerResponse>(
       `/api/interview/sessions/${req.sessionId}/answers`,
-      { questionIndex: req.questionIndex, answer: req.answer },
+      {
+        questionIndex: req.questionIndex,
+        answer: req.answer,
+        requestId: req.requestId,
+        expectedVersion: req.expectedVersion,
+      },
       {
         timeout: 180000, // 3分钟超时
       }
@@ -92,14 +99,19 @@ export const interviewApi = {
   },
 
   /**
-   * 跳过当前题（P4Q-5 一等动作）。
+   * 跳过当前题（P4Q-5 一等动作，P4-9a 与提交共用同一条推进链路）。
    *
    * Java 侧不调模型、不追问、不计分、不产生画像证据——与「答错」严格区分。
    */
-  async skipQuestion(sessionId: string, questionIndex: number): Promise<SubmitAnswerResponse> {
+  async skipQuestion(
+    sessionId: string,
+    questionIndex: number,
+    requestId?: string,
+    expectedVersion?: number,
+  ): Promise<SubmitAnswerResponse> {
     return request.post<SubmitAnswerResponse>(
       `/api/interview/sessions/${sessionId}/skip`,
-      { questionIndex }
+      { questionIndex, requestId, expectedVersion }
     );
   },
 
@@ -136,9 +148,16 @@ export const interviewApi = {
   },
 
   /**
-   * 提前交卷
+   * 提前交卷（P4-9a：与逐轮推进同一并发边界，带请求标识即可安全重试）
    */
-  async completeInterview(sessionId: string): Promise<void> {
-    return request.post<void>(`/api/interview/sessions/${sessionId}/complete`);
+  async completeInterview(
+    sessionId: string,
+    requestId?: string,
+    expectedVersion?: number,
+  ): Promise<void> {
+    return request.post<void>(
+      `/api/interview/sessions/${sessionId}/complete`,
+      { requestId, expectedVersion }
+    );
   },
 };

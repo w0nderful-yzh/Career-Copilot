@@ -34,4 +34,6 @@ agent-service/**/__pycache__/
 agent-service/.ruff_cache/
 agent-service/.mypy_cache/
 agent-service/.pytest_cache/
+agent-service/.langgraph_api/
 .dev-logs/
+.DS_Store

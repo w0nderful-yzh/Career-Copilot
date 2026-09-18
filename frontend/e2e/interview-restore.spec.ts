@@ -31,42 +31,76 @@ function result<T>(code: number, message: string, data: T) {
   return { json: { code, message, data } };
 }
 
-function question(overrides: Record<string, unknown>) {
+function candidate(overrides: Record<string, unknown>) {
   return {
+    questionId: `q${overrides.questionIndex ?? 0}`,
     type: 'MAIN',
     category: 'Java',
     topicSummary: null,
-    userAnswer: null,
-    score: null,
-    feedback: null,
     isFollowUp: false,
-    parentQuestionIndex: null,
+    parentQuestionId: null,
+    followUpIndex: null,
     ...overrides,
   };
 }
 
 /**
- * 自适应题库：2 个主问题 + 各 1 条候选追问。
- * 实际发生：Q1 已答 → F1 被策略跳过（没有作答记录）→ Q2 为当前题。
- * F1 / F2 仍留在题库数组里，这正是「按索引遍历」会出错的地方。
+ * 自适应候选池：2 个主问题 + 各 1 条候选追问（P4-1：素材只描述「可以问什么」）。
+ * 实际发生：Q1 已答 → F1 被策略跳过（没有轮次）→ Q2 为当前题。
  */
-const sessionQuestions = [
-  question({ questionIndex: 0, question: 'Q1: JVM 内存模型？', userAnswer: '堆和栈' }),
-  question({
+const sessionCandidates = [
+  candidate({ questionId: 'q1', questionIndex: 0, question: 'Q1: JVM 内存模型？' }),
+  candidate({
+    questionId: 'q2',
     questionIndex: 1,
     question: 'F1: 堆区分代？',
     isFollowUp: true,
-    parentQuestionIndex: 0,
+    parentQuestionId: 'q1',
+    followUpIndex: 1,
   }),
-  question({ questionIndex: 2, question: 'Q2: Redis 持久化？', category: 'Redis' }),
-  question({
+  candidate({ questionId: 'q3', questionIndex: 2, question: 'Q2: Redis 持久化？', category: 'Redis' }),
+  candidate({
+    questionId: 'q4',
     questionIndex: 3,
     question: 'F2: AOF 重写？',
     category: 'Redis',
     isFollowUp: true,
-    parentQuestionIndex: 2,
+    parentQuestionId: 'q3',
+    followUpIndex: 1,
   }),
 ];
+
+/** 实际轨迹：只有 Q1 真实发生过（F1 被策略跳过，从未提问） */
+const sessionTurns = [
+  {
+    questionId: 'q1',
+    ordinal: 1,
+    questionIndex: 0,
+    question: 'Q1: JVM 内存模型？',
+    category: 'Java',
+    userAnswer: '堆和栈',
+    answerState: 'ANSWERED',
+    decidedAction: 'NEXT_MAIN',
+  },
+];
+
+/** 会话读取的标准桩（P4-1：候选 / 轨迹 / 当前题分开表达） */
+function sessionPayload(overrides: Record<string, unknown> = {}) {
+  return {
+    sessionId: SESSION_ID,
+    resumeText: '',
+    totalQuestions: sessionCandidates.length,
+    currentQuestionIndex: 2,
+    currentQuestionId: 'q3',
+    currentQuestion: sessionCandidates[2],
+    candidates: sessionCandidates,
+    turns: sessionTurns,
+    status: 'IN_PROGRESS',
+    adaptive: true,
+    turnVersion: 1,
+    ...overrides,
+  };
+}
 
 const interviewSessionBlock = {
   type: 'interview_session',
@@ -124,15 +158,7 @@ test.describe('Interview Mode 刷新恢复', () => {
     await mockConversation(page);
     await page.route(sessionUrl, (route) =>
       route.fulfill(
-        result(200, 'success', {
-          sessionId: SESSION_ID,
-          resumeText: '',
-          totalQuestions: sessionQuestions.length,
-          currentQuestionIndex: 2,
-          questions: sessionQuestions,
-          status: 'IN_PROGRESS',
-          adaptive: true,
-        }),
+        result(200, 'success', sessionPayload()),
       ),
     );
 
@@ -163,15 +189,14 @@ test.describe('Interview Mode 刷新恢复', () => {
     let finished = false;
     await page.route(sessionUrl, (route) =>
       route.fulfill(
-        result(200, 'success', {
-          sessionId: SESSION_ID,
-          resumeText: '',
-          totalQuestions: sessionQuestions.length,
-          currentQuestionIndex: finished ? 4 : 2,
-          questions: sessionQuestions,
-          status: finished ? 'EVALUATED' : 'IN_PROGRESS',
-          adaptive: true,
-        }),
+        result(200, 'success', sessionPayload(finished
+          ? {
+              status: 'EVALUATED',
+              currentQuestion: null,
+              currentQuestionId: null,
+              endReason: 'USER_FINISHED',
+            }
+          : {})),
       ),
     );
     await page.route(completeUrl, (route) => {
@@ -218,15 +243,14 @@ test.describe('Interview Mode 刷新恢复', () => {
     let finished = false;
     await page.route(sessionUrl, (route) =>
       route.fulfill(
-        result(200, 'success', {
-          sessionId: SESSION_ID,
-          resumeText: '',
-          totalQuestions: sessionQuestions.length,
-          currentQuestionIndex: finished ? 4 : 2,
-          questions: sessionQuestions,
-          status: finished ? 'EVALUATED' : 'IN_PROGRESS',
-          adaptive: true,
-        }),
+        result(200, 'success', sessionPayload(finished
+          ? {
+              status: 'EVALUATED',
+              currentQuestion: null,
+              currentQuestionId: null,
+              endReason: 'USER_FINISHED',
+            }
+          : {})),
       ),
     );
     await page.route(completeUrl, (route) => {
@@ -284,15 +308,14 @@ test.describe('Interview Mode 刷新恢复', () => {
     let finished = false;
     await page.route(sessionUrl, (route) =>
       route.fulfill(
-        result(200, 'success', {
-          sessionId: SESSION_ID,
-          resumeText: '',
-          totalQuestions: sessionQuestions.length,
-          currentQuestionIndex: finished ? 4 : 2,
-          questions: sessionQuestions,
-          status: finished ? 'EVALUATED' : 'IN_PROGRESS',
-          adaptive: true,
-        }),
+        result(200, 'success', sessionPayload(finished
+          ? {
+              status: 'EVALUATED',
+              currentQuestion: null,
+              currentQuestionId: null,
+              endReason: 'USER_FINISHED',
+            }
+          : {})),
       ),
     );
     await page.route(completeUrl, (route) => {
@@ -319,8 +342,8 @@ test.describe('Interview Mode 刷新恢复', () => {
               afterScore: 72,
               delta: 12,
               sessionEvidences: [
-                { sourceId: `${SESSION_ID}:0`, questionIndex: 0, score: 80, occurredAt: '2026-09-15T10:05:00' },
-                { sourceId: `${SESSION_ID}:2`, questionIndex: 2, score: 64, occurredAt: '2026-09-15T10:12:00' },
+                { sourceId: `${SESSION_ID}:q1`, questionKey: 'q1', questionOrdinal: 1, score: 80, occurredAt: '2026-09-15T10:05:00' },
+                { sourceId: `${SESSION_ID}:q2`, questionKey: 'q2', questionOrdinal: 2, score: 64, occurredAt: '2026-09-15T10:12:00' },
               ],
             },
             {
@@ -329,7 +352,7 @@ test.describe('Interview Mode 刷新恢复', () => {
               afterScore: 55,
               delta: 0,
               sessionEvidences: [
-                { sourceId: `${SESSION_ID}:1`, questionIndex: 1, score: 55, occurredAt: '2026-09-15T10:09:00' },
+                { sourceId: `${SESSION_ID}:q4`, questionKey: 'q4', questionOrdinal: 3, score: 55, occurredAt: '2026-09-15T10:09:00' },
               ],
             },
           ],

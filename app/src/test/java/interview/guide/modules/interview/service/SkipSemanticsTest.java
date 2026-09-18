@@ -191,7 +191,7 @@ class SkipSemanticsTest {
   }
 
   @Test
-  @DisplayName("真实作答照常评估，并按 ANSWERED 预留分数由报告回填")
+  @DisplayName("真实作答照常评估，按 ANSWERED 保存且正式报告前不写占位分")
   void realAnswerIsEvaluatedAndScored() {
     putSession("s7", true);
     when(persistenceService.findBySessionId("s7")).thenReturn(Optional.empty());
@@ -202,7 +202,7 @@ class SkipSemanticsTest {
 
     verify(turnEvaluationService).evaluateTurn(any(), any());
     verify(persistenceService).saveAnswer(
-        eq("s7"), eq(0), anyString(), anyString(), anyString(), eq(0), isNull(),
+        eq("s7"), eq(0), anyString(), anyString(), anyString(), isNull(), isNull(),
         eq(AnswerState.ANSWERED));
   }
 

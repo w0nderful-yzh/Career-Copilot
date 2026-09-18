@@ -12,12 +12,17 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.core.io.DefaultResourceLoader;
 
 import java.util.List;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.TimeoutException;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -111,15 +116,56 @@ class TurnEvaluationServiceTest {
     assertThat(evaluation.coverage()).isEqualTo(1.0);
   }
 
-  @Test
-  @DisplayName("LLM 调用失败时不抛出，回落中性 PARTIAL（不阻塞答题）")
-  void fallsBackWhenLlmFails() throws Exception {
+  @ParameterizedTest
+  @MethodSource("modelFailures")
+  @DisplayName("模型超时、解析或上游失败时返回未知质量，不伪造分数与覆盖率")
+  void fallsBackWhenLlmFails(RuntimeException failure) {
     when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any()))
-        .thenThrow(new BusinessException(ErrorCode.INTERVIEW_EVALUATION_FAILED, "模型不可用"));
+        .thenThrow(failure);
     TurnEvaluation evaluation = service.evaluateTurn(chatClient, TurnEvaluationRequest.of(question(), "回答内容……"));
-    assertThat(evaluation.answerState()).isEqualTo(AnswerState.PARTIAL);
-    assertThat(evaluation.score()).isEqualTo(50);
+    assertUnknown(evaluation);
+  }
+
+  private static Stream<RuntimeException> modelFailures() {
+    return Stream.of(
+        new CompletionException(new TimeoutException("模型超时")),
+        new IllegalArgumentException("结构化输出解析失败"),
+        new BusinessException(ErrorCode.INTERVIEW_EVALUATION_FAILED, "模型不可用"));
+  }
+
+  @ParameterizedTest
+  @MethodSource("missingQualityResults")
+  @DisplayName("返回空结果或没有可用质量判断时不补造 PARTIAL 分数")
+  void missingQualityIsUnavailable(TurnEvalDTO dto) {
+    when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(dto);
+    assertUnknown(service.evaluateTurn(chatClient, TurnEvaluationRequest.of(question(), "真实回答")));
+  }
+
+  private static Stream<TurnEvalDTO> missingQualityResults() {
+    return Stream.of(null,
+        new TurnEvalDTO(null, null, List.of(), List.of(), "", false),
+        new TurnEvalDTO(null, "INVALID", List.of(), List.of(), "", false),
+        new TurnEvalDTO(50, "UNKNOWN", List.of(), List.of(), "", false));
+  }
+
+  private static void assertUnknown(TurnEvaluation evaluation) {
+    assertThat(evaluation.answerState()).isEqualTo(AnswerState.UNKNOWN);
+    assertThat(evaluation.score()).isNull();
+    assertThat(evaluation.coverage()).isNull();
+    assertThat(evaluation.coveredPoints()).isEmpty();
+    assertThat(evaluation.missingPoints()).isEmpty();
+    assertThat(evaluation.recommendedFocus()).isEmpty();
     assertThat(evaluation.evaluatedByLlm()).isFalse();
+    assertThat(evaluation.skipRequested()).isFalse();
+  }
+
+  @Test
+  @DisplayName("缺少质量字段但明确要求跳过时仍保留跳过语义")
+  void skipDoesNotRequireQualityFields() {
+    TurnEvaluation evaluation = TurnEvaluationService.normalize(
+        new TurnEvalDTO(null, null, null, null, null, true));
+    assertThat(evaluation.skipRequested()).isTrue();
+    assertThat(evaluation.answerState()).isEqualTo(AnswerState.NO_ANSWER);
   }
 
   @Test

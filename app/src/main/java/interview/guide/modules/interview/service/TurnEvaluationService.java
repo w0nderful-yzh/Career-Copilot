@@ -31,7 +31,7 @@ import java.util.Set;
  *
  * 延迟与容错：
  * - 「不会 / 跳过」等短回答直接短路 NO_ANSWER，不调 LLM；
- * - 模型失败经 StructuredOutputInvoker 重试后仍失败 → 中性回落，不阻塞答题；
+ * - 模型失败经 StructuredOutputInvoker 重试后仍失败 → UNKNOWN，无评分并停止追问；
  * - prompt 只含当前题、回答与三类参照物（简历片段 / 最近相关问答 / 画像基线），均已按预算裁剪。
  */
 @Service
@@ -165,9 +165,8 @@ public class TurnEvaluationService {
                 question.questionIndex(), evaluation.score(), evaluation.answerState());
             return evaluation;
         } catch (Exception e) {
-            // 评估失败不应阻塞答题：中性回落，决策引擎按未知质量保守推进
-            log.warn("回合评估失败，回落中性结果: questionIndex={}, error={}",
-                question.questionIndex(), e.getMessage());
+            // 失败只说明本轮没有评估依据，不代表用户答得差或部分正确
+            log.warn("回合评估不可用，保守跳过追问: questionIndex={}", question.questionIndex(), e);
             return TurnEvaluation.unknownFallback();
         }
     }
@@ -294,15 +293,26 @@ public class TurnEvaluationService {
      * 归一化模型输出：
      * - score 夹取 0-100；缺失时按 answerState 默认分补齐；
      * - answerState 非法/缺失时按 score 分段推导；
+     * - 两者都不可用时保留 UNKNOWN，不补造默认分；
      * - coverage 由 covered/missing 代码计算。
      */
     static TurnEvaluation normalize(TurnEvalDTO dto) {
+        if (dto == null) {
+            return TurnEvaluation.unknownFallback();
+        }
+        // 跳过是独立指令，不依赖模型是否同时提供了质量字段
+        if (Boolean.TRUE.equals(dto.skipRequested())) {
+            return TurnEvaluation.skipped();
+        }
         AnswerState state = parseState(dto.answerState());
         Integer rawScore = dto.score();
+        if (state == AnswerState.UNKNOWN || (state == null && rawScore == null)) {
+            return TurnEvaluation.unknownFallback();
+        }
         int score;
         if (state == null) {
-            // 状态缺失：由分数推导状态（分数也缺失则取中性 PARTIAL）
-            score = clampScore(rawScore == null ? 55 : rawScore);
+            // 状态缺失但分数可用：沿用分段推导，避免丢弃已有评估依据
+            score = clampScore(rawScore);
             state = TurnEvaluation.stateForScore(score);
         } else {
             // 状态合法：分数缺失则按状态默认分补齐；分数与状态同时存在时以分数为准（仅夹取）
@@ -315,11 +325,6 @@ public class TurnEvaluationService {
         String focus = dto.recommendedFocus() == null ? "" : dto.recommendedFocus().trim();
         if (focus.length() > MAX_FOCUS_CHARS) {
             focus = focus.substring(0, MAX_FOCUS_CHARS);
-        }
-        boolean skipRequested = Boolean.TRUE.equals(dto.skipRequested());
-        // 跳过与「有实质作答」互斥：模型偶尔会同时给出分数与跳过，以代码规则收敛
-        if (skipRequested) {
-            return TurnEvaluation.skipped();
         }
         return new TurnEvaluation(score, coverage, covered, missing, state, focus, true);
     }

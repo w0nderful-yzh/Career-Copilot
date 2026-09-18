@@ -560,7 +560,7 @@ public class InterviewSessionService {
         // 这里写入的内容会经缓存 / 数据库进入刷新恢复路径
         questions.set(index, question.withAnswer(answer).withAnswerState(answerState));
 
-        // 只有真实作答才写分数：跳过/未作答留空，避免被判成 0 分并进入画像证据
+        // 本轮只保存答案事实；正式评分由异步报告回填，不写可被误提取为证据的占位分
         persistSubmittedAnswer(sessionId, index, question, answer, answerState, nextIndex, newStatus);
 
         // 更新 Redis 缓存。DB 已经持久化成功，缓存失败时可由后续读取从数据库恢复。
@@ -591,6 +591,10 @@ public class InterviewSessionService {
      * （DECLINED，只作诊断保留）、有实质作答（ANSWERED，参与评分与画像证据）。
      */
     private static InterviewAnswerEntity.AnswerState answerStateOf(TurnEvaluation evaluation) {
+        if (evaluation == null) {
+            // 评估缺失不等于用户未作答；保留原文，供后续正式报告独立评估
+            return InterviewAnswerEntity.AnswerState.ANSWERED;
+        }
         if (evaluation.skipRequested()) {
             return InterviewAnswerEntity.AnswerState.SKIPPED;
         }
@@ -601,7 +605,7 @@ public class InterviewSessionService {
     }
 
     /**
-     * 逐题轻量评估（同步、低延迟）。评估永不抛出（内部已回落），失败时退化为中性结果，
+     * 逐题轻量评估（同步、低延迟）。评估失败时返回未知质量，
      * 由决策引擎保守推进，保证答题流程不断。
      */
     private TurnEvaluation evaluateTurn(CachedSession session, List<InterviewQuestionDTO> questions,
@@ -656,19 +660,18 @@ public class InterviewSessionService {
     /**
      * 落库这一轮的事实。
      *
-     * <p>P4Q-5：分数只在**真实作答**时预留（由报告回填），跳过/未作答/明确不会一律留空——
-     * 写 0 分会让报告把它显示成「答错」，也会以 0 分进入画像证据（缺陷期间真实发生过）。
+     * <p>正式报告生成前一律不写占位分；逐题评估只服务选题，不能把未知质量或默认值
+     * 当作报告评分。真实作答仍保留 ANSWERED 状态，供异步报告回填与后续证据提取。
      */
     private void persistSubmittedAnswer(String sessionId, int index,
                                         InterviewQuestionDTO question, String answer,
                                         InterviewAnswerEntity.AnswerState answerState,
                                         int newIndex, SessionStatus newStatus) {
         try {
-            boolean counts = answerState == InterviewAnswerEntity.AnswerState.ANSWERED;
             persistenceService.saveAnswer(
                 sessionId, index,
                 question.question(), question.category(),
-                answer, counts ? 0 : null, null, answerState
+                answer, null, null, answerState
             );
             persistenceService.updateCurrentQuestionIndex(sessionId, newIndex);
             persistenceService.updateSessionStatus(sessionId,

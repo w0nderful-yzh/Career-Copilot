@@ -14,6 +14,7 @@ import java.util.List;
  *
  * 规则（LLM 判语义 answerState，代码控边界）：
  * - NO_ANSWER / WRONG / WEAK：中断追问组，切到下一主问题（不对答不上来的人继续施压）；
+ * - 评估缺失 / 失败：同样中断追问组，不把未知质量当成「部分正确」继续深挖；
  * - PARTIAL / GOOD / EXCELLENT：进入该主问题的追问池消费下一追问；
  * - 追问预算 = 池内剩余追问数（每组天然 ≤ followUpCount 条，出题阶段已限）；
  * - 出题去重：同一题只问一次（线性推进 + 仅未问的下一条可被选中）；
@@ -29,7 +30,7 @@ public final class AdaptiveInterviewPolicy {
      *
      * @param questions      全部已生成题目（主问题与追问同列表，线性索引语义）
      * @param answeredIndex  刚答完的题索引；-1 表示尚未开始（取首题）
-     * @param lastEvaluation 刚答完那题的评估；可能为 null（如恢复场景无评估可用，此时按"可深挖"推进）
+     * @param lastEvaluation 刚答完那题的评估；可能为 null（无评估依据时跳过当前追问组）
      * @return 下一题；null 表示面试结束（主问题已全部作答）
      */
     public static InterviewQuestionDTO selectNext(
@@ -67,13 +68,13 @@ public final class AdaptiveInterviewPolicy {
         return nextMainAfter(questions, answeredIndex);
     }
 
-    /** 答不上/答错/偏弱：不再深挖当前主题（代码控边界，见设计文档 §18） */
+    /** 只有有效评估明确支持深挖时才追问，缺失与失败均保守换主问题 */
     private static boolean shouldStopFollowUp(TurnEvaluation evaluation) {
-        if (evaluation == null) {
-            return false;
+        if (evaluation == null || !evaluation.evaluatedByLlm() || evaluation.skipRequested()) {
+            return true;
         }
         AnswerState state = evaluation.answerState();
-        return state == AnswerState.NO_ANSWER || state == AnswerState.WRONG || state == AnswerState.WEAK;
+        return state != AnswerState.PARTIAL && state != AnswerState.GOOD && state != AnswerState.EXCELLENT;
     }
 
     /** 主问题 mainIdx 的追问池中，比 answeredIndex 更靠后的一条（组内顺序消费） */

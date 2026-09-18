@@ -5,9 +5,12 @@ import interview.guide.modules.interview.model.TurnEvaluation;
 import interview.guide.modules.interview.model.TurnEvaluation.AnswerState;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -99,11 +102,33 @@ class AdaptiveInterviewPolicyTest {
     assertThat(AdaptiveInterviewPolicy.selectNext(questions, 3, eval(AnswerState.WRONG))).isNull();
   }
 
-  @Test
-  @DisplayName("评估缺失（恢复场景）时按可深挖推进，不中断")
-  void nullEvaluationTreatsAsDeepen() {
+  @ParameterizedTest
+  @MethodSource("unavailableEvaluations")
+  @DisplayName("评估缺失或失败时跳过整个追问组，末个主题直接结束")
+  void unavailableEvaluationStopsFollowUps(TurnEvaluation evaluation) {
     List<InterviewQuestionDTO> questions = twoTopicSession();
-    InterviewQuestionDTO next = AdaptiveInterviewPolicy.selectNext(questions, 0, null);
-    assertThat(next.question()).isEqualTo("F1a: 堆区如何分代？");
+    for (int index : List.of(0, 1)) {
+      InterviewQuestionDTO next = AdaptiveInterviewPolicy.selectNext(questions, index, evaluation);
+      assertThat(next.question()).isEqualTo("Q2: Redis 持久化？");
+      assertThat(next.isFollowUp()).isFalse();
+    }
+    assertThat(AdaptiveInterviewPolicy.selectNext(questions, 3, evaluation)).isNull();
+  }
+
+  private static Stream<TurnEvaluation> unavailableEvaluations() {
+    return Stream.of(null, TurnEvaluation.unknownFallback());
+  }
+
+  @Test
+  @DisplayName("正常的部分正确、良好与优秀回答仍可追问，跳过与明确不会均换主问题")
+  void keepsEvaluatedAndShortCircuitSemantics() {
+    List<InterviewQuestionDTO> questions = twoTopicSession();
+    for (AnswerState state : List.of(AnswerState.PARTIAL, AnswerState.GOOD, AnswerState.EXCELLENT)) {
+      assertThat(AdaptiveInterviewPolicy.selectNext(questions, 0, eval(state)).isFollowUp()).isTrue();
+    }
+    for (TurnEvaluation evaluation : List.of(TurnEvaluation.skipped(), TurnEvaluation.noAnswer())) {
+      assertThat(AdaptiveInterviewPolicy.selectNext(questions, 0, evaluation).questionIndex())
+          .isEqualTo(3);
+    }
   }
 }

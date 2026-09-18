@@ -8,10 +8,11 @@ import java.util.List;
  * 只服务「下一题怎么问」的决策（FOLLOW_UP / NEXT_QUESTION / UPGRADE ...），
  * 不是整场报告，不落库。score / answerState 语义一致（由服务归一保证）；
  * coverage 由 coveredPoints / missingPoints 按代码计算，避免模型直接输出浮点。
+ * UNKNOWN 表示没有可用评估，分数与覆盖率均为空，不得作为评分证据。
  */
 public record TurnEvaluation(
-    int score,                     // 0-100 该题回答质量分
-    double coverage,               // 期望要点覆盖比例 0.0-1.0
+    Integer score,                 // 0-100 该题回答质量分；评估不可用时为 null
+    Double coverage,               // 期望要点覆盖比例 0.0-1.0；评估不可用时为 null
     List<String> coveredPoints,    // 已答出的期望要点
     List<String> missingPoints,    // 遗漏/答错的期望要点
     AnswerState answerState,       // 语义状态（决策主输入）
@@ -28,7 +29,7 @@ public record TurnEvaluation(
 ) {
 
     /** 兼容构造：未识别到跳过指令 */
-    public TurnEvaluation(int score, double coverage, List<String> coveredPoints,
+    public TurnEvaluation(Integer score, Double coverage, List<String> coveredPoints,
                           List<String> missingPoints, AnswerState answerState,
                           String recommendedFocus, boolean evaluatedByLlm) {
         this(score, coverage, coveredPoints, missingPoints, answerState, recommendedFocus,
@@ -36,11 +37,11 @@ public record TurnEvaluation(
     }
 
     public enum AnswerState {
-        EXCELLENT, GOOD, PARTIAL, WEAK, WRONG, NO_ANSWER
+        EXCELLENT, GOOD, PARTIAL, WEAK, WRONG, NO_ANSWER, UNKNOWN
     }
 
     /** 回答状态 → 默认分数（模型未给分时按状态映射，保证状态与分数自洽） */
-    public static int defaultScoreFor(AnswerState state) {
+    public static Integer defaultScoreFor(AnswerState state) {
         return switch (state) {
             case EXCELLENT -> 90;
             case GOOD -> 75;
@@ -48,6 +49,7 @@ public record TurnEvaluation(
             case WEAK -> 35;
             case WRONG -> 15;
             case NO_ANSWER -> 0;
+            case UNKNOWN -> null;
         };
     }
 
@@ -78,8 +80,8 @@ public record TurnEvaluation(
         return new TurnEvaluation(0, 0.0, List.of(), List.of(), AnswerState.NO_ANSWER, "", false, true);
     }
 
-    /** LLM 评估失败时的中性回落：未知质量按 PARTIAL 处理，由决策引擎保守推进 */
+    /** 无可用评估时保留未知质量，不用虚构的分数或覆盖率驱动追问与画像 */
     public static TurnEvaluation unknownFallback() {
-        return new TurnEvaluation(50, 0.5, List.of(), List.of(), AnswerState.PARTIAL, "", false);
+        return new TurnEvaluation(null, null, List.of(), List.of(), AnswerState.UNKNOWN, "", false);
     }
 }

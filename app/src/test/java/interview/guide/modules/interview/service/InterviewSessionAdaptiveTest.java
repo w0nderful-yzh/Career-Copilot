@@ -1,11 +1,13 @@
 package interview.guide.modules.interview.service;
 
 import interview.guide.common.ai.LlmProviderRegistry;
+import interview.guide.common.model.AsyncTaskStatus;
 import interview.guide.infrastructure.redis.InterviewSessionCache;
 import interview.guide.infrastructure.redis.InterviewSessionCache.CachedSession;
 import interview.guide.infrastructure.redis.RedisService;
 import interview.guide.modules.interview.listener.EvaluateStreamProducer;
 import interview.guide.modules.interview.model.CreateInterviewRequest;
+import interview.guide.modules.interview.model.InterviewAnswerEntity;
 import interview.guide.modules.interview.model.InterviewQuestionDTO;
 import interview.guide.modules.interview.model.InterviewSessionDTO;
 import interview.guide.modules.interview.model.InterviewSessionDTO.SessionStatus;
@@ -18,6 +20,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import tools.jackson.databind.ObjectMapper;
@@ -25,9 +29,13 @@ import tools.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -155,6 +163,49 @@ class InterviewSessionAdaptiveTest {
     e.setAdaptive(adaptive);
     e.setLlmProvider("glm");
     return e;
+  }
+
+  @ParameterizedTest
+  @MethodSource("unavailableEvaluations")
+  @DisplayName("评估不可用仍保存真实答案，直接换主问题且不写占位评分")
+  void unavailableEvaluationPreservesAnswerWithoutScore(TurnEvaluation evaluation) {
+    when(sessionCache.getSession("session-abc"))
+        .thenReturn(Optional.of(cached(linearSession(), 0, true)));
+    when(turnEvaluationService.evaluateTurn(any(), any())).thenReturn(evaluation);
+
+    SubmitAnswerResponse response = service.submitAnswer(
+        new SubmitAnswerRequest("session-abc", 0, "堆和栈的区别是……"));
+
+    assertThat(response.nextQuestion().questionIndex()).isEqualTo(2);
+    assertThat(response.nextQuestion().isFollowUp()).isFalse();
+    verify(persistenceService).saveAnswer(eq("session-abc"), eq(0), anyString(), anyString(),
+        eq("堆和栈的区别是……"), isNull(), isNull(), eq(InterviewAnswerEntity.AnswerState.ANSWERED));
+    verify(persistenceService).updateCurrentQuestionIndex("session-abc", 2);
+    verify(evaluateStreamProducer, never()).sendEvaluateTask(anyString());
+  }
+
+  private static Stream<TurnEvaluation> unavailableEvaluations() {
+    return Stream.of(null, TurnEvaluation.unknownFallback());
+  }
+
+  @ParameterizedTest
+  @MethodSource("unavailableEvaluations")
+  @DisplayName("末个主问题评估不可用时不追问，保留答案并照常进入异步报告")
+  void unavailableLastEvaluationStillCompletesInterview(TurnEvaluation evaluation) {
+    when(sessionCache.getSession("session-abc"))
+        .thenReturn(Optional.of(cached(linearSession(), 2, true)));
+    when(turnEvaluationService.evaluateTurn(any(), any())).thenReturn(evaluation);
+
+    SubmitAnswerResponse response = service.submitAnswer(
+        new SubmitAnswerRequest("session-abc", 2, "Redis 支持 RDB 与 AOF……"));
+
+    assertThat(response.hasNextQuestion()).isFalse();
+    assertThat(response.nextQuestion()).isNull();
+    verify(persistenceService).saveAnswer(eq("session-abc"), eq(2), anyString(), anyString(),
+        eq("Redis 支持 RDB 与 AOF……"), isNull(), isNull(), eq(InterviewAnswerEntity.AnswerState.ANSWERED));
+    verify(persistenceService).updateSessionStatus("session-abc", InterviewSessionEntity.SessionStatus.COMPLETED);
+    verify(persistenceService).updateEvaluateStatus("session-abc", AsyncTaskStatus.PENDING, null);
+    verify(evaluateStreamProducer).sendEvaluateTask("session-abc");
   }
 
   private static TurnEvaluation eval(AnswerState state) {

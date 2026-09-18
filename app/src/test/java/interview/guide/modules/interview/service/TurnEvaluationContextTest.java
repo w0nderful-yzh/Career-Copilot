@@ -6,6 +6,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import interview.guide.common.ai.StructuredOutputInvoker;
+import interview.guide.common.ai.StructuredOutputProperties;
 import interview.guide.modules.interview.model.InterviewAnswerEntity;
 import interview.guide.modules.interview.model.InterviewQuestionDTO;
 import interview.guide.modules.interview.model.TurnEvaluationRequest;
@@ -46,7 +47,8 @@ class TurnEvaluationContextTest {
     service = new TurnEvaluationService(
         invoker,
         new DefaultResourceLoader(),
-        new TurnEvaluationProperties());
+        new TurnEvaluationProperties(),
+        new StructuredOutputProperties());
   }
 
   @Nested
@@ -181,13 +183,14 @@ class TurnEvaluationContextTest {
 
     /** 用 mock invoker 返回 DTO，不触发真实 LLM */
     private void stubEvaluation() {
-      when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any()))
+      when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any(), any()))
           .thenReturn(new TurnEvalDTO(80, "GOOD", List.of(), List.of(), "", null));
     }
 
     private String capturedUserPrompt() {
       ArgumentCaptor<String> userPrompt = ArgumentCaptor.forClass(String.class);
-      verify(invoker).invoke(any(), any(), userPrompt.capture(), any(), any(), any(), any(), any());
+      verify(invoker).invoke(any(), any(), userPrompt.capture(), any(), any(), any(), any(), any(),
+          any());
       return userPrompt.getValue();
     }
   }

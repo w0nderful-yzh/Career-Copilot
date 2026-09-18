@@ -31,6 +31,14 @@ class Settings(BaseSettings):
     # 结构化输出的有限修复重试次数：只针对「解析失败」，网络/超时类错误不重试
     # （重试超时只会把用户的等待翻倍）
     llm_parse_retries: int = 1
+    # 剩余预算低于该值就不再发起新尝试（ARCH-2b）：否则最后一次尝试会把等待
+    # 拖成「预算 + 单次调用耗时」，等于没设预算
+    llm_min_attempt_ms: int = 1500
+    # 输入总长上限（字符）：业务侧已按各自上限裁剪上下文，这里是「调用方忘了裁」的兜底
+    llm_max_input_chars: int = 16000
+    # 结构化输出 token 上限（ARCH-2b）：结构化结果本来就短，封顶挡的是模型开始写小作文；
+    # 自由文本与流式不设限，长度由各自提示词与上下文上限控制
+    llm_max_output_tokens: int = 1024
 
     agent_service_host: str = "0.0.0.0"
     agent_service_port: int = 8000

@@ -1,6 +1,7 @@
 package interview.guide.modules.interview.service;
 
 import interview.guide.common.ai.StructuredOutputInvoker;
+import interview.guide.common.ai.StructuredOutputProperties;
 import interview.guide.common.exception.BusinessException;
 import interview.guide.common.exception.ErrorCode;
 import interview.guide.modules.interview.model.InterviewQuestionDTO;
@@ -50,7 +51,8 @@ class TurnEvaluationServiceTest {
     service = new TurnEvaluationService(
         invoker,
         new DefaultResourceLoader(),
-        new TurnEvaluationProperties()
+        new TurnEvaluationProperties(),
+        new StructuredOutputProperties()
     );
   }
 
@@ -76,7 +78,7 @@ class TurnEvaluationServiceTest {
   @DisplayName("模型输出归一：状态合法则按状态默认分补齐缺失分数，coverage 由要点列表计算")
   void normalizesModelOutputWhenScoreMissing() throws Exception {
     TurnEvalDTO dto = new TurnEvalDTO(null, "PARTIAL", List.of("触发条件"), List.of("发生区域", "STW"), "GC 触发细节", null);
-    when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(dto);
+    when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(dto);
 
     TurnEvaluation evaluation = service.evaluateTurn(chatClient, TurnEvaluationRequest.of(question(), "Young 代满会触发 Minor GC……"));
 
@@ -93,13 +95,13 @@ class TurnEvaluationServiceTest {
   @DisplayName("分数越界时夹取到 0-100，状态缺失时按分数推导")
   void clampsScoreAndDerivesStateWhenStateMissing() throws Exception {
     TurnEvalDTO high = new TurnEvalDTO(120, null, List.of(), List.of(), "", null);
-    when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(high);
+    when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(high);
     TurnEvaluation evaluation = service.evaluateTurn(chatClient, TurnEvaluationRequest.of(question(), "非常完整的回答……"));
     assertThat(evaluation.score()).isEqualTo(100);
     assertThat(evaluation.answerState()).isEqualTo(AnswerState.EXCELLENT);
 
     TurnEvalDTO negative = new TurnEvalDTO(-5, null, List.of(), List.of(), "", null);
-    when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(negative);
+    when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(negative);
     TurnEvaluation low = service.evaluateTurn(chatClient, TurnEvaluationRequest.of(question(), "回答错误……"));
     assertThat(low.score()).isZero();
     assertThat(low.answerState()).isEqualTo(AnswerState.WRONG);
@@ -109,7 +111,7 @@ class TurnEvaluationServiceTest {
   @DisplayName("score 与 answerState 同时存在时以分数为准，状态自洽不需要强行改写")
   void keepsScoreAndStateWhenBothPresent() throws Exception {
     TurnEvalDTO dto = new TurnEvalDTO(88, "EXCELLENT", List.of("触发条件", "发生区域", "STW"), List.of(), "", null);
-    when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(dto);
+    when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(dto);
     TurnEvaluation evaluation = service.evaluateTurn(chatClient, TurnEvaluationRequest.of(question(), "回答很完整……"));
     assertThat(evaluation.score()).isEqualTo(88);
     assertThat(evaluation.answerState()).isEqualTo(AnswerState.EXCELLENT);
@@ -120,7 +122,7 @@ class TurnEvaluationServiceTest {
   @MethodSource("modelFailures")
   @DisplayName("模型超时、解析或上游失败时返回未知质量，不伪造分数与覆盖率")
   void fallsBackWhenLlmFails(RuntimeException failure) {
-    when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any()))
+    when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any(), any()))
         .thenThrow(failure);
     TurnEvaluation evaluation = service.evaluateTurn(chatClient, TurnEvaluationRequest.of(question(), "回答内容……"));
     assertUnknown(evaluation);
@@ -137,7 +139,7 @@ class TurnEvaluationServiceTest {
   @MethodSource("missingQualityResults")
   @DisplayName("返回空结果或没有可用质量判断时不补造 PARTIAL 分数")
   void missingQualityIsUnavailable(TurnEvalDTO dto) {
-    when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(dto);
+    when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(dto);
     assertUnknown(service.evaluateTurn(chatClient, TurnEvaluationRequest.of(question(), "真实回答")));
   }
 
@@ -173,7 +175,7 @@ class TurnEvaluationServiceTest {
   void noExpectedPointsYieldsNeutralCoverage() throws Exception {
     InterviewQuestionDTO bare = InterviewQuestionDTO.create(0, "简单介绍下 JVM？", "JVM", "JVM");
     TurnEvalDTO dto = new TurnEvalDTO(80, "GOOD", List.of(), List.of(), "", null);
-    when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(dto);
+    when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(dto);
     TurnEvaluation evaluation = service.evaluateTurn(chatClient, TurnEvaluationRequest.of(bare, "回答……"));
     assertThat(evaluation.score()).isEqualTo(80);
     assertThat(evaluation.answerState()).isEqualTo(AnswerState.GOOD);

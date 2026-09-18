@@ -43,6 +43,8 @@ def _chat_model(model: str, temperature: float) -> ChatOpenAI:
         base_url=settings.llm_base_url,
         temperature=temperature,
         timeout=settings.llm_timeout_seconds,
+        # 与 chat.py 同源：重试责任只在 LlmExecutor（ARCH-2b），Studio 里也要一致
+        max_retries=0,
     )
 
 
@@ -54,6 +56,9 @@ def _studio_deps() -> GraphDeps:
             _chat_model(settings.llm_model, temperature=0.3),
             default_timeout=settings.llm_timeout_background_seconds,
             parse_retries=settings.llm_parse_retries,
+            min_attempt_ms=settings.llm_min_attempt_ms,
+            max_input_chars=settings.llm_max_input_chars,
+            max_output_tokens=settings.llm_max_output_tokens,
         )
         _deps = GraphDeps(
             intent_router=IntentRouter(
@@ -61,6 +66,9 @@ def _studio_deps() -> GraphDeps:
                     _chat_model(settings.llm_intent_model, temperature=0.0),
                     default_timeout=settings.llm_timeout_realtime_seconds,
                     parse_retries=settings.llm_parse_retries,
+                    min_attempt_ms=settings.llm_min_attempt_ms,
+                    max_input_chars=settings.llm_max_input_chars,
+                    max_output_tokens=settings.llm_max_output_tokens,
                 )
             ),
             answerer=Answerer(llm),

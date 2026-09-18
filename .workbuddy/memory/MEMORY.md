@@ -46,11 +46,13 @@ Java = System of Record；Python 只做编排，禁止直连业务库，业务�
 `docs/TodoList.md` 7.7 的命令重导出，并把 `docs/contracts/agent-tools.json` 复制进 Python 包内副本。
 两侧都拒未知参数（Python 12002）。**Schema 片段禁用 `Map.of`（顺序不稳）→ 统一 LinkedHashMap**。
 
-## LLM 执行（ARCH-2）
-Python 唯一入口 `agent/llm.py::LlmExecutor`；`LlmResult` 区分「调用失败」与「无内容」，失败时
-`unwrap()` 抛 `LlmFailure`。预算两档 realtime / background，解析重试只针对 PARSE_FAILED；流式不重试。
-Prompt 在 `prompts/*.md`（头部带 id/version，改内容必须递增）。Java 对应 `StructuredOutputInvoker`
-+ `resources/prompts/*.st`。
+## LLM 执行（ARCH-2 / 2b）
+Python 唯一入口 `agent/llm.py::LlmExecutor`。**重试责任只有这一层**：`ChatOpenAI(max_retries=0)`、
+Java `spring.ai.retry.max-attempts=1` 都是刻意关掉的，attempts 即实际请求数。
+**一次操作共享一个 deadline**：解析重试只用剩余预算，剩余低于 `llm_min_attempt_ms` 不再发起。
+`LlmResult` 带 attempts / requests / budget_ms / budget_exhausted；失败分类 TIMEOUT / PARSE_FAILED / UPSTREAM 进指标。
+Java 预算走 `StructuredCallPolicy`（realtime 默认 8s/2 次，background 不限），逐题评估用实时档。
+Prompt 在 `prompts/*.md`（带 id/version，改内容必须递增）；Java 对应 `StructuredOutputInvoker` + `resources/prompts/*.st`。
 
 ## 面试状态与答案语义
 - 异步评估只写 DB；唯一漂移窗口是「缓存 COMPLETED 但报告待生成」，`getSession` 仅在该窗口回源自愈。

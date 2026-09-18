@@ -165,6 +165,16 @@ app:
     structured-metrics-enabled: ${APP_AI_STRUCTURED_METRICS_ENABLED:true}
     # 是否启用 Spring AI 2.0 entity schema validation retry（失败时仍受 structured-max-attempts 外层控制）
     structured-schema-validation-enabled: ${APP_AI_STRUCTURED_SCHEMA_VALIDATION_ENABLED:true}
+    # ===== 结构化调用的预算（ARCH-2b）=====
+    # 重试责任只有 StructuredOutputInvoker 一层：底层 spring.ai.retry.max-attempts=1 已显式关闭，
+    # 因此「尝试次数」就是实际模型请求数，不会出现日志说 1 次、上游计费 3 次。
+    # 预算按**整个操作**计（含解析重试），不是每次尝试各给一份：
+    # 后台档默认不限（异步任务允许慢，由 HTTP 超时兜底）；实时档必须有界——用户正在等。
+    structured-background-budget-ms: ${APP_AI_STRUCTURED_BACKGROUND_BUDGET_MS:0}
+    structured-realtime-budget-ms: ${APP_AI_STRUCTURED_REALTIME_BUDGET_MS:8000}
+    structured-realtime-max-attempts: ${APP_AI_STRUCTURED_REALTIME_MAX_ATTEMPTS:2}
+    # 剩余预算低于该值就不再发起新尝试（否则最坏等待会变成「预算 + 单次耗时」）
+    structured-realtime-min-attempt-ms: ${APP_AI_STRUCTURED_REALTIME_MIN_ATTEMPT_MS:1200}
     rag:
       rewrite:
         enabled: ${APP_AI_RAG_REWRITE_ENABLED:true}

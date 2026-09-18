@@ -58,6 +58,10 @@ def _openai_model(model: str, temperature: float) -> ChatOpenAI:
     """构造 OpenAI 兼容模型客户端，连接信息来自同步的 Agent Provider 配置。
 
     同步成功时使用 Java 侧配置的模型；回落 .env 时才使用调用方传入的模型参数。
+
+    **ARCH-2b：关掉 SDK 层重试**（``max_retries=0``）。默认值 2 会让「一次逻辑尝试」
+    实际打出 3 个请求：观测到的耗时对不上账，超时预算也被悄悄吃掉。
+    重试责任统一由 :class:`LlmExecutor` 承担（只针对解析失败，且共享同一截止时间）。
     """
     base_url, api_key, synced_model = _resolve_llm_config()
     return ChatOpenAI(
@@ -67,6 +71,8 @@ def _openai_model(model: str, temperature: float) -> ChatOpenAI:
         temperature=temperature,
         # 单次调用超时：模型侧卡住时快速失败，避免 SSE 无限挂起（前端"无响应"）
         timeout=settings.llm_timeout_seconds,
+        # 唯一重试责任层在执行器：这里的隐藏重试必须为 0
+        max_retries=0,
     )
 
 
@@ -128,6 +134,9 @@ async def get_llm_executor() -> LlmExecutor:
         _openai_model(settings.llm_model, temperature=0.3),
         default_timeout=settings.llm_timeout_background_seconds,
         parse_retries=settings.llm_parse_retries,
+        min_attempt_ms=settings.llm_min_attempt_ms,
+        max_input_chars=settings.llm_max_input_chars,
+        max_output_tokens=settings.llm_max_output_tokens,
     )
 
 
@@ -146,6 +155,9 @@ async def get_intent_router() -> IntentRouter:
             _openai_model(settings.llm_intent_model, temperature=0.0),
             default_timeout=settings.llm_timeout_realtime_seconds,
             parse_retries=settings.llm_parse_retries,
+            min_attempt_ms=settings.llm_min_attempt_ms,
+            max_input_chars=settings.llm_max_input_chars,
+            max_output_tokens=settings.llm_max_output_tokens,
         )
     )
 

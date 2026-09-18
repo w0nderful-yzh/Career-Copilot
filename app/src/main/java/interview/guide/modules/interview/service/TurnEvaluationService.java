@@ -1,6 +1,8 @@
 package interview.guide.modules.interview.service;
 
+import interview.guide.common.ai.StructuredCallPolicy;
 import interview.guide.common.ai.StructuredOutputInvoker;
+import interview.guide.common.ai.StructuredOutputProperties;
 import interview.guide.common.exception.ErrorCode;
 import interview.guide.modules.interview.model.InterviewQuestionDTO;
 import interview.guide.modules.interview.model.TurnEvaluation;
@@ -91,6 +93,8 @@ public class TurnEvaluationService {
     private final PromptTemplate userPromptTemplate;
     private final BeanOutputConverter<TurnEvalDTO> outputConverter;
     private final StructuredOutputInvoker structuredOutputInvoker;
+    /** 实时档预算配置（ARCH-2b）：逐轮评估在用户等待路径上，必须有明确截止时间 */
+    private final StructuredOutputProperties structuredOutputProperties;
 
     /**
      * LLM 回合评估输出。组件名即 JSON 字段名（camelCase），
@@ -109,8 +113,10 @@ public class TurnEvaluationService {
     public TurnEvaluationService(
             StructuredOutputInvoker structuredOutputInvoker,
             ResourceLoader resourceLoader,
-            TurnEvaluationProperties properties) throws IOException {
+            TurnEvaluationProperties properties,
+            StructuredOutputProperties structuredOutputProperties) throws IOException {
         this.structuredOutputInvoker = structuredOutputInvoker;
+        this.structuredOutputProperties = structuredOutputProperties;
         this.systemPromptTemplate = loadTemplate(resourceLoader, properties.getSystemPromptPath());
         this.userPromptTemplate = loadTemplate(resourceLoader, properties.getUserPromptPath());
         this.outputConverter = new BeanOutputConverter<>(TurnEvalDTO.class);
@@ -158,7 +164,9 @@ public class TurnEvaluationService {
         try {
             TurnEvalDTO dto = structuredOutputInvoker.invoke(
                 chatClient, systemPrompt, userPrompt, outputConverter,
-                ErrorCode.INTERVIEW_EVALUATION_FAILED, "回合评估失败：", "回合评估", log
+                ErrorCode.INTERVIEW_EVALUATION_FAILED, "回合评估失败：", "回合评估", log,
+                // 实时档：整个操作（含解析重试）共享一个预算，最坏等待可控（ARCH-2b）
+                StructuredCallPolicy.realtime(structuredOutputProperties)
             );
             TurnEvaluation evaluation = normalize(dto);
             log.debug("回合评估完成: question={}, score={}, state={}",

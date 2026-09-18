@@ -8,6 +8,7 @@ import json
 from typing import Any
 
 import pytest
+from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel
 
 from career_copilot.agent.llm import (
@@ -50,13 +51,57 @@ class _SlowModel:
         return FakeChatResult("late")
 
 
+class _SlowScriptedModel(_ScriptedModel):
+    """先慢后快：第一次调用吃掉大部分预算，用来验证解析重试共享同一个截止时间。"""
+
+    def __init__(self, delay: float, *responses: Any) -> None:
+        super().__init__(*responses)
+        self._delay = delay
+
+    async def ainvoke(self, messages: list) -> FakeChatResult:
+        await asyncio.sleep(self._delay)
+        return FakeChatResult(self._next())
+
+
+class _RecordingModel(_ScriptedModel):
+    """记录收到的消息与调用期参数（bind），用于验证输入截断与输出封顶。"""
+
+    def __init__(self, *responses: Any) -> None:
+        super().__init__(*responses)
+        self.messages: list = []
+        self.binds: list[dict[str, Any]] = []
+
+    def bind(self, **kwargs: Any) -> "_RecordingModel":
+        self.binds.append(kwargs)
+        return self
+
+    async def ainvoke(self, messages: list) -> FakeChatResult:
+        self.messages = messages
+        return await super().ainvoke(messages)
+
+
 class _Draft(BaseModel):
     direction: str
     focus: list[str] = []
 
 
-def _executor(model: Any, *, timeout: float = 1.0, retries: int = 1) -> LlmExecutor:
-    return LlmExecutor(model, default_timeout=timeout, parse_retries=retries)
+def _executor(
+    model: Any,
+    *,
+    timeout: float = 1.0,
+    retries: int = 1,
+    min_attempt_ms: int = 1500,
+    max_input_chars: int | None = None,
+    max_output_tokens: int | None = None,
+) -> LlmExecutor:
+    return LlmExecutor(
+        model,
+        default_timeout=timeout,
+        parse_retries=retries,
+        min_attempt_ms=min_attempt_ms,
+        max_input_chars=max_input_chars,
+        max_output_tokens=max_output_tokens,
+    )
 
 
 async def test_text_success_is_recorded_with_prompt_version():
@@ -170,3 +215,82 @@ async def test_stream_does_not_retry():
 
     assert "".join(collected) == "流式"
     assert model.calls == 1
+
+
+# ===== ARCH-2b：预算共享、重试责任、长度上限 =====
+
+
+async def test_parse_retry_shares_one_deadline():
+    """第一次尝试吃掉大部分预算后不再发起第二次：总等待不因重试成倍增长。
+
+    这是 ARCH-2b 的核心验收：重试共享一整次操作的截止时间，而不是每次重置完整额度。
+    """
+    model = _SlowScriptedModel(0.6, "不是 JSON", '{"direction": "java"}')
+
+    result = await _executor(model, timeout=1.0, retries=1).json(
+        load("interview_proposal"), [], _Draft
+    )
+
+    assert model.calls == 1
+    assert result.requests == 1
+    assert result.error is LlmErrorKind.TIMEOUT
+    assert result.budget_exhausted, "失败原因要说清是「预算用尽」而不是「模型一直不合契约」"
+    assert result.latency_ms <= result.budget_ms
+
+
+async def test_parse_retry_still_happens_when_budget_allows():
+    """预算充足时解析重试照常发生，且仍然总时长受预算约束。"""
+    model = _SlowScriptedModel(0.05, "不是 JSON", '{"direction": "java-backend"}')
+
+    result = await _executor(model, timeout=2.0, retries=1).json(
+        load("interview_proposal"), [], _Draft
+    )
+
+    assert result.ok and result.attempts == 2
+    assert model.calls == 2
+    assert result.requests == result.attempts, "没有隐藏的 SDK 重试：请求数应等于逻辑尝试数"
+
+
+async def test_sdk_hidden_retry_is_disabled_in_production_model():
+    """重试责任只有一层：生产模型客户端的 SDK 重试必须为 0。
+
+    这条断言防的是「把重试打开后排查现场对不上账」——逻辑 1 次尝试背后打了 3 个请求。
+    """
+    import inspect
+
+    from career_copilot.api import chat
+
+    source = inspect.getsource(chat._openai_model)
+    assert "max_retries=0" in source
+    assert "timeout=settings.llm_timeout_seconds" in source
+
+
+async def test_input_overflow_is_truncated_with_readable_marker():
+    """输入超长时截断最后一条消息并留标记；系统提示与前面的上下文保持完整。"""
+    model = _RecordingModel("ok")
+    long_text = "甲" * 200
+
+    await _executor(model, max_input_chars=80).text(
+        load("answer"),
+        [
+            SystemMessage(content="系统指令"),
+            HumanMessage(content=long_text),
+        ],
+    )
+
+    assert model.messages[0].content == "系统指令"
+    assert len(model.messages[-1].content) <= 80
+    assert "已截断" in model.messages[-1].content
+
+
+async def test_structured_output_is_token_capped_but_text_is_not():
+    """结构化输出封顶（挡「写小作文」），自由文本不截断用户可见的答案。"""
+    structured = _RecordingModel('{"direction": "java"}')
+    await _executor(structured, max_output_tokens=512).json(
+        load("interview_proposal"), [], _Draft
+    )
+    assert structured.binds == [{"max_tokens": 512, "response_format": {"type": "json_object"}}]
+
+    plain = _RecordingModel("一段很长的回答")
+    await _executor(plain, max_output_tokens=512).text(load("answer"), [])
+    assert plain.binds == []

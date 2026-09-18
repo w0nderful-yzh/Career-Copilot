@@ -12,6 +12,7 @@ import interview.guide.modules.interview.model.InterviewTurnDTO;
 import interview.guide.modules.interview.model.TurnEvaluation;
 import interview.guide.modules.interview.model.TurnEvaluationRequest;
 import interview.guide.modules.interview.model.TurnEvaluation.AnswerState;
+import interview.guide.modules.interview.model.TurnEvaluation.DifficultyAdjust;
 import interview.guide.modules.interview.model.TurnEvaluation.RecommendedAction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -111,6 +112,10 @@ public class TurnEvaluationService {
     private static final int MAX_QUESTION_ID_CHARS = 64;
     private static final int MAX_DECISION_REASON_CHARS = 120;
     private static final int MAX_TRANSITION_CHARS = 80;
+    /** 受限生成题干上限（P4-4b）：短追问，不重述完整主问题 */
+    private static final int MAX_GENERATED_FOLLOW_UP_CHARS = 120;
+    /** 生成追问引用回答原话的上限（P4-4b）：只要可追溯的片段，不整段复制 */
+    private static final int MAX_ANSWER_BASIS_CHARS = 80;
 
     private final PromptTemplate systemPromptTemplate;
     private final PromptTemplate userPromptTemplate;
@@ -134,14 +139,34 @@ public class TurnEvaluationService {
         String recommendedAction,
         String recommendedQuestionId,
         String decisionReason,
-        String transitionMessage
+        String transitionMessage,
+        /** 受限生成的短追问（P4-4b）：无合适候选且追问预算 > 0 时才非空 */
+        String generatedFollowUp,
+        /** 生成追问的考察点（P4-4b） */
+        String generatedExpectedPoint,
+        /** 生成追问引用的候选人原话（P4-4b） */
+        String generatedAnswerBasis,
+        /** 难度调整信号（P4Q-3c）：EASIER / HARDER / NONE */
+        String difficultyAdjust,
+        /** 是否明确要求停止当前话题深挖（P4Q-3c） */
+        Boolean stopDeepDive
     ) {
         /** 兼容既有单测与历史结构化结果：缺少节奏字段时由 Java 走保守回落策略 */
         TurnEvalDTO(Integer score, String answerState, List<String> coveredPoints,
                     List<String> missingPoints, String recommendedFocus,
                     Boolean skipRequested) {
             this(score, answerState, coveredPoints, missingPoints, recommendedFocus,
-                skipRequested, null, null, null, null);
+                skipRequested, null, null, null, null, null, null, null, null, null);
+        }
+
+        /** P4Q-3b 的 10 参构造：未含受限生成与难度字段 */
+        TurnEvalDTO(Integer score, String answerState, List<String> coveredPoints,
+                    List<String> missingPoints, String recommendedFocus, Boolean skipRequested,
+                    String recommendedAction, String recommendedQuestionId,
+                    String decisionReason, String transitionMessage) {
+            this(score, answerState, coveredPoints, missingPoints, recommendedFocus, skipRequested,
+                recommendedAction, recommendedQuestionId, decisionReason, transitionMessage,
+                null, null, null, null, null);
         }
     }
 
@@ -444,14 +469,18 @@ public class TurnEvaluationService {
     }
 
     /**
-     * 当前追问组剩余可问条数（结构上限，P4Q-2）。
+     * 当前追问组剩余可问条数（运行期追问预算，P4-4b）。
      *
-     * <p>与 {@code AdaptiveInterviewPolicy} 的口径一致：追问只在本组内消费，
-     * 其他组的预置追问策略到不了，也就不算入预算。
+     * <p>与 {@code AdaptiveInterviewPolicy} 的口径一致：追问只在本组内消费，其他组的预置追问
+     * 策略到不了。**候选容量不等于追问预算**：本组未问候选可能比还能追问的条数多，
+     * 因此取 min(组内未问候选数, 每组上限 - 本组已问追问数)。
+     *
+     * @param maxFollowUpsPerGroup 每组追问硬上限；&lt;= 0 表示不限制（退回旧行为，按未问候选数）
      */
     static int remainingFollowUpsFor(List<InterviewQuestionDTO> candidates,
                                      List<InterviewTurnDTO> turns,
-                                     InterviewQuestionDTO current) {
+                                     InterviewQuestionDTO current,
+                                     int maxFollowUpsPerGroup) {
         if (candidates == null || candidates.isEmpty() || current == null) {
             return 0;
         }
@@ -463,11 +492,19 @@ public class TurnEvaluationService {
         if (current.questionId() != null) {
             askedIds.add(current.questionId());
         }
-        return (int) candidates.stream()
+        List<InterviewQuestionDTO> groupFollowUps = candidates.stream()
             .filter(InterviewQuestionDTO::isFollowUp)
             .filter(question -> groupId.equals(question.parentQuestionId()))
+            .toList();
+        long unasked = groupFollowUps.stream()
             .filter(question -> !askedIds.contains(question.questionId()))
             .count();
+        if (maxFollowUpsPerGroup <= 0) {
+            return (int) unasked;
+        }
+        long askedInGroup = groupFollowUps.size() - unasked;
+        int budgetLeft = maxFollowUpsPerGroup - (int) askedInGroup;
+        return (int) Math.max(0, Math.min(unasked, budgetLeft));
     }
 
     /**
@@ -656,8 +693,28 @@ public class TurnEvaluationService {
         String recommendedQuestionId = cleanText(dto.recommendedQuestionId(), MAX_QUESTION_ID_CHARS);
         String decisionReason = cleanText(dto.decisionReason(), MAX_DECISION_REASON_CHARS);
         String transitionMessage = cleanText(dto.transitionMessage(), MAX_TRANSITION_CHARS);
+        // P4-4b：受限生成的短追问及其考察点 / 回答依据（非法时 cleanText 已置空）
+        String generatedFollowUp = cleanText(dto.generatedFollowUp(), MAX_GENERATED_FOLLOW_UP_CHARS);
+        String generatedExpectedPoint = cleanText(dto.generatedExpectedPoint(), MAX_FOCUS_CHARS);
+        String generatedAnswerBasis = cleanText(dto.generatedAnswerBasis(), MAX_ANSWER_BASIS_CHARS);
+        // P4Q-3c：难度与停深挖指令，与答案质量分开保留
+        DifficultyAdjust difficultyAdjust = parseDifficultyAdjust(dto.difficultyAdjust());
+        boolean stopDeepDive = Boolean.TRUE.equals(dto.stopDeepDive());
         return new TurnEvaluation(score, coverage, covered, missing, state, focus, true, false,
-            recommendedAction, recommendedQuestionId, decisionReason, transitionMessage);
+            recommendedAction, recommendedQuestionId, decisionReason, transitionMessage,
+            generatedFollowUp, generatedExpectedPoint, generatedAnswerBasis, difficultyAdjust,
+            stopDeepDive);
+    }
+
+    private static DifficultyAdjust parseDifficultyAdjust(String value) {
+        if (value == null || value.isBlank()) {
+            return DifficultyAdjust.NONE;
+        }
+        try {
+            return DifficultyAdjust.valueOf(value.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            return DifficultyAdjust.NONE;
+        }
     }
 
     private static RecommendedAction parseAction(String action) {

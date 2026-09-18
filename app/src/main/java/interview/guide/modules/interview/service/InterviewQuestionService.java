@@ -47,7 +47,8 @@ public class InterviewQuestionService {
     private static final Logger log = LoggerFactory.getLogger(InterviewQuestionService.class);
 
     private static final String DEFAULT_QUESTION_TYPE = "GENERAL";
-    private static final int MAX_FOLLOW_UP_COUNT = 2;
+    /** 组内候选池容量上限（P4-4b）：素材池可以比追问预算更大，但不无限堆 */
+    private static final int MAX_FOLLOW_UP_CANDIDATES = 5;
     private static final double RESUME_QUESTION_RATIO = 0.6;
 
     private static final String GENERIC_MODE_SYSTEM_APPEND = """
@@ -83,13 +84,21 @@ public class InterviewQuestionService {
     private final PromptTemplate skillUserPromptTemplate;
     private final PromptTemplate resumeSystemPromptTemplate;
     private final PromptTemplate resumeUserPromptTemplate;
+    private final PromptTemplate candidatePrepSystemPromptTemplate;
+    private final PromptTemplate candidatePrepUserPromptTemplate;
     private final BeanOutputConverter<QuestionListDTO> outputConverter;
+    private final BeanOutputConverter<FollowUpListDTO> followUpConverter;
     private final StructuredOutputInvoker structuredOutputInvoker;
     private final InterviewSkillService skillService;
     private final LlmProviderRegistry llmProviderRegistry;
     private final PromptSanitizer promptSanitizer;
     private final ExecutorService questionExecutor;
-    private final int followUpCount;
+    /** 组内候选池容量（P4-4b）：预置多少条追问素材，与运行期追问预算解耦 */
+    private final int followUpCandidateCount;
+    /** 运行期追问预算（P4-4b）：单组最多实际追问几条 */
+    private final int followUpBudget;
+    /** 后台预备阈值（P4-4b）：组内未问追问低于此值时预备；0 = 关闭 */
+    private final int backgroundPrepThreshold;
 
     /**
      * P4-1 出题 schema（对齐自适应引擎 §10）：
@@ -98,6 +107,9 @@ public class InterviewQuestionService {
      * 包可见：供同包单测直接构造验证生成契约（非对外 API）。
      */
     record QuestionListDTO(List<QuestionDTO> questions) {}
+
+    /** 后台预备追问的输出 schema（P4-4b）：只要 followUps，不重复生成主问题 */
+    record FollowUpListDTO(List<FollowUpDTO> followUps) {}
 
     record QuestionDTO(String question, String type, String category,
                        String topicSummary, Integer difficulty,
@@ -121,8 +133,18 @@ public class InterviewQuestionService {
         this.skillUserPromptTemplate = loadTemplate(resourceLoader, properties.getQuestionUserPromptPath());
         this.resumeSystemPromptTemplate = loadTemplate(resourceLoader, properties.getResumeQuestionSystemPromptPath());
         this.resumeUserPromptTemplate = loadTemplate(resourceLoader, properties.getResumeQuestionUserPromptPath());
+        this.candidatePrepSystemPromptTemplate = loadTemplate(resourceLoader, properties.getCandidatePrepSystemPromptPath());
+        this.candidatePrepUserPromptTemplate = loadTemplate(resourceLoader, properties.getCandidatePrepUserPromptPath());
         this.outputConverter = new BeanOutputConverter<>(QuestionListDTO.class);
-        this.followUpCount = Math.max(0, Math.min(properties.getFollowUpCount(), MAX_FOLLOW_UP_COUNT));
+        this.followUpConverter = new BeanOutputConverter<>(FollowUpListDTO.class);
+        // 候选容量：夹取到 [1, MAX_FOLLOW_UP_CANDIDATES]，至少留一条素材
+        this.followUpCandidateCount = Math.max(1,
+            Math.min(properties.getFollowUpCandidateCount(), MAX_FOLLOW_UP_CANDIDATES));
+        // 追问预算：不超过候选容量，允许配置为 0（不追问）
+        this.followUpBudget = Math.max(0,
+            Math.min(properties.getFollowUpCount(), this.followUpCandidateCount));
+        this.backgroundPrepThreshold = Math.max(0,
+            Math.min(properties.getBackgroundPrepThreshold(), this.followUpCandidateCount));
     }
 
     private static PromptTemplate loadTemplate(ResourceLoader loader, String location) throws IOException {
@@ -132,6 +154,62 @@ public class InterviewQuestionService {
     @PreDestroy
     void destroy() {
         questionExecutor.shutdownNow();
+    }
+
+    /**
+     * 为一个主问题预备额外追问候选（P4-4b，后台异步）。
+     *
+     * <p>与同轮受限生成不同：这里不在用户等待路径上，用**后台档**预算，产出几条带不同
+     * followUpType 的追问素材。题目标识由 {@code createFollowUp} 现场分配；父链已挂好，
+     * 来源/代次与去重、重排由调用方（消费者）补齐。失败返回空列表，不影响实时循环。
+     */
+    public List<InterviewQuestionDTO> generateFollowUpCandidatesForMain(
+            String llmProvider, InterviewQuestionDTO main, String resumeText, int count) {
+        if (main == null || main.question() == null || main.question().isBlank() || count <= 0) {
+            return List.of();
+        }
+        ChatClient prepChatClient = llmProviderRegistry.getPlainChatClient(llmProvider);
+        Map<String, Object> variables = new HashMap<>();
+        variables.put("mainQuestion", main.question());
+        variables.put("category", main.category() != null ? main.category() : "");
+        variables.put("topicSummary", main.topicSummary() != null ? main.topicSummary() : "");
+        variables.put("difficulty", main.difficulty() != null ? main.difficulty() : 3);
+        variables.put("expectedPoints", main.expectedPoints() == null || main.expectedPoints().isEmpty()
+            ? "（无）" : String.join("；", main.expectedPoints()));
+        variables.put("resumeSnippet", truncateResumeSnippet(resumeText));
+        variables.put("count", count);
+        try {
+            String systemPrompt = candidatePrepSystemPromptTemplate.render()
+                + "\n\n" + followUpConverter.getFormat();
+            String userPrompt = candidatePrepUserPromptTemplate.render(variables);
+            FollowUpListDTO dto = structuredOutputInvoker.invoke(
+                prepChatClient, systemPrompt, userPrompt, followUpConverter,
+                ErrorCode.INTERVIEW_QUESTION_GENERATION_FAILED, "后台预备追问失败：", "后台预备追问", log);
+            List<FollowUpDTO> followUps = sanitizeFollowUps(dto == null ? null : dto.followUps());
+            List<InterviewQuestionDTO> result = new ArrayList<>();
+            int index = 0;
+            for (FollowUpDTO followUp : followUps) {
+                result.add(InterviewQuestionDTO.createFollowUp(
+                    index, followUp.question(), main.type(), main.category(),
+                    main.questionId(), index + 1, followUp.followUpType(), followUp.expectedPoints()));
+                index++;
+            }
+            log.info("后台预备追问完成: main={}, 产出={}", main.questionId(), result.size());
+            return result;
+        } catch (Exception e) {
+            log.warn("后台预备追问失败（不影响实时循环）: main={}", main.questionId(), e);
+            return List.of();
+        }
+    }
+
+    /** 后台预备只需一段简历作为背景，与逐轮上下文同量级裁剪，避免把整份简历喂给模型 */
+    private static String truncateResumeSnippet(String resumeText) {
+        if (resumeText == null || resumeText.isBlank()) {
+            return "（本场没有简历依据）";
+        }
+        String stripped = resumeText.strip();
+        int limit = 600;
+        return stripped.length() <= limit ? stripped : stripped.substring(0, limit) + "…（已截断）";
     }
 
     public List<InterviewQuestionDTO> generateQuestionsBySkill(
@@ -213,7 +291,7 @@ public class InterviewQuestionService {
         try {
             Map<String, Object> variables = new HashMap<>();
             variables.put("questionCount", questionCount);
-            variables.put("followUpCount", followUpCount);
+            variables.put("followUpCount", followUpCandidateCount);
             variables.put("difficultyBase", difficultyBase);
             variables.put("skillName", skill.name());
             variables.put("skillDescription", skill.description() != null ? skill.description() : "");
@@ -256,7 +334,7 @@ public class InterviewQuestionService {
         try {
             Map<String, Object> variables = new HashMap<>();
             variables.put("questionCount", questionCount);
-            variables.put("followUpCount", followUpCount);
+            variables.put("followUpCount", followUpCandidateCount);
             variables.put("difficultyBase", difficultyBase);
             variables.put("difficultyDescription", difficultyDesc);
             variables.put("skillName", skill.name());
@@ -396,7 +474,8 @@ public class InterviewQuestionService {
     }
 
     private List<FollowUpDTO> sanitizeFollowUps(List<FollowUpDTO> followUps) {
-        if (followUpCount == 0 || followUps == null || followUps.isEmpty()) {
+        // 候选池按「容量」截断（P4-4b）：素材可以多于运行期实际会问的条数
+        if (followUpCandidateCount == 0 || followUps == null || followUps.isEmpty()) {
             return List.of();
         }
         return followUps.stream()
@@ -404,7 +483,7 @@ public class InterviewQuestionService {
             .map(item -> new FollowUpDTO(item.question().trim(),
                 normalizeFollowUpType(item.followUpType()),
                 sanitizeExpectedPoints(item.expectedPoints())))
-            .limit(followUpCount)
+            .limit(followUpCandidateCount)
             .collect(Collectors.toList());
     }
 
@@ -418,6 +497,9 @@ public class InterviewQuestionService {
             case InterviewQuestionDTO.FOLLOW_UP_SCENARIO,
                  InterviewQuestionDTO.FOLLOW_UP_WHY,
                  InterviewQuestionDTO.FOLLOW_UP_CLARIFICATION,
+                 InterviewQuestionDTO.FOLLOW_UP_TRADEOFF,
+                 InterviewQuestionDTO.FOLLOW_UP_FAILURE,
+                 InterviewQuestionDTO.FOLLOW_UP_CONTRIBUTION,
                  InterviewQuestionDTO.FOLLOW_UP_DEPTH -> upper;
             default -> InterviewQuestionDTO.FOLLOW_UP_DEPTH;
         };
@@ -466,11 +548,11 @@ public class InterviewQuestionService {
                 InterviewQuestionDTO main = InterviewQuestionDTO.createMain(
                     index++, question, cat.key(), cat.label(), null, difficultyBase, List.of());
                 questions.add(main);
-                for (int j = 0; j < followUpCount; j++) {
+                for (int j = 0; j < followUpCandidateCount; j++) {
                     questions.add(InterviewQuestionDTO.createFollowUp(
                         index++, buildDefaultFollowUp(question, j + 1),
                         cat.key(), cat.label(), main.questionId(), j + 1,
-                        j == 0 ? InterviewQuestionDTO.FOLLOW_UP_SCENARIO : InterviewQuestionDTO.FOLLOW_UP_DEPTH,
+                        defaultFollowUpType(j),
                         List.of()
                     ));
                 }
@@ -484,11 +566,11 @@ public class InterviewQuestionService {
             InterviewQuestionDTO main = InterviewQuestionDTO.createMain(
                 index++, q[0], q[1], q[2], null, difficultyBase, List.of());
             questions.add(main);
-            for (int j = 0; j < followUpCount; j++) {
+            for (int j = 0; j < followUpCandidateCount; j++) {
                 questions.add(InterviewQuestionDTO.createFollowUp(
                     index++, buildDefaultFollowUp(q[0], j + 1),
                     q[1], q[2], main.questionId(), j + 1,
-                    j == 0 ? InterviewQuestionDTO.FOLLOW_UP_SCENARIO : InterviewQuestionDTO.FOLLOW_UP_DEPTH,
+                    defaultFollowUpType(j),
                     List.of()
                 ));
             }
@@ -543,6 +625,39 @@ public class InterviewQuestionService {
         if (order == 1) {
             return "基于\"" + mainQuestion + "\"，请结合你亲自做过的一个真实场景展开说明。";
         }
-        return "基于\"" + mainQuestion + "\"，如果线上出现异常，你会如何定位并给出修复方案？";
+        if (order == 2) {
+            return "基于\"" + mainQuestion + "\"，如果线上出现异常，你会如何定位并给出修复方案？";
+        }
+        return "基于\"" + mainQuestion + "\"，当时为什么选这个方案而不是别的做法？";
+    }
+
+    /**
+     * 默认追问的类型轮转（P4-4b）：让预置候选覆盖不同考察目的，
+     * 而不是整组都落在 DEPTH。顺序：场景 → 故障 → 取舍 → 个人贡献 → 原理 → 深挖。
+     */
+    private String defaultFollowUpType(int zeroBasedOrder) {
+        return switch (zeroBasedOrder % 6) {
+            case 0 -> InterviewQuestionDTO.FOLLOW_UP_SCENARIO;
+            case 1 -> InterviewQuestionDTO.FOLLOW_UP_FAILURE;
+            case 2 -> InterviewQuestionDTO.FOLLOW_UP_TRADEOFF;
+            case 3 -> InterviewQuestionDTO.FOLLOW_UP_CONTRIBUTION;
+            case 4 -> InterviewQuestionDTO.FOLLOW_UP_WHY;
+            default -> InterviewQuestionDTO.FOLLOW_UP_DEPTH;
+        };
+    }
+
+    /** 运行期追问预算（P4-4b）：单组实际最多追问几条，供逐轮决策与上下文摘要使用 */
+    public int getFollowUpBudget() {
+        return followUpBudget;
+    }
+
+    /** 组内候选池容量（P4-4b）：供后台预备判断补题上限 */
+    public int getFollowUpCandidateCount() {
+        return followUpCandidateCount;
+    }
+
+    /** 后台预备阈值（P4-4b）：0 表示关闭后台预备 */
+    public int getBackgroundPrepThreshold() {
+        return backgroundPrepThreshold;
     }
 }

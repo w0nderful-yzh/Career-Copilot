@@ -33,7 +33,20 @@ public record TurnEvaluation(
     /** 模型给出的简短依据；落库的是 Java 接纳后的最终依据 */
     String decisionReason,
     /** 可选承接语；只有建议被 Java 原样接纳时才展示和持久化 */
-    String transitionMessage
+    String transitionMessage,
+    /**
+     * 受限生成的短追问（P4-4b）：仅当 FOLLOW_UP、合法候选中没有针对该缺口的追问、且追问预算 > 0 时非空。
+     * Java 校验（预算 / 去重 / 长度 / 类型）并持久化后才成为正式下一题。
+     */
+    String generatedFollowUp,
+    /** 生成追问的考察点（P4-4b）：为什么问这个 */
+    String generatedExpectedPoint,
+    /** 生成追问引用的候选人原话 / 待验证点（P4-4b）：保证追问可追溯到回答 */
+    String generatedAnswerBasis,
+    /** 难度调整建议（P4Q-3c）：与答案质量分开表达，不影响 score / answerState */
+    DifficultyAdjust difficultyAdjust,
+    /** 是否明确要求停止当前话题深挖（P4Q-3c）：保留已给技术证据，仅软转场不计 NO_ANSWER */
+    boolean stopDeepDive
 ) {
 
     /** 兼容构造：未识别到跳过指令 */
@@ -41,7 +54,7 @@ public record TurnEvaluation(
                           List<String> missingPoints, AnswerState answerState,
                           String recommendedFocus, boolean evaluatedByLlm) {
         this(score, coverage, coveredPoints, missingPoints, answerState, recommendedFocus,
-            evaluatedByLlm, false, null, null, "", "");
+            evaluatedByLlm, false, null, null, "", "", "", "", "", DifficultyAdjust.NONE, false);
     }
 
     /** 兼容既有构造点：未识别到节奏建议 */
@@ -50,7 +63,18 @@ public record TurnEvaluation(
                           String recommendedFocus, boolean evaluatedByLlm,
                           boolean skipRequested) {
         this(score, coverage, coveredPoints, missingPoints, answerState, recommendedFocus,
-            evaluatedByLlm, skipRequested, null, null, "", "");
+            evaluatedByLlm, skipRequested, null, null, "", "", "", "", "", DifficultyAdjust.NONE, false);
+    }
+
+    /** P4Q-3b 的 12 参构造：未含受限生成与难度信号 */
+    public TurnEvaluation(Integer score, Double coverage, List<String> coveredPoints,
+                          List<String> missingPoints, AnswerState answerState,
+                          String recommendedFocus, boolean evaluatedByLlm, boolean skipRequested,
+                          RecommendedAction recommendedAction, String recommendedQuestionId,
+                          String decisionReason, String transitionMessage) {
+        this(score, coverage, coveredPoints, missingPoints, answerState, recommendedFocus,
+            evaluatedByLlm, skipRequested, recommendedAction, recommendedQuestionId, decisionReason,
+            transitionMessage, "", "", "", DifficultyAdjust.NONE, false);
     }
 
     public enum AnswerState {
@@ -60,8 +84,15 @@ public record TurnEvaluation(
     /** 一次逐轮语义调用对下一步的建议；是否执行由 Java 硬边界决定 */
     public enum RecommendedAction {
         FOLLOW_UP,
+        /** 无合适候选时基于回答受限生成一条短追问（P4-4b） */
+        FOLLOW_UP_GENERATED,
         NEXT_MAIN,
         FINISH
+    }
+
+    /** 难度调整信号（P4Q-3c）：显式指令才生效，不凭回答长短推测 */
+    public enum DifficultyAdjust {
+        EASIER, HARDER, NONE
     }
 
     /** 回答状态 → 默认分数（模型未给分时按状态映射，保证状态与分数自洽） */

@@ -7,6 +7,8 @@ import interview.guide.common.model.AsyncTaskStatus;
 import interview.guide.infrastructure.redis.RedisService;
 import interview.guide.modules.interview.model.InterviewAnswerEntity;
 import interview.guide.modules.interview.model.InterviewQuestionDTO;
+import interview.guide.modules.interview.model.InterviewQuestionIdentity;
+import interview.guide.modules.interview.model.InterviewTurnDTO;
 import interview.guide.modules.interview.model.InterviewReportDTO;
 import interview.guide.modules.interview.model.InterviewSessionEntity;
 import interview.guide.modules.interview.repository.InterviewSessionRepository;
@@ -158,26 +160,19 @@ public class EvaluateStreamConsumer extends AbstractStreamConsumer<EvaluateStrea
         }
 
         InterviewSessionEntity session = sessionOpt.get();
-        List<InterviewQuestionDTO> questions = objectMapper.readValue(
-            session.getQuestionsJson(),
-            new TypeReference<>() {}
-        );
-
-        List<InterviewAnswerEntity> answers = persistenceService.findAnswersBySessionId(sessionId);
-        for (InterviewAnswerEntity answer : answers) {
-            int index = answer.getQuestionIndex();
-            if (index >= 0 && index < questions.size()) {
-                InterviewQuestionDTO question = questions.get(index);
-                questions.set(index, question.withAnswer(answer.getUserAnswer()));
-            }
-        }
+        // P4-1：评估吃两份输入——候选素材（取参考答案/要点）+ 实际轨迹（评分对象）。
+        // 不再把答案回填进素材数组：那正是「素材与轨迹混在一起」的根源。
+        List<InterviewQuestionDTO> candidates = InterviewQuestionIdentity.withDerivedIds(
+            objectMapper.readValue(session.getQuestionsJson(), new TypeReference<>() {}));
+        List<InterviewTurnDTO> turns = persistenceService.findTurnsBySessionId(sessionId);
 
         // 获取 LLM 客户端
         String provider = session.getLlmProvider();
         ChatClient chatClient = llmProviderRegistry.getChatClientOrDefault(provider);
 
         String resumeText = session.getResume() != null ? session.getResume().getResumeText() : "";
-        InterviewReportDTO report = evaluationService.evaluateInterview(chatClient, sessionId, resumeText, questions);
+        InterviewReportDTO report = evaluationService.evaluateInterview(
+            chatClient, sessionId, resumeText, candidates, turns);
         persistenceService.saveReport(sessionId, report);
 
         // 评估完成 → 提取逐题评分写入技能画像（失败不影响评估结果本身）

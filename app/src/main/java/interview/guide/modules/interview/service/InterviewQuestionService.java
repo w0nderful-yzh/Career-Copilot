@@ -9,6 +9,7 @@ import interview.guide.common.exception.BusinessException;
 import interview.guide.common.exception.ErrorCode;
 import interview.guide.modules.interview.model.HistoricalQuestion;
 import interview.guide.modules.interview.model.InterviewQuestionDTO;
+import interview.guide.modules.interview.model.InterviewQuestionIdentity;
 import interview.guide.modules.interview.skill.InterviewSkillService;
 import interview.guide.modules.interview.skill.InterviewSkillService.CategoryDTO;
 import interview.guide.modules.interview.skill.InterviewSkillService.SkillDTO;
@@ -305,20 +306,16 @@ public class InterviewQuestionService {
     static List<InterviewQuestionDTO> mergeQuestionBatches(
             List<InterviewQuestionDTO> first, List<InterviewQuestionDTO> second) {
         if (second.isEmpty()) {
-            return first;
+            return InterviewQuestionIdentity.renumber(first);
         }
         if (first.isEmpty()) {
-            return second;
+            return InterviewQuestionIdentity.renumber(second);
         }
-        int offset = first.size();
+        // P4-1：只重排展示顺序（questionIndex），标识与父链原样保留——
+        // 旧实现必须同步偏移 parentQuestionIndex，漏一处就会串题；现在父链用标识表达，不受顺序影响
         List<InterviewQuestionDTO> merged = new ArrayList<>(first);
-        for (InterviewQuestionDTO q : second) {
-            int newIndex = q.questionIndex() + offset;
-            Integer newParent = q.parentQuestionIndex() != null
-                ? q.parentQuestionIndex() + offset : null;
-            merged.add(q.withIndex(newIndex, newParent));
-        }
-        return merged;
+        merged.addAll(second);
+        return InterviewQuestionIdentity.renumber(merged);
     }
 
     /**
@@ -357,9 +354,9 @@ public class InterviewQuestionService {
             String type = (q.type() != null && !q.type().isBlank()) ? q.type().toUpperCase() : DEFAULT_QUESTION_TYPE;
             int difficulty = normalizeDifficulty(q.difficulty(), difficultyBase);
             List<String> expectedPoints = sanitizeExpectedPoints(q.expectedPoints());
-            int mainQuestionIndex = index;
-            questions.add(InterviewQuestionDTO.createMain(
-                index++, q.question(), type, q.category(), q.topicSummary(), difficulty, expectedPoints));
+            InterviewQuestionDTO main = InterviewQuestionDTO.createMain(
+                index++, q.question(), type, q.category(), q.topicSummary(), difficulty, expectedPoints);
+            questions.add(main);
 
             List<FollowUpDTO> followUps = sanitizeFollowUps(q.followUps());
             for (int i = 0; i < followUps.size(); i++) {
@@ -369,7 +366,7 @@ public class InterviewQuestionService {
                 // 追问序号由 followUpIndex 独立表达——否则它会经 answers.category 变成画像伪技能
                 questions.add(InterviewQuestionDTO.createFollowUp(
                     index++, followUp.question(), type,
-                    q.category(), mainQuestionIndex, i + 1,
+                    q.category(), main.questionId(), i + 1,
                     normalizeFollowUpType(followUp.followUpType()),
                     sanitizeExpectedPoints(followUp.expectedPoints())
                 ));
@@ -466,13 +463,13 @@ public class InterviewQuestionService {
             while (generated < count) {
                 SkillCategoryDTO cat = categories.get(generated % categories.size());
                 String question = "请谈谈你在\"" + cat.label() + "\"方向的技术理解和实践经验。";
-                questions.add(InterviewQuestionDTO.createMain(
-                    index++, question, cat.key(), cat.label(), null, difficultyBase, List.of()));
-                int mainIndex = index - 1;
+                InterviewQuestionDTO main = InterviewQuestionDTO.createMain(
+                    index++, question, cat.key(), cat.label(), null, difficultyBase, List.of());
+                questions.add(main);
                 for (int j = 0; j < followUpCount; j++) {
                     questions.add(InterviewQuestionDTO.createFollowUp(
                         index++, buildDefaultFollowUp(question, j + 1),
-                        cat.key(), cat.label(), mainIndex, j + 1,
+                        cat.key(), cat.label(), main.questionId(), j + 1,
                         j == 0 ? InterviewQuestionDTO.FOLLOW_UP_SCENARIO : InterviewQuestionDTO.FOLLOW_UP_DEPTH,
                         List.of()
                     ));
@@ -484,13 +481,13 @@ public class InterviewQuestionService {
 
         for (int i = 0; i < Math.min(count, GENERIC_FALLBACK_QUESTIONS.length); i++) {
             String[] q = GENERIC_FALLBACK_QUESTIONS[i];
-            questions.add(InterviewQuestionDTO.createMain(
-                index++, q[0], q[1], q[2], null, difficultyBase, List.of()));
-            int mainIndex = index - 1;
+            InterviewQuestionDTO main = InterviewQuestionDTO.createMain(
+                index++, q[0], q[1], q[2], null, difficultyBase, List.of());
+            questions.add(main);
             for (int j = 0; j < followUpCount; j++) {
                 questions.add(InterviewQuestionDTO.createFollowUp(
                     index++, buildDefaultFollowUp(q[0], j + 1),
-                    q[1], q[2], mainIndex, j + 1,
+                    q[1], q[2], main.questionId(), j + 1,
                     j == 0 ? InterviewQuestionDTO.FOLLOW_UP_SCENARIO : InterviewQuestionDTO.FOLLOW_UP_DEPTH,
                     List.of()
                 ));

@@ -56,6 +56,9 @@ class InterviewTurnConsistencyTest {
 
   private static final String SESSION = "s1";
   private static final String REQUEST_ID = "turn-req-0001";
+  /** 固定题目标识：断言里直接引用，避免依赖随机 id */
+  private static final String Q1 = "q-probe-1";
+  private static final String Q2 = "q-probe-2";
 
   @Mock
   private InterviewQuestionService questionService;
@@ -108,8 +111,10 @@ class InterviewTurnConsistencyTest {
 
   private static List<InterviewQuestionDTO> pool() {
     return List.of(
-        InterviewQuestionDTO.createMain(0, "Q1", "JAVA", "Java", null, 3, List.of()),
-        InterviewQuestionDTO.createMain(1, "Q2", "REDIS", "Redis", null, 3, List.of()));
+        InterviewQuestionDTO.createMain(0, "Q1", "JAVA", "Java", null, 3, List.of())
+            .withQuestionId(Q1),
+        InterviewQuestionDTO.createMain(1, "Q2", "REDIS", "Redis", null, 3, List.of())
+            .withQuestionId(Q2));
   }
 
   /** 题库 JSON（缓存自愈路径会按它重建问题列表） */
@@ -131,19 +136,20 @@ class InterviewTurnConsistencyTest {
     entity.setSessionId(SESSION);
     entity.setStatus(InterviewSessionEntity.SessionStatus.IN_PROGRESS);
     entity.setCurrentQuestionIndex(currentIndex);
+    entity.setCurrentQuestionId(currentIndex == 0 ? Q1 : Q2);
     entity.setTurnVersion(turnVersion);
     entity.setEvaluateEpoch(0L);
     entity.setQuestionsJson(poolJson());
     entityStore.put(SESSION, entity);
   }
 
-  private static InterviewTurnRequestEntity storedRecord(String action, int index, String answer,
+  private static InterviewTurnRequestEntity storedRecord(String action, String identity, String answer,
                                                          String responseJson) {
     InterviewTurnRequestEntity record = new InterviewTurnRequestEntity();
     record.setSessionId(SESSION);
     record.setRequestId(REQUEST_ID);
     record.setAction(action);
-    record.setPayloadHash(InterviewSessionService.turnPayloadHash(action, index, answer));
+    record.setPayloadHash(InterviewSessionService.turnPayloadHash(action, identity, answer));
     record.setBaseVersion(0);
     record.setResultVersion(1);
     record.setResponseJson(responseJson);
@@ -158,10 +164,10 @@ class InterviewTurnConsistencyTest {
     givenSession(0, 1);
     SubmitAnswerResponse original = new SubmitAnswerResponse(true, null, 1, 2, 1);
     when(persistenceService.findTurnRequest(SESSION, REQUEST_ID)).thenReturn(Optional.of(
-        storedRecord("ANSWER", 0, "堆和方法区……", objectMapper.writeValueAsString(original))));
+        storedRecord("ANSWER", Q1, "堆和方法区……", objectMapper.writeValueAsString(original))));
 
     SubmitAnswerResponse response = service.submitAnswer(
-        new SubmitAnswerRequest(SESSION, 0, "堆和方法区……", REQUEST_ID, 0));
+        new SubmitAnswerRequest(SESSION, Q1, 0, "堆和方法区……", REQUEST_ID, 0));
 
     assertThat(response.turnVersion()).isEqualTo(1);
     assertThat(response.currentIndex()).isEqualTo(1);
@@ -174,11 +180,11 @@ class InterviewTurnConsistencyTest {
   void sameRequestWithDifferentPayloadIsRejected() throws Exception {
     givenSession(0, 1);
     when(persistenceService.findTurnRequest(SESSION, REQUEST_ID)).thenReturn(Optional.of(
-        storedRecord("ANSWER", 0, "原始答案", objectMapper.writeValueAsString(
+        storedRecord("ANSWER", Q1, "原始答案", objectMapper.writeValueAsString(
             new SubmitAnswerResponse(true, null, 1, 2, 1)))));
 
     assertThatThrownBy(() -> service.submitAnswer(
-        new SubmitAnswerRequest(SESSION, 0, "换一个答案试试", REQUEST_ID, 0)))
+        new SubmitAnswerRequest(SESSION, Q1, 0, "换一个答案试试", REQUEST_ID, 0)))
         .isInstanceOf(BusinessException.class)
         .hasFieldOrPropertyWithValue("code",
             ErrorCode.INTERVIEW_TURN_REQUEST_CONFLICT.getCode());
@@ -192,12 +198,12 @@ class InterviewTurnConsistencyTest {
     givenSession(0, 3);
 
     assertThatThrownBy(() -> service.submitAnswer(
-        new SubmitAnswerRequest(SESSION, 0, "堆和方法区……", REQUEST_ID, 1)))
+        new SubmitAnswerRequest(SESSION, Q1, 0, "堆和方法区……", REQUEST_ID, 1)))
         .isInstanceOf(BusinessException.class)
         .hasFieldOrPropertyWithValue("code", ErrorCode.INTERVIEW_TURN_STALE.getCode());
 
-    // 自愈：按数据库实体重建缓存（读答案回填）
-    verify(persistenceService).findAnswersBySessionId(SESSION);
+    // 自愈：按数据库实体重建缓存（实际轨迹与候选素材分开读取）
+    verify(persistenceService).findTurnsBySessionId(SESSION);
     verify(persistenceService, never()).applyTurn(any());
   }
 
@@ -209,7 +215,7 @@ class InterviewTurnConsistencyTest {
     when(persistenceService.findTurnRequest(SESSION, REQUEST_ID)).thenReturn(Optional.empty());
 
     assertThatThrownBy(() -> service.submitAnswer(
-        new SubmitAnswerRequest(SESSION, 0, "堆和方法区……", REQUEST_ID, 0)))
+        new SubmitAnswerRequest(SESSION, Q1, 0, "堆和方法区……", REQUEST_ID, 0)))
         .isInstanceOf(BusinessException.class)
         .hasFieldOrPropertyWithValue("code",
             ErrorCode.INTERVIEW_TURN_IN_PROGRESS.getCode());
@@ -226,11 +232,11 @@ class InterviewTurnConsistencyTest {
     // 第一次查询（占位之前）还没看到记录，第二次（占位失败后复核）已经落库
     when(persistenceService.findTurnRequest(SESSION, REQUEST_ID))
         .thenReturn(Optional.empty())
-        .thenReturn(Optional.of(storedRecord("ANSWER", 0, "堆和方法区……",
+        .thenReturn(Optional.of(storedRecord("ANSWER", Q1, "堆和方法区……",
             objectMapper.writeValueAsString(new SubmitAnswerResponse(false, null, 2, 2, 1)))));
 
     SubmitAnswerResponse response = service.submitAnswer(
-        new SubmitAnswerRequest(SESSION, 0, "堆和方法区……", REQUEST_ID, 0));
+        new SubmitAnswerRequest(SESSION, Q1, 0, "堆和方法区……", REQUEST_ID, 0));
 
     assertThat(response.turnVersion()).isEqualTo(1);
     verify(persistenceService, never()).applyTurn(any());
@@ -245,7 +251,7 @@ class InterviewTurnConsistencyTest {
     entityStore.get(SESSION).setStatus(InterviewSessionEntity.SessionStatus.COMPLETED);
 
     assertThatThrownBy(() -> service.submitAnswer(
-        new SubmitAnswerRequest(SESSION, 2, "补一句", REQUEST_ID, 5)))
+        new SubmitAnswerRequest(SESSION, Q2, 1, "补一句", REQUEST_ID, 5)))
         .isInstanceOf(BusinessException.class)
         .hasFieldOrPropertyWithValue("code", ErrorCode.INTERVIEW_ALREADY_COMPLETED.getCode());
 
@@ -258,7 +264,7 @@ class InterviewTurnConsistencyTest {
     givenSession(1, 1);
 
     assertThatThrownBy(() -> service.submitAnswer(
-        new SubmitAnswerRequest(SESSION, 0, "补答第一题", REQUEST_ID, 1)))
+        new SubmitAnswerRequest(SESSION, Q1, 0, "补答第一题", REQUEST_ID, 1)))
         .isInstanceOf(BusinessException.class)
         .hasFieldOrPropertyWithValue("code",
             ErrorCode.INTERVIEW_TURN_INDEX_MISMATCH.getCode());
@@ -273,7 +279,7 @@ class InterviewTurnConsistencyTest {
   void skipSharesTheSameBoundary() {
     givenSession(0, 0);
 
-    service.skipQuestion(SESSION, 0, REQUEST_ID, 0);
+    service.skipQuestion(SESSION, Q1, 0, REQUEST_ID, 0);
 
     assertThat(committed.action()).isEqualTo("SKIP");
     assertThat(committed.expectedVersion()).isEqualTo(0);
@@ -285,7 +291,7 @@ class InterviewTurnConsistencyTest {
   void duplicateCompleteIsIgnored() throws Exception {
     givenSession(1, 1);
     when(persistenceService.findTurnRequest(SESSION, REQUEST_ID)).thenReturn(Optional.of(
-        storedRecord("COMPLETE", -1, null, "{}")));
+        storedRecord("COMPLETE", "complete", null, "{}")));
 
     service.completeInterview(SESSION, REQUEST_ID, 1);
 
@@ -316,7 +322,7 @@ class InterviewTurnConsistencyTest {
     givenSession(0, 0);
 
     assertThatThrownBy(() -> service.submitAnswer(
-        new SubmitAnswerRequest(SESSION, 0, "堆和方法区……", "短", 0)))
+        new SubmitAnswerRequest(SESSION, Q1, 0, "堆和方法区……", "短", 0)))
         .isInstanceOf(BusinessException.class)
         .hasFieldOrPropertyWithValue("code", ErrorCode.BAD_REQUEST.getCode());
   }

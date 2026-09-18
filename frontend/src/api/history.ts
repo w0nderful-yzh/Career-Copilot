@@ -56,14 +56,16 @@ export interface InterviewItem {
 
 export interface AnswerItem {
   questionIndex: number;
+  /** 真实发生顺序（1 起）；候选池顺序只作兼容展示 */
+  questionOrdinal?: number | null;
   question: string;
   category: string;
-  userAnswer: string;
-  score: number;
-  feedback: string;
+  userAnswer: string | null;
+  score: number | null;
+  feedback: string | null;
   referenceAnswer?: string;
   keyPoints?: string[];
-  answeredAt: string;
+  answeredAt: string | null;
 }
 
 export interface ResumeDetail {

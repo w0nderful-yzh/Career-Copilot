@@ -8,11 +8,13 @@ import interview.guide.infrastructure.redis.InterviewSessionCache;
 import interview.guide.modules.interview.model.HistoricalQuestion;
 import interview.guide.modules.interview.model.InterviewAnswerEntity;
 import interview.guide.modules.interview.model.InterviewQuestionDTO;
+import interview.guide.modules.interview.model.InterviewQuestionIdentity;
 import interview.guide.modules.interview.model.InterviewReportDTO;
 import interview.guide.modules.interview.model.InterviewResumeContext;
 import interview.guide.modules.interview.model.InterviewSessionDTO;
 import interview.guide.modules.interview.model.InterviewSessionEntity;
 import interview.guide.modules.interview.model.InterviewTurnCommit;
+import interview.guide.modules.interview.model.InterviewTurnDTO;
 import interview.guide.modules.interview.model.InterviewTurnRequestEntity;
 import interview.guide.modules.interview.model.InterviewTurnResult;
 import interview.guide.modules.interview.repository.InterviewAnswerRepository;
@@ -168,6 +170,10 @@ public class InterviewPersistenceService {
             session.setCurrentQuestionIndex(0);
             session.setStatus(InterviewSessionEntity.SessionStatus.CREATED);
             session.setQuestionsJson(objectMapper.writeValueAsString(questions));
+            // P4-1：新会话的当前题标识 = 首个候选；没有候选的会话无从推进（保持 null）
+            if (questions != null && !questions.isEmpty()) {
+                session.setCurrentQuestionId(questions.get(0).questionId());
+            }
             session.setLlmProvider(llmProvider != null ? llmProvider : "default");
             session.setSkillId(skillId != null ? skillId : InterviewDefaults.SKILL_ID);
             session.setDifficulty(difficulty != null ? difficulty : InterviewDefaults.DIFFICULTY);
@@ -281,11 +287,15 @@ public class InterviewPersistenceService {
     }
 
     /**
-     * 一次性提交一轮推进：会话（版本 / 索引 / 状态 / 评估请求）+ 答案事实 + 幂等记录。
+     * 一次性提交一轮推进：会话（版本 / 当前题标识 / 状态 / 结束原因 / 评估请求）
+     * + 答案事实 + 幂等记录。
      *
      * <p>**这是逐轮提交唯一的写入口，模型调用必须已经在事务之外完成。** 三个写入同生共死：
      * 条件更新影响 0 行（版本过期 / 该题已不是待答题 / 会话已结束）→ 抛
-     * {@link ErrorCode#INTERVIEW_TURN_STALE}，事务回滚，不会留下「答案写了但索引没动」这类半状态。
+     * {@link ErrorCode#INTERVIEW_TURN_STALE}，事务回滚，不会留下「答案写了但当前题没动」这类半状态。
+     *
+     * <p>P4-1：闸门用题目标识（不是数组下标），并且把**本轮最终决定**与结束原因一起记下来，
+     * 让「候选耗尽」与「用户结束」在数据上可区分。
      *
      * @return 推进后的会话版本与评估代次
      */
@@ -294,30 +304,32 @@ public class InterviewPersistenceService {
         String sessionId = commit.sessionId();
         LocalDateTime completedAt = commit.completing() ? LocalDateTime.now() : null;
 
-        // 三种推进方式同一套闸门（版本 + 进行中状态），区别只在「是否动索引」：
-        // 提前交卷不动索引，作答/跳过要移到下一题（最后一轮同时请求评估）
+        // 三种推进方式同一套闸门（版本 + 当前题标识 + 进行中状态），区别只在「是否换当前题」：
+        // 提前交卷不动当前题，作答/跳过要移到下一题（最后一轮同时请求评估）
         int updated;
         if (commit.finishing()) {
             updated = sessionRepository.applyFinish(
                 sessionId, commit.expectedVersion(),
                 InterviewSessionEntity.SessionStatus.COMPLETED, AsyncTaskStatus.PENDING,
-                completedAt, ACTIVE_STATUSES);
+                InterviewSessionEntity.END_USER_FINISHED, completedAt, ACTIVE_STATUSES);
         } else if (commit.completing()) {
             updated = sessionRepository.applyTurnRequestingEvaluation(
-                sessionId, commit.expectedVersion(), commit.expectedIndex(), commit.newIndex(),
-                InterviewSessionEntity.SessionStatus.COMPLETED, AsyncTaskStatus.PENDING,
+                sessionId, commit.expectedVersion(), commit.expectedQuestionId(), commit.newQuestionId(),
+                commit.newIndex(), InterviewSessionEntity.SessionStatus.COMPLETED,
+                AsyncTaskStatus.PENDING, InterviewSessionEntity.END_CANDIDATES_EXHAUSTED,
                 completedAt, ACTIVE_STATUSES);
         } else {
             updated = sessionRepository.applyTurn(
-                sessionId, commit.expectedVersion(), commit.expectedIndex(), commit.newIndex(),
-                InterviewSessionEntity.SessionStatus.IN_PROGRESS, completedAt, ACTIVE_STATUSES);
+                sessionId, commit.expectedVersion(), commit.expectedQuestionId(), commit.newQuestionId(),
+                commit.newIndex(), InterviewSessionEntity.SessionStatus.IN_PROGRESS,
+                completedAt, ACTIVE_STATUSES);
         }
 
         if (updated == 0) {
-            // 版本 / 待答题 / 会话状态三者任一不匹配都在这里收敛成同一个可见结果：
+            // 版本 / 当前题 / 会话状态三者任一不匹配都在这里收敛成同一个可见结果：
             // 调用方已经拿到权威状态，直接告诉用户「刷新后重试」，绝不默默再推进一次
-            log.warn("逐轮提交被拒绝（会话已被其他请求推进或已结束）: sessionId={}, action={}, expectedVersion={}, expectedIndex={}",
-                sessionId, commit.action(), commit.expectedVersion(), commit.expectedIndex());
+            log.warn("逐轮提交被拒绝（会话已被其他请求推进或已结束）: sessionId={}, action={}, expectedVersion={}, expectedQuestionId={}",
+                sessionId, commit.action(), commit.expectedVersion(), commit.expectedQuestionId());
             throw new BusinessException(ErrorCode.INTERVIEW_TURN_STALE);
         }
 
@@ -325,9 +337,16 @@ public class InterviewPersistenceService {
         InterviewSessionEntity session = sessionRepository.findBySessionId(sessionId)
             .orElseThrow(() -> new BusinessException(ErrorCode.INTERVIEW_SESSION_NOT_FOUND));
 
+        int writtenOrdinal = 0;
         if (commit.writesAnswer()) {
-            upsertAnswer(session, commit.questionIndex(), commit.question(), commit.category(),
-                commit.answer(), null, null, commit.answerState());
+            // 序号在事务内分配：报告补写的未考察行不占号，并发下也不会重复
+            writtenOrdinal = commit.turnOrdinal() != null
+                ? commit.turnOrdinal()
+                : answerRepository.findMaxTurnOrdinal(sessionId) + 1;
+            upsertAnswer(session, new TurnAnswerWrite(
+                commit.questionId(), commit.questionIndex(), writtenOrdinal, commit.decidedAction(),
+                commit.question(), commit.category(), commit.answer(), null, null,
+                commit.answerState()));
         }
 
         if (commit.requestId() != null) {
@@ -342,13 +361,32 @@ public class InterviewPersistenceService {
             turnRequestRepository.save(record);
         }
 
-        log.info("逐轮提交已落库: sessionId={}, action={}, index={}→{}, version={}, requestId={}",
-            sessionId, commit.action(), commit.expectedIndex(), commit.newIndex(),
+        log.info("逐轮提交已落库: sessionId={}, action={}, question={}→{}, version={}, requestId={}",
+            sessionId, commit.action(), commit.expectedQuestionId(), commit.newQuestionId(),
             session.getTurnVersion(), commit.requestId());
 
         return new InterviewTurnResult(session.getTurnVersion(),
-            session.getEvaluateEpoch() != null ? session.getEvaluateEpoch() : 0L);
+            session.getEvaluateEpoch() != null ? session.getEvaluateEpoch() : 0L, writtenOrdinal);
     }
+
+    /**
+     * 一条实际轮次的写入内容（P4-1）。
+     *
+     * <p>把参数收成一个对象：轮次要写的东西比「答案」多——身份、发生顺序、本轮决定。
+     * {@code turnOrdinal} 为 null 表示这不是轨迹上的轮次（例如报告补写的未考察项、暂存草稿）。
+     */
+    record TurnAnswerWrite(
+        String questionId,
+        Integer questionIndex,
+        Integer turnOrdinal,
+        String decidedAction,
+        String question,
+        String category,
+        String userAnswer,
+        Integer score,
+        String feedback,
+        InterviewAnswerEntity.AnswerState answerState
+    ) {}
 
     /**
      * 重新请求评估（P4-9a）：把评估状态置回 PENDING 并把代次 +1。
@@ -410,45 +448,75 @@ public class InterviewPersistenceService {
                                             InterviewAnswerEntity.AnswerState answerState) {
         InterviewSessionEntity session = sessionRepository.findBySessionId(sessionId)
             .orElseThrow(() -> new BusinessException(ErrorCode.INTERVIEW_SESSION_NOT_FOUND));
-        return upsertAnswer(session, questionIndex, question, category, userAnswer, score, feedback,
-            answerState);
+        return upsertAnswer(session, new TurnAnswerWrite(
+            null, questionIndex, null, null, question, category, userAnswer, score, feedback,
+            answerState));
     }
 
     /**
      * 写入 / 覆盖一条答案事实（调用方须已在事务内并持有会话实体）。
      *
-     * <p>已存在的行按状态覆盖（重新作答 / 状态修正场景）。
+     * <p>P4-1：优先按**题目标识**定位（身份），旧数据/暂存草稿没有标识时才退回按下标。
+     * 已存在的行按状态覆盖（重新作答 / 状态修正场景）；{@code turnOrdinal} 与
+     * {@code decidedAction} 只在写入方给出时才覆盖——报告回填不能把「未考察」洗成「问过」。
      */
-    private InterviewAnswerEntity upsertAnswer(InterviewSessionEntity session, int questionIndex,
-                                               String question, String category,
-                                               String userAnswer, Integer score, String feedback,
-                                               InterviewAnswerEntity.AnswerState answerState) {
+    private InterviewAnswerEntity upsertAnswer(InterviewSessionEntity session, TurnAnswerWrite write) {
         String sessionId = session.getSessionId();
+        String questionId = write.questionId() != null
+            ? write.questionId()
+            : InterviewQuestionDTO.legacyIdFor(write.questionIndex());
         InterviewAnswerEntity answer = answerRepository
-            .findBySession_SessionIdAndQuestionIndex(sessionId, questionIndex)
+            .findBySession_SessionIdAndQuestionId(sessionId, questionId)
             .orElseGet(() -> {
                 InterviewAnswerEntity created = new InterviewAnswerEntity();
                 created.setSession(session);
-                created.setQuestionIndex(questionIndex);
                 return created;
             });
 
-        answer.setQuestion(question);
-        answer.setCategory(category);
-        answer.setUserAnswer(userAnswer);
-        answer.setScore(score);
-        answer.setFeedback(feedback);
-        if (answerState != null) {
-            answer.setAnswerState(answerState);
+        answer.setQuestionId(questionId);
+        if (write.questionIndex() != null) {
+            answer.setQuestionIndex(write.questionIndex());
+        }
+        if (write.turnOrdinal() != null) {
+            answer.setTurnOrdinal(write.turnOrdinal());
+        }
+        if (write.decidedAction() != null) {
+            answer.setDecidedAction(write.decidedAction());
+        }
+        answer.setQuestion(write.question());
+        answer.setCategory(write.category());
+        answer.setUserAnswer(write.userAnswer());
+        answer.setScore(write.score());
+        answer.setFeedback(write.feedback());
+        if (write.answerState() != null) {
+            answer.setAnswerState(write.answerState());
         }
 
         InterviewAnswerEntity saved = answerRepository.save(answer);
-        log.info("面试答案已保存: sessionId={}, questionIndex={}, score={}, state={}",
-                sessionId, questionIndex, score, saved.getAnswerState());
+        log.info("面试轮次已保存: sessionId={}, questionId={}, ordinal={}, score={}, state={}",
+                sessionId, saved.getQuestionId(), saved.getTurnOrdinal(), write.score(),
+                saved.getAnswerState());
 
         return saved;
     }
     
+    /**
+     * 暂存草稿（P4-1）。
+     *
+     * <p>草稿写进答案行但**不占发生顺序、不记为已作答**：它不属于面试轨迹
+     * （{@code turnOrdinal} 为空），也不会被报告评分（{@code UNANSWERED} 不计分）。
+     * 候选素材保持只读——这正是「素材与轨迹分离」的直接体现。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void saveDraft(String sessionId, InterviewQuestionDTO question, String answer) {
+        InterviewSessionEntity session = sessionRepository.findBySessionId(sessionId)
+            .orElseThrow(() -> new BusinessException(ErrorCode.INTERVIEW_SESSION_NOT_FOUND));
+        upsertAnswer(session, new TurnAnswerWrite(
+            question.questionId(), question.questionIndex(), null, null, question.question(),
+            question.category(), answer, null, null,
+            InterviewAnswerEntity.AnswerState.UNANSWERED));
+    }
+
     /**
      * 保存面试报告
      */
@@ -472,14 +540,22 @@ public class InterviewPersistenceService {
 
             sessionRepository.save(session);
 
-            // 查询已存在的答案，建立索引
+            // 查询已存在的轮次，按**题目标识**建索引（P4-1：身份不是下标）
             List<InterviewAnswerEntity> existingAnswers = answerRepository.findBySession_SessionIdOrderByQuestionIndex(sessionId);
-            java.util.Map<Integer, InterviewAnswerEntity> answerMap = existingAnswers.stream()
+            java.util.Map<String, InterviewAnswerEntity> answerById = existingAnswers.stream()
+                .filter(answer -> answer.getQuestionId() != null)
                 .collect(java.util.stream.Collectors.toMap(
-                    InterviewAnswerEntity::getQuestionIndex,
+                    InterviewAnswerEntity::getQuestionId,
                     a -> a,
                     (a1, a2) -> a1
                 ));
+            // 「报告序号（真实发生顺序）→ 题目标识」：报告按发生顺序编号（P4-1），
+            // 因此对齐链是「序号 → 轨迹 → 标识」，与候选池顺序无关
+            java.util.Map<Integer, String> questionIdByReportIndex = new java.util.HashMap<>();
+            for (InterviewTurnDTO turn : findTurnsBySessionId(sessionId)) {
+                // 报告沿用 0 起 questionIndex；轮次 ordinal 是 1 起发生顺序。
+                questionIdByReportIndex.put(turn.displayOrdinal() - 1, turn.questionId());
+            }
 
             // 建立参考答案索引
             java.util.Map<Integer, InterviewReportDTO.ReferenceAnswer> refAnswerMap = report.referenceAnswers().stream()
@@ -493,18 +569,17 @@ public class InterviewPersistenceService {
 
             // 遍历所有评估结果，更新或创建答案记录
             for (InterviewReportDTO.QuestionEvaluation eval : report.questionDetails()) {
-                InterviewAnswerEntity answer = answerMap.get(eval.questionIndex());
+                String questionId = questionIdByReportIndex.get(eval.questionIndex());
+                InterviewAnswerEntity answer = questionId != null
+                    ? answerById.get(questionId)
+                    : null;
 
                 if (answer == null) {
-                    // 未回答的题目，创建新记录（P4Q-5：明确记为未作答，且不带分数）
-                    answer = new InterviewAnswerEntity();
-                    answer.setSession(session);
-                    answer.setQuestionIndex(eval.questionIndex());
-                    answer.setQuestion(eval.question());
-                    answer.setCategory(eval.category());
-                    answer.setUserAnswer(null);  // 未回答
-                    answer.setAnswerState(InterviewAnswerEntity.AnswerState.UNANSWERED);
-                    log.debug("为未回答的题目 {} 创建答案记录", eval.questionIndex());
+                    // P4-1 后报告只评估真实轮次。对不上的条目不是「未考察」，而是报告索引异常；
+                    // 不能凭空创建答案行，否则候选素材又会反向污染实际轨迹。
+                    log.warn("报告条目无法对齐实际轮次，跳过回填: sessionId={}, reportIndex={}",
+                        sessionId, eval.questionIndex());
+                    continue;
                 }
 
                 // P4Q-5：跳过/未作答/明确不会不参与技术评分——报告不得把它们显示成 0 分，
@@ -539,6 +614,62 @@ public class InterviewPersistenceService {
         }
     }
     
+    /**
+     * 会话的实际轨迹（P4-1）：只含**真实发生过**的轮次，按发生顺序。
+     *
+     * <p>报告补写的「未考察」行不在这里——这正是「未问候选不进入实际轨迹」的落点。
+     */
+    public List<InterviewTurnDTO> findTurnsBySessionId(String sessionId) {
+        return answerRepository.findTurnsBySessionId(sessionId).stream()
+            .map(this::toTurnDTO)
+            .toList();
+    }
+
+    /** 实际轨迹的实体形态（按发生顺序）：历史详情、报告回填等需要实体字段的调用方用 */
+    public List<InterviewAnswerEntity> findTurnEntitiesBySessionId(String sessionId) {
+        return answerRepository.findTurnsBySessionId(sessionId);
+    }
+
+    private InterviewTurnDTO toTurnDTO(InterviewAnswerEntity answer) {
+        return InterviewTurnDTO.from(answer, parseKeyPoints(answer.getKeyPointsJson()));
+    }
+
+    private List<String> parseKeyPoints(String json) {
+        if (json == null || json.isBlank()) {
+            return List.of();
+        }
+        try {
+            return objectMapper.readValue(json, new TypeReference<List<String>>() {});
+        } catch (JacksonException e) {
+            return List.of();
+        }
+    }
+
+    /**
+     * 会话的候选素材（P4-1）：读取路径的公共入口，统一补齐缺失的题目标识。
+     */
+    public List<InterviewQuestionDTO> findCandidatesBySessionId(String sessionId) {
+        return sessionRepository.findBySessionId(sessionId)
+            .map(this::parseCandidates)
+            .map(InterviewQuestionIdentity::withDerivedIds)
+            .orElse(List.of());
+    }
+
+    /** 会话的候选素材（questions_json）：解析失败时返回空列表，不让报告链路整体失败 */
+    private List<InterviewQuestionDTO> parseCandidates(InterviewSessionEntity session) {
+        String json = session.getQuestionsJson();
+        if (json == null || json.isBlank()) {
+            return List.of();
+        }
+        try {
+            return objectMapper.readValue(json, new TypeReference<List<InterviewQuestionDTO>>() {});
+        } catch (JacksonException e) {
+            log.warn("解析候选素材失败，报告按空池处理: sessionId={}, error={}",
+                session.getSessionId(), e.getMessage());
+            return List.of();
+        }
+    }
+
     /**
      * 根据会话ID获取会话
      */

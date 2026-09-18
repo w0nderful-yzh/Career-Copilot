@@ -96,10 +96,10 @@ public class InterviewController {
     public Result<SubmitAnswerResponse> submitAnswer(
             @PathVariable String sessionId,
             @Valid @RequestBody InterviewTurnRequests.SubmitAnswerBody body) {
-        log.info("提交答案: 会话{}, 问题{}, 版本={}, requestId={}",
-            sessionId, body.questionIndex(), body.expectedVersion(), body.requestId());
-        SubmitAnswerRequest request = new SubmitAnswerRequest(sessionId, body.questionIndex(),
-            body.answer(), body.requestId(), body.expectedVersion());
+        log.info("提交答案: 会话{}, 题目{}, 版本={}, requestId={}",
+            sessionId, body.questionId(), body.expectedVersion(), body.requestId());
+        SubmitAnswerRequest request = new SubmitAnswerRequest(sessionId, body.questionId(),
+            body.questionIndex(), body.answer(), body.requestId(), body.expectedVersion());
         return Result.success(sessionService.submitAnswer(request));
     }
     
@@ -131,10 +131,10 @@ public class InterviewController {
     public Result<SubmitAnswerResponse> skipQuestion(
             @PathVariable String sessionId,
             @Valid @RequestBody InterviewTurnRequests.SkipBody body) {
-        log.info("跳过当前题: 会话{}, 问题{}, 版本={}, requestId={}",
-            sessionId, body.questionIndex(), body.expectedVersion(), body.requestId());
-        return Result.success(sessionService.skipQuestion(sessionId, body.questionIndex(),
-            body.requestId(), body.expectedVersion()));
+        log.info("跳过当前题: 会话{}, 题目{}, 版本={}, requestId={}",
+            sessionId, body.questionId(), body.expectedVersion(), body.requestId());
+        return Result.success(sessionService.skipQuestion(sessionId, body.questionId(),
+            body.questionIndex(), body.requestId(), body.expectedVersion()));
     }
 
     /**

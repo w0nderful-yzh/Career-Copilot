@@ -71,10 +71,10 @@ export default function InterviewWorkspace({
 }) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [current, setCurrent] = useState<InterviewQuestion | null>(null);
-  // 主题（主问题）在题库中的索引；自适应进度分母用它，绝不用 totalQuestions（含候选择问，会虚高）
-  const [mainIndexes, setMainIndexes] = useState<number[]>([]);
-  // 非自适应会话按线性题单顺序全问，题库总数即真实总题数，可作为分母
-  const [poolTotal, setPoolTotal] = useState(0);
+  // 主题（主问题）的**标识**列表；自适应进度分母用它，绝不用 totalQuestions（含候选择问，会虚高）
+  const [mainQuestionIds, setMainQuestionIds] = useState<string[]>([]);
+  // 候选素材总数：非自适应会话按线性顺序全问时才是真实题数
+  const [candidateTotal, setCandidateTotal] = useState(0);
   const [adaptive, setAdaptive] = useState(false);
   const [answer, setAnswer] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -109,8 +109,8 @@ export default function InterviewWorkspace({
       const view = deriveInterviewView(s);
       setTurns(view.turns);
       setCurrent(view.current);
-      setMainIndexes(view.mainIndexes);
-      setPoolTotal(view.poolTotal);
+      setMainQuestionIds(view.mainQuestionIds);
+      setCandidateTotal(view.candidateTotal);
       setAdaptive(view.adaptive);
       // 会话推进版本跟随权威会话（P4-9a）：提交时原样回传，服务端据此拒绝过期请求
       turnSyncRef.current = syncVersionFromSession(turnSyncRef.current, s.turnVersion);
@@ -144,7 +144,7 @@ export default function InterviewWorkspace({
   const submit = useCallback(async () => {
     if (!current || !answer.trim() || submitting) return;
     const text = answer.trim();
-    const questionIndex = current.questionIndex;
+    const questionId = current.questionId;
     setAnswer('');
     setSubmitting(true);
     setTurnNotice(null);
@@ -153,14 +153,14 @@ export default function InterviewWorkspace({
     // 同一次提交（同题同内容）的重试复用同一个标识：服务端据此返回原结果，不再推进第二次
     const attempt = requestIdForAttempt(
       turnSyncRef.current,
-      `answer:${questionIndex}:${text}`,
+      `answer:${questionId}:${text}`,
       () => `turn-${crypto.randomUUID()}`,
     );
     turnSyncRef.current = attempt.state;
     try {
       const res = await interviewApi.submitAnswer({
         sessionId: mode.sessionId,
-        questionIndex,
+        questionId,
         answer: text,
         requestId: attempt.requestId,
         expectedVersion: turnSyncRef.current.turnVersion ?? undefined,
@@ -170,7 +170,7 @@ export default function InterviewWorkspace({
       const next = res.hasNextQuestion ? res.nextQuestion : null;
       if (next) {
         setCurrent(next);
-        setTurns((prev) => [...prev, toInterviewerTurn(next, next.questionIndex)]);
+        setTurns((prev) => [...prev, toInterviewerTurn(next)]);
       } else {
         // 面试结束 → 异步整场评估轮询
         setCurrent(null);
@@ -244,7 +244,7 @@ export default function InterviewWorkspace({
    */
   const skip = useCallback(async () => {
     if (!current || submitting) return;
-    const skippedIndex = current.questionIndex;
+    const skippedQuestionId = current.questionId;
     setSubmitting(true);
     setAnswer('');
     setTurnNotice(null);
@@ -252,14 +252,14 @@ export default function InterviewWorkspace({
     // 跳过与提交走同一条推进链路，因此用同一套标识 / 版本约定（P4-9a）
     const attempt = requestIdForAttempt(
       turnSyncRef.current,
-      `skip:${skippedIndex}`,
+      `skip:${skippedQuestionId}`,
       () => `turn-${crypto.randomUUID()}`,
     );
     turnSyncRef.current = attempt.state;
     try {
       const res = await interviewApi.skipQuestion(
         mode.sessionId,
-        skippedIndex,
+        skippedQuestionId,
         attempt.requestId,
         turnSyncRef.current.turnVersion ?? undefined,
       );
@@ -267,7 +267,7 @@ export default function InterviewWorkspace({
       const next = res.hasNextQuestion ? res.nextQuestion : null;
       if (next) {
         setCurrent(next);
-        setTurns((prev) => [...prev, toInterviewerTurn(next, next.questionIndex)]);
+        setTurns((prev) => [...prev, toInterviewerTurn(next)]);
       } else {
         setCurrent(null);
         setEvaluationFailed(false);
@@ -352,7 +352,7 @@ export default function InterviewWorkspace({
   const isDone = mode.status === 'completed';
   // 进度从「已发生的 turns + 当前题」推导，不用 totalQuestions（含候选择问，会虚高）
   const { answeredCount, mainOrdinal, mainCount } = interviewProgress(
-    mainIndexes,
+    mainQuestionIds,
     current,
     turns.filter((turn) => turn.role === 'user').length,
   );
@@ -379,7 +379,7 @@ export default function InterviewWorkspace({
                 已答 {answeredCount} 题 · 主题 {mainOrdinal}/{mainCount}
               </span>
             ) : (
-              <span className="tabular-nums">第 {current.questionIndex + 1} / {poolTotal} 题</span>
+              <span className="tabular-nums">第 {current.questionIndex + 1} / {candidateTotal} 题</span>
             )
           )}
           {!isDone && !isEvaluating && (

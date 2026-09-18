@@ -9,6 +9,7 @@ import type {Difficulty} from '../components/UnifiedInterviewModal';
 import type {CategoryDTO} from '../api/skill';
 import { CUSTOM_SKILL_ID } from '../hooks/useInterviewConfig';
 import {resolveInterviewEntry} from './interviewEntry';
+import {deriveInterviewView} from '../utils/interviewTurns';
 
 interface Message {
   type: 'interviewer' | 'user';
@@ -118,10 +119,10 @@ export default function Interview({
       const existingSession = await interviewApi.getSession(sessionId);
       initSession(existingSession);
 
-      // 恢复已填写的答案
-      const currentQ = existingSession.questions[existingSession.currentQuestionIndex];
-      if (currentQ?.userAnswer) {
-        setAnswer(currentQ.userAnswer);
+      // 恢复：当前题由服务端定位（P4-1），草稿答案不再回写素材，因此只恢复当前题文本
+      const currentQ = existingSession.currentQuestion ?? null;
+      if (!currentQ) {
+        setError('这场面试已经没有待答题目了');
       }
     } catch (err) {
       setError('恢复面试失败，请重试');
@@ -134,30 +135,26 @@ export default function Interview({
   const initSession = (s: InterviewSession) => {
     setSession(s);
 
-    if (s.questions.length > 0) {
-      const idx = Math.min(s.currentQuestionIndex, s.questions.length - 1);
-      const currentQ = s.questions[idx];
-      setCurrentQuestion(currentQ);
+    // P4-1：消息流来自**实际轨迹**（turns），当前题由服务端给出；
+    // 不再按 currentQuestionIndex 遍历候选素材——那会把没问过的候选择问也渲染成问过。
+    const view = deriveInterviewView(s);
+    const currentQ = view.current;
+    setCurrentQuestion(currentQ);
 
-      // 重建消息历史
-      const restoredMessages: Message[] = [];
-      for (let i = 0; i <= idx; i++) {
-        const q = s.questions[i];
+    const restoredMessages: Message[] = [];
+    for (const turn of view.turns) {
+      if (turn.role === 'interviewer' && turn.question) {
         restoredMessages.push({
           type: 'interviewer',
-          content: q.question,
-          category: q.category,
-          questionIndex: i
+          content: turn.question,
+          category: turn.category,
+          questionIndex: turn.questionIndex ?? undefined,
         });
-        if (q.userAnswer) {
-          restoredMessages.push({
-            type: 'user',
-            content: q.userAnswer
-          });
-        }
+      } else if (turn.role === 'user') {
+        restoredMessages.push({ type: 'user', content: turn.answer ?? '' });
       }
-      setMessages(restoredMessages);
     }
+    setMessages(restoredMessages);
   };
 
   const handleSubmitAnswer = async () => {
@@ -174,7 +171,7 @@ export default function Interview({
     try {
       const response = await interviewApi.submitAnswer({
         sessionId: session.sessionId,
-        questionIndex: currentQuestion.questionIndex,
+        questionId: currentQuestion.questionId,
         answer: answer.trim()
       });
 
@@ -185,7 +182,7 @@ export default function Interview({
         setMessages(prev => [...prev, {
           type: 'interviewer',
           content: response.nextQuestion!.question,
-          category: response.nextQuestion!.category,
+          category: response.nextQuestion!.category ?? undefined,
           questionIndex: response.nextQuestion!.questionIndex
         }]);
       } else {

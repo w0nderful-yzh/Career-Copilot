@@ -64,10 +64,11 @@ class InterviewQuestionServiceTest {
     assertThat(main.followUpType()).isNull();
 
     InterviewQuestionDTO followUp = InterviewQuestionDTO.createFollowUp(
-        1, "线上频繁 Full GC 如何排查？", "JVM", "JVM", 0, 1,
+        1, "线上频繁 Full GC 如何排查？", "JVM", "JVM", main.questionId(), 1,
         InterviewQuestionDTO.FOLLOW_UP_SCENARIO, List.of("日志", "heap dump"));
     assertThat(followUp.isFollowUp()).isTrue();
-    assertThat(followUp.parentQuestionIndex()).isZero();
+    // P4-1：父链用**稳定标识**表达，不再依赖数组下标
+    assertThat(followUp.parentQuestionId()).isEqualTo(main.questionId());
     assertThat(followUp.followUpType()).isEqualTo(InterviewQuestionDTO.FOLLOW_UP_SCENARIO);
     assertThat(followUp.expectedPoints()).containsExactly("日志", "heap dump");
     // 追问不带整体难度（决策引擎依据主问题难度与作答质量决定是否加难）
@@ -75,20 +76,20 @@ class InterviewQuestionServiceTest {
   }
 
   @Test
-  @DisplayName("withAnswer / withEvaluation 保留结构化字段")
+  @DisplayName("withIndex / withFocus 保留结构化字段：素材只被重排与标注，不承载作答")
   void copyMethodsPreserveStructuredFields() {
     InterviewQuestionDTO main = InterviewQuestionDTO.createMain(
         0, "HashMap 扩容机制？", "JAVA", "Java", "扩容", 4,
         List.of("负载因子", "rehash"));
-    InterviewQuestionDTO answered = main.withAnswer("扩容为原两倍");
-    assertThat(answered.difficulty()).isEqualTo(4);
-    assertThat(answered.expectedPoints()).containsExactly("负载因子", "rehash");
-    assertThat(answered.userAnswer()).isEqualTo("扩容为原两倍");
 
-    InterviewQuestionDTO evaluated = main.withEvaluation(85, "回答完整");
-    assertThat(evaluated.score()).isEqualTo(85);
-    assertThat(evaluated.difficulty()).isEqualTo(4);
-    assertThat(evaluated.expectedPoints()).hasSize(2);
+    InterviewQuestionDTO reindexed = main.withIndex(5);
+    assertThat(reindexed.difficulty()).isEqualTo(4);
+    assertThat(reindexed.expectedPoints()).containsExactly("负载因子", "rehash");
+    assertThat(reindexed.questionId()).as("重排不改变稳定标识").isEqualTo(main.questionId());
+
+    InterviewQuestionDTO focused = main.withFocus("项目经历", null);
+    assertThat(focused.category()).isEqualTo("项目经历");
+    assertThat(focused.difficulty()).isEqualTo(4);
   }
 
   @Test
@@ -140,7 +141,7 @@ class InterviewQuestionServiceTest {
     InterviewQuestionDTO directionMain = InterviewQuestionDTO.createMain(
         0, "Minor GC 与 Full GC 的区别？", "JVM", "JVM", "GC 对比", 4, List.of("分代", "STW"));
     InterviewQuestionDTO directionFollowUp = InterviewQuestionDTO.createFollowUp(
-        1, "线上频繁 Full GC 怎么排查？", "JVM", "JVM", 0, 1,
+        1, "线上频繁 Full GC 怎么排查？", "JVM", "JVM", directionMain.questionId(), 1,
         InterviewQuestionDTO.FOLLOW_UP_SCENARIO, List.of("jstat", "heap dump"));
 
     List<InterviewQuestionDTO> merged = InterviewQuestionService.mergeQuestionBatches(
@@ -150,8 +151,8 @@ class InterviewQuestionServiceTest {
 
     // 索引按合并后位置重排
     assertThat(merged).extracting(InterviewQuestionDTO::questionIndex).containsExactly(0, 1, 2);
-    // 追问的父索引同步后移（原 0 → 合并后 1），否则挂到简历题上
-    assertThat(merged.get(2).parentQuestionIndex()).isEqualTo(1);
+    // P4-1：父链是稳定标识，合并重排后**不需要**跟着偏移，也不会挂到简历题上
+    assertThat(merged.get(2).parentQuestionId()).isEqualTo(directionMain.questionId());
 
     // 元数据不得丢失：这正是此前用 create(...) 重建造成的缺陷
     assertThat(merged.get(0).difficulty()).isEqualTo(3);
@@ -199,8 +200,8 @@ class InterviewQuestionServiceTest {
         .allSatisfy(question -> assertThat(question.category()).isEqualTo("JVM"));
     assertThat(firstFollowUp.followUpIndex()).isEqualTo(1);
     assertThat(secondFollowUpQuestion.followUpIndex()).isEqualTo(2);
-    assertThat(firstFollowUp.parentQuestionIndex()).isEqualTo(0);
-    assertThat(secondFollowUpQuestion.parentQuestionIndex()).isEqualTo(0);
+    assertThat(firstFollowUp.parentQuestionId()).isEqualTo(main.questionId());
+    assertThat(secondFollowUpQuestion.parentQuestionId()).isEqualTo(main.questionId());
     // 技能名里不得再出现追问序号（回归护栏）
     assertThat(questions)
         .allSatisfy(question -> assertThat(question.category()).doesNotContain("追问"));
@@ -222,13 +223,13 @@ class InterviewQuestionServiceTest {
   @DisplayName("withIndex 保留全部结构化字段，只改索引")
   void withIndexOnlyChangesIndexes() {
     InterviewQuestionDTO followUp = InterviewQuestionDTO.createFollowUp(
-        1, "追问内容", "JVM", "JVM", 0, 1,
+        1, "追问内容", "JVM", "JVM", "q-main", 1,
         InterviewQuestionDTO.FOLLOW_UP_WHY, List.of("原理"));
 
-    InterviewQuestionDTO reindexed = followUp.withIndex(7, 6);
+    InterviewQuestionDTO reindexed = followUp.withIndex(7);
 
     assertThat(reindexed.questionIndex()).isEqualTo(7);
-    assertThat(reindexed.parentQuestionIndex()).isEqualTo(6);
+    assertThat(reindexed.parentQuestionId()).as("只改顺序，不动身份与父链").isEqualTo("q-main");
     assertThat(reindexed.followUpType()).isEqualTo(InterviewQuestionDTO.FOLLOW_UP_WHY);
     assertThat(reindexed.expectedPoints()).containsExactly("原理");
     assertThat(reindexed.question()).isEqualTo("追问内容");

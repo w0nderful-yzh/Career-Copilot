@@ -1,17 +1,20 @@
 // 面试视图推导（纯函数）：把 Java InterviewSession 还原成「消息流 + 当前题 + 进度」。
 //
-// 抽成独立模块的原因有两个：
-// 1. 刷新恢复（P4 待修正）是易错点——恢复时的重建规则必须可被单测固化，而不是埋在组件里；
-// 2. 自适应会话的题库里含**候选择问**，被策略跳过的题仍留在 questions 数组中，
-//    任何「按 currentQuestionIndex 遍历题库」的写法都会把没问过的题渲染成已问过。
+// P4-1 起数据来源变了，这个模块也随之简化：
+// - 实际轨迹直接来自 `session.turns`（Java 只把「真的发生过」的轮次放进来），
+//   不再需要「遍历候选池 × 判断有没有作答记录」这种推断——那正是素材与轨迹混在一起的后果；
+// - 当前题由服务端按**题目标识**定位好（`session.currentQuestion`），前端不再用下标推。
 
-import type { InterviewQuestion, InterviewSession } from '../types/interview';
+import type { InterviewQuestion, InterviewSession, InterviewTurn as Turn } from '../types/interview';
 
 export interface InterviewTurn {
   role: 'interviewer' | 'user';
-  questionIndex?: number;
+  /** 题目稳定标识（P4-1）：轨迹里的身份 */
+  questionId?: string | null;
+  questionIndex?: number | null;
   question?: string;
   category?: string;
+  topic?: string | null;
   isFollowUp?: boolean;
   /** 追问序号；与 isFollowUp 一起表达追问身份，不依赖技能名后缀 */
   followUpIndex?: number | null;
@@ -25,10 +28,12 @@ export interface InterviewView {
   turns: InterviewTurn[];
   /** 当前待答题；已结束或无题可答时为 null */
   current: InterviewQuestion | null;
-  /** 主问题（主题）在题库中的索引，进度分母用它 */
-  mainIndexes: number[];
-  /** 题库总数（含候选择问），仅非自适应会话可作分母 */
-  poolTotal: number;
+  /** 当前待答题标识（提交 / 跳过都传它） */
+  currentQuestionId: string | null;
+  /** 主问题（主题）的**标识**列表（按候选池顺序），进度分母用它 */
+  mainQuestionIds: string[];
+  /** 候选素材总数（含候选择问），仅非自适应会话可作分母 */
+  candidateTotal: number;
   adaptive: boolean;
 }
 
@@ -41,31 +46,47 @@ export interface InterviewProgress {
   mainCount: number;
 }
 
-/** 把题转成面试官气泡的一条 turn */
-export function toInterviewerTurn(question: InterviewQuestion, index: number): InterviewTurn {
+/** 候选素材 → 面试官气泡 */
+export function toInterviewerTurn(question: InterviewQuestion): InterviewTurn {
   return {
     role: 'interviewer',
-    questionIndex: index,
+    questionId: question.questionId,
+    questionIndex: question.questionIndex,
     question: question.question,
-    category: question.category,
+    category: question.category ?? undefined,
+    topic: question.topic ?? null,
     isFollowUp: question.isFollowUp,
     followUpIndex: question.followUpIndex ?? null,
   };
 }
 
-/**
- * 这题是否「已经发生过」：有作答内容，或有作答状态（跳过/明确不会/未作答都算）。
- *
- * <p>只看答案文本是不够的——跳过时答案为空，会被当成「从没问过」而从轨迹里消失，
- * 刷新恢复后用户就看不到自己跳过过哪些题（P4Q-5）。
- */
-export function wasAsked(question: InterviewQuestion): boolean {
-  return Boolean(question.userAnswer) || Boolean(question.answerState);
+/** 轨迹轮次 → 面试官气泡 */
+function turnToInterviewerTurn(
+  turn: Turn,
+  candidate: InterviewQuestion | undefined,
+): InterviewTurn {
+  return {
+    role: 'interviewer',
+    questionId: turn.questionId ?? null,
+    questionIndex: turn.questionIndex ?? null,
+    question: turn.question ?? undefined,
+    category: turn.category ?? undefined,
+    topic: turn.topic ?? candidate?.topic ?? null,
+    // 轮次负责证明「发生过」，候选素材负责题型元数据；按稳定标识连接，不再靠下标猜。
+    isFollowUp: candidate?.isFollowUp ?? false,
+    followUpIndex: candidate?.followUpIndex ?? null,
+  };
 }
 
-/** 非真实作答的展示文案；真实作答返回 null */
-export function nonAnswerLabel(question: InterviewQuestion): string | null {
-  switch (question.answerState) {
+/**
+ * 非真实作答的展示文案；真实作答返回 null。
+ *
+ * 判据是**状态**而不是答案文本：跳过时答案为空，只看文本会被当成「从没问过」（P4Q-5）。
+ */
+export function nonAnswerLabel(
+  answerState: InterviewTurn['answerState'],
+): string | null {
+  switch (answerState) {
     case 'SKIPPED':
       return '（已跳过本题）';
     case 'DECLINED':
@@ -80,37 +101,36 @@ export function nonAnswerLabel(question: InterviewQuestion): string | null {
 /**
  * 构建「已发生」的题/答流。
  *
- * 权威判据是「该题是否有作答记录」——**不能**按 currentQuestionIndex 遍历题库：
- * 自适应会话会跳过部分候选追问，那些被跳过的追问仍留在题库里，
- * 按索引遍历会把从未问过的题当成「已问过」渲染出来。
+ * 直接来自 `session.turns`（Java 侧只放真实轮次），因此不需要再判断「这题问过没有」——
+ * 候选择问根本不在轨迹里。
  */
 export function buildAnsweredTurns(session: InterviewSession): InterviewTurn[] {
   const turns: InterviewTurn[] = [];
-  session.questions.forEach((question, index) => {
-    // 判据是「发生过」而不是「有答案」：跳过/未作答的轮次也要在轨迹里可见（P4Q-5）
-    if (!wasAsked(question)) return;
-    turns.push(toInterviewerTurn(question, index));
-    const label = nonAnswerLabel(question);
+  const candidateById = new Map(
+    (session.candidates ?? []).map((candidate) => [candidate.questionId, candidate]),
+  );
+  for (const turn of session.turns ?? []) {
+    const candidate = turn.questionId ? candidateById.get(turn.questionId) : undefined;
+    turns.push(turnToInterviewerTurn(turn, candidate));
     turns.push({
       role: 'user',
-      answer: label ?? question.userAnswer ?? '',
-      answerState: question.answerState ?? null,
+      answer: nonAnswerLabel(turn.answerState) ?? turn.userAnswer ?? '',
+      answerState: turn.answerState ?? null,
     });
-  });
+  }
   return turns;
 }
 
 /**
- * 待作答的当前题。
+ * 待作答的当前题：服务端已按标识定位，索引不再参与判断。
  *
- * 已结束的会话返回 null —— 此时 currentQuestionIndex 可能停在题库末尾（等于题库大小），
- * 也可能指向一个被策略跳过的候选追问，两者都不能当作「当前题」展示。
+ * 已结束的会话返回 null（服务端也不会给当前题）——这是「终态会话不得再产出当前题」的落点。
  */
 export function currentQuestionOf(session: InterviewSession): InterviewQuestion | null {
   if (session.status === 'COMPLETED' || session.status === 'EVALUATED') {
     return null;
   }
-  return session.questions[session.currentQuestionIndex] ?? null;
+  return session.currentQuestion ?? null;
 }
 
 /** 从 Java 会话推导完整视图（刷新恢复走这条路径） */
@@ -119,15 +139,17 @@ export function deriveInterviewView(session: InterviewSession): InterviewView {
   const turns = buildAnsweredTurns(session);
   // 当前题尚未作答，也要渲染，否则刷新后看不到正在回答的问题
   if (current) {
-    turns.push(toInterviewerTurn(current, current.questionIndex));
+    turns.push(toInterviewerTurn(current));
   }
+  const candidates = session.candidates ?? [];
   return {
     turns,
     current,
-    mainIndexes: session.questions
+    currentQuestionId: session.currentQuestionId ?? current?.questionId ?? null,
+    mainQuestionIds: candidates
       .filter((question) => !question.isFollowUp)
-      .map((question) => question.questionIndex),
-    poolTotal: session.questions.length,
+      .map((question) => question.questionId),
+    candidateTotal: candidates.length,
     adaptive: Boolean(session.adaptive),
   };
 }
@@ -135,20 +157,22 @@ export function deriveInterviewView(session: InterviewSession): InterviewView {
 /**
  * 计算进度。
  *
- * 分母绝不能取 totalQuestions（题库总数，含候选追问）：自适应会话会按作答质量跳过其中
+ * 分母绝不能取 totalQuestions（候选素材总数，含候选追问）：自适应会话会按作答质量跳过其中
  * 一部分，用它做分母会得出「只答了 3 题却显示第 10 / 12 题」这种虚高进度。
- * 唯一确定的分母是主问题（主题）数，分子用实际已答数。
+ * 唯一确定的分母是主问题（主题）数，分子用**实际已答**数。
+ *
+ * 主题序位按标识定位（当前题是追问时看它的父主问题），因此候选池顺序调整不会让进度错位。
  */
 export function interviewProgress(
-  mainIndexes: number[],
+  mainQuestionIds: string[],
   current: InterviewQuestion | null,
   answeredCount: number,
 ): InterviewProgress {
+  const anchorId = current?.isFollowUp ? current.parentQuestionId : current?.questionId;
+  const position = anchorId ? mainQuestionIds.indexOf(anchorId) : -1;
   return {
     answeredCount,
-    mainOrdinal: current
-      ? mainIndexes.filter((index) => index <= current.questionIndex).length
-      : 0,
-    mainCount: mainIndexes.length,
+    mainOrdinal: position >= 0 ? position + 1 : 0,
+    mainCount: mainQuestionIds.length,
   };
 }

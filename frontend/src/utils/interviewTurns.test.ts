@@ -8,20 +8,33 @@ import {
   interviewProgress,
   nonAnswerLabel,
   toInterviewerTurn,
-  wasAsked,
 } from './interviewTurns.ts';
-import type { InterviewQuestion, InterviewSession } from '../types/interview.ts';
+import type { InterviewQuestion, InterviewSession, InterviewTurn } from '../types/interview.ts';
 
-function question(overrides: Partial<InterviewQuestion> & { questionIndex: number }): InterviewQuestion {
+/** 候选素材（只描述「可以问什么」） */
+function candidate(
+  overrides: Partial<InterviewQuestion> & { questionIndex: number },
+): InterviewQuestion {
   return {
+    questionId: `q${overrides.questionIndex}`,
     question: `Q${overrides.questionIndex}`,
     type: 'MAIN',
     category: 'Java',
-    userAnswer: null,
-    score: null,
-    feedback: null,
     isFollowUp: false,
-    parentQuestionIndex: null,
+    parentQuestionId: null,
+    ...overrides,
+  };
+}
+
+/** 实际轨迹的一轮（只描述「实际发生了什么」） */
+function turn(overrides: Partial<InterviewTurn> & { questionId: string }): InterviewTurn {
+  return {
+    ordinal: 1,
+    questionIndex: 0,
+    question: `Q${overrides.questionId}`,
+    category: 'Java',
+    userAnswer: null,
+    answerState: 'ANSWERED',
     ...overrides,
   };
 }
@@ -32,7 +45,8 @@ function session(overrides: Partial<InterviewSession> = {}): InterviewSession {
     resumeText: '',
     totalQuestions: 0,
     currentQuestionIndex: 0,
-    questions: [],
+    candidates: [],
+    turns: [],
     status: 'IN_PROGRESS',
     adaptive: true,
     ...overrides,
@@ -40,198 +54,241 @@ function session(overrides: Partial<InterviewSession> = {}): InterviewSession {
 }
 
 /**
- * 自适应会话的典型题库：2 个主问题 + 各 1 条候选追问。
- * 策略在 Q1 答得不好时会跳过后面的 F1，直接问 Q2 —— F1 仍留在题库里但没有答案。
+ * 自适应会话的典型候选池：2 个主问题 + 各 1 条候选追问。
+ * 策略可能跳过 F1 —— 它仍在**候选素材**里，但不该出现在**实际轨迹**里。
  */
 function adaptivePool(): InterviewQuestion[] {
   return [
-    question({ questionIndex: 0, question: 'Q1: JVM 内存模型？' }),
-    question({
+    candidate({ questionIndex: 0, question: 'Q1: JVM 内存模型？' }),
+    candidate({
       questionIndex: 1,
       question: 'F1: 堆区分代？',
       isFollowUp: true,
-      parentQuestionIndex: 0,
+      parentQuestionId: 'q0',
       followUpIndex: 1,
     }),
-    question({ questionIndex: 2, question: 'Q2: Redis 持久化？', category: 'Redis' }),
-    question({
+    candidate({ questionIndex: 2, question: 'Q2: Redis 持久化？', category: 'Redis' }),
+    candidate({
       questionIndex: 3,
       question: 'F2: AOF 重写？',
       category: 'Redis',
       isFollowUp: true,
-      parentQuestionIndex: 2,
+      parentQuestionId: 'q2',
       followUpIndex: 1,
     }),
   ];
 }
 
-test('刷新恢复：只重放已作答轮次，被策略跳过的追问题不得出现', () => {
-  // Q1 答了（差）→ F1 被跳过 → Q2 已问未答（当前题）
-  const pool = adaptivePool();
-  pool[0] = { ...pool[0], userAnswer: '只记得堆和栈' };
-  const s = session({ questions: pool, currentQuestionIndex: 2, totalQuestions: 4 });
+test('刷新恢复：轨迹只来自实际轮次，候选池里没问过的追问不会出现', () => {
+  // Q1 答了（差）→ F1 被策略跳过（不在轨迹里）→ Q2 是当前题
+  const s = session({
+    candidates: adaptivePool(),
+    turns: [turn({ questionId: 'q0', ordinal: 1, question: 'Q1: JVM 内存模型？', userAnswer: '只记得堆和栈' })],
+    currentQuestion: candidate({ questionIndex: 2, question: 'Q2: Redis 持久化？', category: 'Redis' }),
+    currentQuestionId: 'q2',
+    totalQuestions: 4,
+  });
 
   const turns = buildAnsweredTurns(s);
 
   assert.deepEqual(
-    turns.map((turn) => turn.role),
+    turns.map((item) => item.role),
     ['interviewer', 'user'],
   );
   assert.equal(turns[0].question, 'Q1: JVM 内存模型？');
   assert.equal(turns[1].answer, '只记得堆和栈');
-  // 关键回归点：F1 从未被提问，不能因为它在题库里就渲染出来
-  assert.ok(!turns.some((turn) => turn.question === 'F1: 堆区分代？'));
+  // 关键回归点：F1 从未被提问，不能因为它在候选池里就渲染出来
+  assert.ok(!turns.some((item) => item.question === 'F1: 堆区分代？'));
 });
 
-test('刷新恢复：视图包含已答题、当前题与进度分母，且不含候选追问', () => {
-  const pool = adaptivePool();
-  pool[0] = { ...pool[0], userAnswer: '答了一半' };
-  const s = session({ questions: pool, currentQuestionIndex: 2 });
+test('刷新恢复：视图包含已答轮次、当前题与主问题分母，且不含候选追问', () => {
+  const s = session({
+    candidates: adaptivePool(),
+    turns: [turn({ questionId: 'q0', ordinal: 1, question: 'Q1: JVM 内存模型？', userAnswer: '答了一半' })],
+    currentQuestion: candidate({ questionIndex: 2, question: 'Q2: Redis 持久化？', category: 'Redis' }),
+    currentQuestionId: 'q2',
+  });
 
   const view = deriveInterviewView(s);
 
   assert.equal(view.adaptive, true);
-  assert.equal(view.poolTotal, 4);
-  // 主问题索引 = [0, 2]，候选追问（1、3）不计入
-  assert.deepEqual(view.mainIndexes, [0, 2]);
+  assert.equal(view.candidateTotal, 4);
+  // 主问题**标识** = [q0, q2]，候选追问（q1、q3）不计入
+  assert.deepEqual(view.mainQuestionIds, ['q0', 'q2']);
   assert.equal(view.current?.question, 'Q2: Redis 持久化？');
-  // 已答轮次 + 当前题，都出现在消息流里
+  assert.equal(view.currentQuestionId, 'q2');
   assert.deepEqual(
-    view.turns.map((turn) => turn.question ?? turn.answer),
+    view.turns.map((item) => item.question ?? item.answer),
     ['Q1: JVM 内存模型？', '答了一半', 'Q2: Redis 持久化？'],
   );
 });
 
-test('进度分母用主问题数，不用题库总数（含候选择问会虚高）', () => {
-  const pool = adaptivePool();
-  const s = session({ questions: pool, currentQuestionIndex: 2 });
+test('进度分母用主问题数，不用候选总数（含候选择问会虚高）', () => {
+  const s = session({
+    candidates: adaptivePool(),
+    currentQuestion: candidate({ questionIndex: 2, question: 'Q2: Redis 持久化？', category: 'Redis' }),
+    currentQuestionId: 'q2',
+  });
   const view = deriveInterviewView(s);
 
-  const progress = interviewProgress(view.mainIndexes, view.current, 1);
+  const progress = interviewProgress(view.mainQuestionIds, view.current, 1);
 
   assert.equal(progress.answeredCount, 1);
   assert.equal(progress.mainCount, 2);
   assert.equal(progress.mainOrdinal, 2, '当前是第 2 个主题');
-  // 若误用 totalQuestions 作分母会得到「第 3 / 4 题」这种虚高进度
-  assert.notEqual(progress.mainCount, view.poolTotal);
+  // 若误用候选总数作分母会得到「第 3 / 4 题」这种虚高进度
+  assert.notEqual(progress.mainCount, view.candidateTotal);
 });
 
-test('已结束的会话不再展示当前题（currentQuestionIndex 可能停在题库末尾）', () => {
-  const pool = adaptivePool();
-  pool[0] = { ...pool[0], userAnswer: 'a' };
-  pool[1] = { ...pool[1], userAnswer: 'b' };
-  pool[2] = { ...pool[2], userAnswer: 'c' };
-  // 提前结束时索引停在追问 F2（未被问过），不能当作当前题展示
-  const s = session({ questions: pool, currentQuestionIndex: 3, status: 'COMPLETED' });
+test('当前是追问时，主题序位看它的父主问题（标识定位，不看下标）', () => {
+  const s = session({
+    candidates: adaptivePool(),
+    currentQuestion: candidate({
+      questionIndex: 3,
+      question: 'F2: AOF 重写？',
+      category: 'Redis',
+      isFollowUp: true,
+      parentQuestionId: 'q2',
+      followUpIndex: 1,
+    }),
+    currentQuestionId: 'q3',
+  });
+
+  const progress = interviewProgress(deriveInterviewView(s).mainQuestionIds, deriveInterviewView(s).current, 2);
+
+  assert.equal(progress.mainOrdinal, 2);
+});
+
+test('已结束的会话不再展示当前题（服务端也不再给当前题）', () => {
+  const s = session({
+    status: 'COMPLETED',
+    candidates: adaptivePool(),
+    turns: [
+      turn({ questionId: 'q0', ordinal: 1, userAnswer: 'a' }),
+      turn({ questionId: 'q1', ordinal: 2, userAnswer: 'b' }),
+      turn({ questionId: 'q2', ordinal: 3, userAnswer: 'c' }),
+    ],
+    // 即便服务端误给了当前题，终态会话也不展示
+    currentQuestion: candidate({ questionIndex: 3, question: 'F2: AOF 重写？' }),
+    currentQuestionId: 'q3',
+  });
 
   assert.equal(currentQuestionOf(s), null);
   const view = deriveInterviewView(s);
   assert.equal(view.turns.length, 6, '三条已答轮次各渲染题+答');
-  assert.ok(!view.turns.some((turn) => turn.question === 'F2: AOF 重写？'));
-  assert.equal(interviewProgress(view.mainIndexes, view.current, 3).mainOrdinal, 0);
+  assert.ok(!view.turns.some((item) => item.question === 'F2: AOF 重写？'));
+  assert.equal(interviewProgress(view.mainQuestionIds, view.current, 3).mainOrdinal, 0);
 });
 
-test('索引越界时不抛错，视为无当前题', () => {
-  const s = session({ questions: [question({ questionIndex: 0 })], currentQuestionIndex: 99 });
+test('没有当前题时视图只有轨迹，不抛错', () => {
+  const s = session({ candidates: [candidate({ questionIndex: 0 })], currentQuestion: null });
+
   assert.equal(currentQuestionOf(s), null);
   assert.deepEqual(deriveInterviewView(s).turns, []);
 });
 
 test('追问轮次携带独立序号，技能名不含「（追问N）」后缀（P4Q-6）', () => {
-  const pool = adaptivePool();
-  pool[0] = { ...pool[0], userAnswer: '堆和栈' };
-  pool[1] = { ...pool[1], userAnswer: '新生代老年代' };
+  const s = session({
+    candidates: adaptivePool(),
+    turns: [
+      turn({ questionId: 'q0', ordinal: 1, userAnswer: '堆和栈' }),
+      turn({
+        questionId: 'q1',
+        ordinal: 2,
+        questionIndex: 1,
+        question: 'F1: 堆区分代？',
+        userAnswer: '新生代老年代',
+      }),
+    ],
+  });
 
-  const turns = buildAnsweredTurns(session({ questions: pool }));
+  const turns = buildAnsweredTurns(s);
 
-  // 追问身份由 followUpIndex 表达，展示层据此渲染「追问 N」
+  // 追问身份由轨迹的题目元数据表达，技能名恒为稳定标识
+  assert.equal(turns[2].question, 'F1: 堆区分代？');
   assert.equal(turns[2].isFollowUp, true);
   assert.equal(turns[2].followUpIndex, 1);
-  assert.equal(turns[0].followUpIndex, null);
-  // 技能名恒为稳定标识：不能再把序号拼进去（那会变成画像伪技能）
   assert.ok(!String(turns[2].category).includes('追问'));
 });
 
-test('追问轮次保留追问徽标与所属分类', () => {
-  // 主问题答得好 → 进入追问，两轮都作答
-  const pool = adaptivePool();
-  pool[0] = { ...pool[0], userAnswer: '堆和栈' };
-  pool[1] = { ...pool[1], userAnswer: '新生代老年代' };
-  const turns = buildAnsweredTurns(session({ questions: pool }));
+test('轨迹按发生顺序渲染，构成题/答交替的消息流', () => {
+  const s = session({
+    candidates: adaptivePool(),
+    turns: [
+      turn({ questionId: 'q0', ordinal: 1, userAnswer: '堆和栈' }),
+      turn({
+        questionId: 'q1',
+        ordinal: 2,
+        questionIndex: 1,
+        question: 'F1: 堆区分代？',
+        userAnswer: '新生代老年代',
+      }),
+    ],
+  });
+
+  const turns = buildAnsweredTurns(s);
 
   assert.deepEqual(
-    turns.map((turn) => turn.role),
+    turns.map((item) => item.role),
     ['interviewer', 'user', 'interviewer', 'user'],
   );
   assert.equal(turns[0].isFollowUp, false);
-  assert.equal(turns[2].isFollowUp, true, '追问轮次要带追问徽标');
-  assert.equal(turns[2].questionIndex, 1);
+  assert.equal(turns[2].isFollowUp, true, '追问轮次刷新后仍要保留追问徽标');
   assert.equal(turns[2].category, 'Java');
 });
 
-test('非自适应顺序会话：题库总数即真实总题数，进度语义不回归', () => {
-  const pool = [
-    question({ questionIndex: 0, question: 'Q1' }),
-    question({ questionIndex: 1, question: 'Q2' }),
-  ];
-  const s = session({ questions: pool, currentQuestionIndex: 1, adaptive: false });
+test('非自适应顺序会话：主问题数与候选总数一致，进度语义不回归', () => {
+  const s = session({
+    adaptive: false,
+    candidates: [candidate({ questionIndex: 0, question: 'Q1' }), candidate({ questionIndex: 1, question: 'Q2' })],
+    currentQuestion: candidate({ questionIndex: 1, question: 'Q2' }),
+    currentQuestionId: 'q1',
+  });
   const view = deriveInterviewView(s);
 
   assert.equal(view.adaptive, false);
-  assert.equal(view.mainIndexes.length, 2);
-  assert.equal(view.poolTotal, 2);
+  assert.equal(view.mainQuestionIds.length, 2);
+  assert.equal(view.candidateTotal, 2);
 });
 
-test('跳过的轮次仍在轨迹里（判据是发生过，不是有答案）（P4Q-5）', () => {
-  // Q1 跳过（答案为空但有状态）→ F1 未问 → Q2 已作答
-  const pool = [
-    question({ questionIndex: 0, question: 'Q1: JVM 内存模型？', answerState: 'SKIPPED' }),
-    question({
-      questionIndex: 1,
-      question: 'F1: 堆区分代？',
-      isFollowUp: true,
-      parentQuestionIndex: 0,
-      followUpIndex: 1,
-    }),
-    question({ questionIndex: 2, question: 'Q2: Redis 持久化？', category: 'Redis', userAnswer: 'RDB 和 AOF' }),
-  ];
+test('跳过的轮次仍在轨迹里（轨迹由服务端给出，不靠答案文本推断）（P4Q-5）', () => {
+  const s = session({
+    candidates: adaptivePool(),
+    turns: [
+      turn({ questionId: 'q0', ordinal: 1, question: 'Q1: JVM 内存模型？', userAnswer: null, answerState: 'SKIPPED' }),
+      turn({ questionId: 'q2', ordinal: 2, questionIndex: 2, question: 'Q2: Redis 持久化？', category: 'Redis', userAnswer: 'RDB 和 AOF' }),
+    ],
+  });
 
-  const turns = buildAnsweredTurns(session({ questions: pool }));
+  const turns = buildAnsweredTurns(s);
 
-  // 跳过与被作答的轮次都要出现；从未问过的候选追问不出现
   assert.deepEqual(
-    turns.map((turn) => turn.role),
+    turns.map((item) => item.role),
     ['interviewer', 'user', 'interviewer', 'user'],
   );
   assert.equal(turns[1].answer, '（已跳过本题）');
   assert.equal(turns[1].answerState, 'SKIPPED');
-  assert.equal(turns[3].answerState, null);
+  assert.equal(turns[3].answerState, 'ANSWERED');
 });
 
 test('非作答状态的展示文案：跳过/明确不会/未作答各不相同', () => {
-  assert.equal(nonAnswerLabel(question({ questionIndex: 0, answerState: 'SKIPPED' })), '（已跳过本题）');
-  assert.equal(nonAnswerLabel(question({ questionIndex: 0, answerState: 'DECLINED' })), '（表示不会，未作答）');
-  assert.equal(nonAnswerLabel(question({ questionIndex: 0, answerState: 'UNANSWERED' })), '（未作答）');
-  assert.equal(nonAnswerLabel(question({ questionIndex: 0, userAnswer: '答了' })), null);
-});
-
-test('wasAsked：有答案或有状态都算发生过', () => {
-  assert.equal(wasAsked(question({ questionIndex: 0 })), false);
-  assert.equal(wasAsked(question({ questionIndex: 0, userAnswer: '答案' })), true);
-  assert.equal(wasAsked(question({ questionIndex: 0, answerState: 'DECLINED' })), true);
+  assert.equal(nonAnswerLabel('SKIPPED'), '（已跳过本题）');
+  assert.equal(nonAnswerLabel('DECLINED'), '（表示不会，未作答）');
+  assert.equal(nonAnswerLabel('UNANSWERED'), '（未作答）');
+  assert.equal(nonAnswerLabel('ANSWERED'), null);
+  assert.equal(nonAnswerLabel(null), null);
 });
 
 test('toInterviewerTurn 只搬运展示字段，不带答案', () => {
-  const turn = toInterviewerTurn(
-    question({ questionIndex: 5, question: '题面', userAnswer: '不该出现' }),
-    5,
-  );
+  const turn = toInterviewerTurn(candidate({ questionIndex: 5, question: '题面' }));
 
   assert.deepEqual(turn, {
     role: 'interviewer',
+    questionId: 'q5',
     questionIndex: 5,
     question: '题面',
     category: 'Java',
+    topic: null,
     isFollowUp: false,
     followUpIndex: null,
   });

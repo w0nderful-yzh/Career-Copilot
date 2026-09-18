@@ -137,6 +137,9 @@ class InterviewSessionResumeContextWiringTest {
     assertThat(created.resumeSource()).isEqualTo("RESUME_VERSION");
     assertThat(created.resumeVersion()).isEqualTo(2);
     assertThat(created.resumeText()).contains("Kafka 重平衡排查");
+    assertThat(created.currentQuestion()).as("新建会话必须直接返回首个待答题").isNotNull();
+    assertThat(created.currentQuestionId())
+        .isEqualTo(created.currentQuestion().questionId());
   }
 
   @Test

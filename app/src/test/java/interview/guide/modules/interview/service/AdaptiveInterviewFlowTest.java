@@ -13,6 +13,7 @@ import interview.guide.modules.interview.model.InterviewSessionDTO;
 import interview.guide.modules.interview.model.InterviewSessionDTO.SessionStatus;
 import interview.guide.modules.interview.model.InterviewSessionEntity;
 import interview.guide.modules.interview.model.InterviewTurnCommit;
+import interview.guide.modules.interview.model.InterviewTurnDTO;
 import interview.guide.modules.interview.model.InterviewTurnResult;
 import interview.guide.modules.interview.model.TurnEvaluation;
 import interview.guide.modules.interview.model.TurnEvaluation.AnswerState;
@@ -29,6 +30,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -135,6 +138,19 @@ class AdaptiveInterviewFlowTest {
       return null;
     }).when(sessionCache).saveSession(
         anyString(), anyString(), any(), any(), any(), anyList(), anyInt(), any(), anyBoolean());
+    lenient().doAnswer(invocation -> {
+      String sessionId = invocation.getArgument(0, String.class);
+      CachedSession cached = cacheStore.get(sessionId);
+      if (cached != null) {
+        cached.setTurnsJson(objectMapper.writeValueAsString(invocation.getArgument(2)));
+        cached.setCurrentIndex(invocation.getArgument(3, Integer.class));
+        cached.setCurrentQuestionId(invocation.getArgument(4, String.class));
+        cached.setStatus(invocation.getArgument(5, SessionStatus.class));
+        cached.setTurnVersion(invocation.getArgument(6, Integer.class));
+      }
+      return null;
+    }).when(sessionCache).applyTurnState(
+        anyString(), anyList(), anyList(), anyInt(), any(), any(), any());
   }
 
   /** 进行中的会话实体（数据库权威那份） */
@@ -149,24 +165,44 @@ class AdaptiveInterviewFlowTest {
 
   // ===== 题库构造 =====
 
-  /** 简历题批次：1 主问题 + 1 候选追问 */
+  /** 简历题批次：1 主问题 + 1 候选追问（P4-1：追问的父链是父主问题的标识） */
   private static List<InterviewQuestionDTO> resumeBatch() {
+    InterviewQuestionDTO main = InterviewQuestionDTO.createMain(0, "R1: 介绍你最有挑战的项目",
+        "PROJECT", "项目", "项目深挖", 3, List.of("背景", "个人贡献")).withQuestionId("q-r1");
     return List.of(
-        InterviewQuestionDTO.createMain(0, "R1: 介绍你最有挑战的项目", "PROJECT", "项目",
-            "项目深挖", 3, List.of("背景", "个人贡献")),
-        InterviewQuestionDTO.createFollowUp(1, "RF1: 你具体负责哪一块？", "PROJECT", "项目", 0, 1, InterviewQuestionDTO.FOLLOW_UP_DEPTH, List.of("职责边界"))
+        main,
+        InterviewQuestionDTO.createFollowUp(1, "RF1: 你具体负责哪一块？", "PROJECT", "项目",
+            "q-r1", 1, InterviewQuestionDTO.FOLLOW_UP_DEPTH, List.of("职责边界"))
+            .withQuestionId("q-rf1")
     );
   }
 
-  /** 方向题批次（独立索引：主 0 / 追问 1 / 主 2），合并后整体后移 offset */
+  /** 方向题批次（独立索引：主 0 / 追问 1 / 主 2），合并后只重排展示顺序 */
   private static List<InterviewQuestionDTO> directionBatch() {
     return List.of(
         InterviewQuestionDTO.createMain(0, "Q1: JVM 内存模型？", "JVM", "JVM",
-            "运行时数据区", 4, List.of("堆", "栈", "方法区")),
-        InterviewQuestionDTO.createFollowUp(1, "QF1: 堆为什么分代？", "JVM", "JVM", 0, 1, InterviewQuestionDTO.FOLLOW_UP_WHY, List.of("分代假设")),
+            "运行时数据区", 4, List.of("堆", "栈", "方法区")).withQuestionId("q-jvm1"),
+        InterviewQuestionDTO.createFollowUp(1, "QF1: 堆为什么分代？", "JVM", "JVM", "q-jvm1", 1,
+            InterviewQuestionDTO.FOLLOW_UP_WHY, List.of("分代假设")).withQuestionId("q-jf1"),
         InterviewQuestionDTO.createMain(2, "Q2: Redis 持久化？", "REDIS", "Redis",
-            "RDB/AOF", 3, List.of("RDB", "AOF"))
+            "RDB/AOF", 3, List.of("RDB", "AOF")).withQuestionId("q-redis1")
     );
+  }
+
+  /**
+   * 测试用便捷调用：把「池内第 answeredIndex 个候选」当作刚答完的题。
+   *
+   * <p>生产代码只按**标识 + 是否问过**选下一题；这里按下标取起始题只是为了少写样板。
+   */
+  private static InterviewQuestionDTO selectNext(List<InterviewQuestionDTO> candidates,
+                                                 int answeredIndex, TurnEvaluation evaluation) {
+    if (answeredIndex < 0) {
+      return AdaptiveInterviewPolicy.selectNext(candidates, Set.of(), null, evaluation);
+    }
+    InterviewQuestionDTO answered = candidates.get(answeredIndex);
+    Set<String> asked = candidates.stream().limit(answeredIndex + 1L)
+        .map(InterviewQuestionDTO::questionId).collect(Collectors.toSet());
+    return AdaptiveInterviewPolicy.selectNext(candidates, asked, answered, evaluation);
   }
 
   /** 合并后的真实题库：0 R1 / 1 RF1 / 2 Q1 / 3 QF1 / 4 Q2 */
@@ -190,8 +226,8 @@ class AdaptiveInterviewFlowTest {
     // 方向题批次整体后移 2 位，其追问的父索引必须同步偏移到 2
     assertThat(merged.get(2).question()).isEqualTo("Q1: JVM 内存模型？");
     assertThat(merged.get(3).question()).isEqualTo("QF1: 堆为什么分代？");
-    assertThat(merged.get(3).parentQuestionIndex()).isEqualTo(2);
-    assertThat(merged.get(1).parentQuestionIndex()).isEqualTo(0);
+    assertThat(merged.get(3).parentQuestionId()).isEqualTo("q-jvm1");
+    assertThat(merged.get(1).parentQuestionId()).isEqualTo("q-r1");
 
     // 元数据（difficulty / followUpType / expectedPoints）必须原样保留
     assertThat(merged.get(2).difficulty()).isEqualTo(4);
@@ -207,14 +243,14 @@ class AdaptiveInterviewFlowTest {
     List<InterviewQuestionDTO> merged = mergedPool();
 
     // 第一批的追问正常（回归：合并未破坏第一批归属）
-    assertThat(AdaptiveInterviewPolicy.selectNext(merged, 0, eval(AnswerState.GOOD)).questionIndex())
+    assertThat(selectNext(merged, 0, eval(AnswerState.GOOD)).questionIndex())
         .isEqualTo(1);
 
     // 关键回归点：答好 Q1(2) 应进入 QF1(3)，而不是上一批残留的 RF1(1)
-    InterviewQuestionDTO next = AdaptiveInterviewPolicy.selectNext(merged, 2, eval(AnswerState.GOOD));
+    InterviewQuestionDTO next = selectNext(merged, 2, eval(AnswerState.GOOD));
     assertThat(next.questionIndex()).isEqualTo(3);
     assertThat(next.question()).isEqualTo("QF1: 堆为什么分代？");
-    assertThat(next.parentQuestionIndex()).isEqualTo(2);
+    assertThat(next.parentQuestionId()).isEqualTo("q-jvm1");
   }
 
   // ===== 2. 跳过追问 =====
@@ -226,55 +262,59 @@ class AdaptiveInterviewFlowTest {
 
     // 答不上 Q1(2) → 跳过 QF1(3)，直接切 Q2(4)
     InterviewQuestionDTO afterWeak =
-        AdaptiveInterviewPolicy.selectNext(merged, 2, eval(AnswerState.NO_ANSWER));
+        selectNext(merged, 2, eval(AnswerState.NO_ANSWER));
     assertThat(afterWeak.questionIndex()).isEqualTo(4);
     assertThat(afterWeak.isFollowUp()).isFalse();
 
     // Q2 是最后一个主问题且无追问 → 面试结束
-    assertThat(AdaptiveInterviewPolicy.selectNext(merged, 4, eval(AnswerState.GOOD))).isNull();
+    assertThat(selectNext(merged, 4, eval(AnswerState.GOOD))).isNull();
 
     // 答错（WRONG/WEAK）与答不上同属「不深挖」
-    assertThat(AdaptiveInterviewPolicy.selectNext(merged, 2, eval(AnswerState.WRONG)).questionIndex())
+    assertThat(selectNext(merged, 2, eval(AnswerState.WRONG)).questionIndex())
         .isEqualTo(4);
-    assertThat(AdaptiveInterviewPolicy.selectNext(merged, 2, eval(AnswerState.WEAK)).questionIndex())
+    assertThat(selectNext(merged, 2, eval(AnswerState.WEAK)).questionIndex())
         .isEqualTo(4);
   }
 
   // ===== 3. 刷新恢复 =====
 
   @Test
-  @DisplayName("刷新恢复：缓存失效后按 DB 重建，被跳过的追问不带答案")
+  @DisplayName("刷新恢复：缓存失效后按 DB 重建，被跳过的追问不会进轨迹")
   void restoreFromDatabaseKeepsSkippedFollowUpUnanswered() throws Exception {
-    // 实际发生：R1(0) 已答 → RF1(1) 被策略跳过（DB 里没有它的答案行）→ Q1(2) 为当前题
+    // 实际发生：R1(0) 已答 → RF1(1) 被策略跳过（没有它的答案行）→ Q1(2) 为当前题
     InterviewSessionEntity entity = entity("s1", true);
     entity.setQuestionsJson(objectMapper.writeValueAsString(mergedPool()));
     entity.setCurrentQuestionIndex(2);
+    entity.setCurrentQuestionId("q-jvm1");
     entity.setStatus(InterviewSessionEntity.SessionStatus.IN_PROGRESS);
     when(persistenceService.findBySessionId("s1")).thenReturn(Optional.of(entity));
-    when(persistenceService.findAnswersBySessionId("s1"))
-        .thenReturn(List.of(answer(0, "我负责支付模块的重构")));
+    when(persistenceService.findTurnsBySessionId("s1")).thenReturn(List.of(
+        new InterviewTurnDTO("q-r1", 1, 0, "R1: 介绍你最有挑战的项目", "项目", null,
+            "我负责支付模块的重构", InterviewAnswerEntity.AnswerState.ANSWERED, null, null,
+            InterviewTurnDTO.ACTION_NEXT_MAIN, null, List.of(), null)));
 
     InterviewSessionDTO dto = service.getSession("s1");
 
-    // 题库完整保留（恢复不能裁剪，否则决策与历史都失真）
-    assertThat(dto.questions()).hasSize(5);
+    // 候选素材完整保留（恢复不能裁剪，否则决策与历史都失真）
+    assertThat(dto.candidates()).hasSize(5);
     assertThat(dto.currentQuestionIndex()).isEqualTo(2);
+    assertThat(dto.currentQuestionId()).isEqualTo("q-jvm1");
+    assertThat(dto.currentQuestion()).isNotNull();
     assertThat(dto.status()).isEqualTo(SessionStatus.IN_PROGRESS);
     // adaptive 是 DB 权威：缓存失效后仍必须按自适应语义恢复
     assertThat(dto.adaptive()).isTrue();
 
-    // 已答的按索引回填
-    assertThat(dto.questions().get(0).userAnswer()).isEqualTo("我负责支付模块的重构");
-    // 关键回归点：被跳过的追问没有任何作答痕迹，前端据此不会把它渲染成已问过
-    assertThat(dto.questions().get(1).userAnswer()).isNull();
-    assertThat(dto.questions().get(3).userAnswer()).isNull();
-    // 当前题尚未作答
-    assertThat(dto.questions().get(2).userAnswer()).isNull();
+    // 关键回归点：轨迹里只有真实发生过的那一轮，被跳过的候选追问（q-rf1 / q-jf1）不在其中
+    assertThat(dto.turns()).hasSize(1);
+    assertThat(dto.turns().get(0).questionId()).isEqualTo("q-r1");
+    assertThat(dto.turns().get(0).userAnswer()).isEqualTo("我负责支付模块的重构");
+    assertThat(dto.turns())
+        .noneSatisfy(turn -> assertThat(turn.questionId()).isIn("q-rf1", "q-jf1"));
 
     // JSON 往返后结构化元数据仍然可用（决策与评估依赖它们）
-    assertThat(dto.questions().get(2).difficulty()).isEqualTo(4);
-    assertThat(dto.questions().get(3).followUpType()).isEqualTo(InterviewQuestionDTO.FOLLOW_UP_WHY);
-    assertThat(dto.questions().get(3).isFollowUp()).isTrue();
+    assertThat(dto.candidates().get(2).difficulty()).isEqualTo(4);
+    assertThat(dto.candidates().get(3).followUpType()).isEqualTo(InterviewQuestionDTO.FOLLOW_UP_WHY);
+    assertThat(dto.candidates().get(3).isFollowUp()).isTrue();
   }
 
   @Test
@@ -285,7 +325,7 @@ class AdaptiveInterviewFlowTest {
 
     InterviewSessionDTO dto = service.getSession("s1");
 
-    assertThat(dto.questions()).hasSize(5);
+    assertThat(dto.candidates()).hasSize(5);
     verify(persistenceService, never()).findBySessionId(anyString());
   }
 
@@ -333,16 +373,23 @@ class AdaptiveInterviewFlowTest {
     entity.setCurrentQuestionIndex(3);
     entity.setStatus(InterviewSessionEntity.SessionStatus.COMPLETED);
     when(persistenceService.findBySessionId("s1")).thenReturn(Optional.of(entity));
-    when(persistenceService.findAnswersBySessionId("s1"))
-        .thenReturn(List.of(answer(0, "我负责支付模块的重构"), answer(2, "只记得堆和栈")));
+    // 轨迹只含真实发生过的两轮（R1 与 Q1）；被跳过的 RF1 与提前结束停在的 QF1 都不在
+    when(persistenceService.findTurnsBySessionId("s1")).thenReturn(List.of(
+        new InterviewTurnDTO("q-r1", 1, 0, "R1: 介绍你最有挑战的项目", "项目", null,
+            "我负责支付模块的重构", InterviewAnswerEntity.AnswerState.ANSWERED, null, null,
+            InterviewTurnDTO.ACTION_NEXT_MAIN, null, List.of(), null),
+        new InterviewTurnDTO("q-jvm1", 2, 2, "Q1: JVM 内存模型？", "JVM", null,
+            "只记得堆和栈", InterviewAnswerEntity.AnswerState.ANSWERED, null, null,
+            InterviewTurnDTO.ACTION_FINISH_USER, null, List.of(), null)));
 
     InterviewSessionDTO dto = service.getSession("s1");
 
     assertThat(dto.status()).isEqualTo(SessionStatus.COMPLETED);
-    // 已问的 0 / 2 有答案；被跳过的 1 与提前结束停在的 3 都为空
-    assertThat(dto.questions().get(1).userAnswer()).isNull();
-    assertThat(dto.questions().get(3).userAnswer()).isNull();
-    assertThat(dto.questions().get(2).userAnswer()).isEqualTo("只记得堆和栈");
+    assertThat(dto.currentQuestionId()).as("终态会话不再暴露待答题标识").isNull();
+    assertThat(dto.currentQuestion()).as("终态会话不再有当前题").isNull();
+    assertThat(dto.turns())
+        .extracting(InterviewTurnDTO::questionId)
+        .containsExactly("q-r1", "q-jvm1");
   }
 
   // ===== 辅助 =====

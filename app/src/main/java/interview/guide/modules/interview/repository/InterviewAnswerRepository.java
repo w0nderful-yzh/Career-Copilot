@@ -32,9 +32,34 @@ public interface InterviewAnswerRepository extends JpaRepository<InterviewAnswer
     List<InterviewAnswerEntity> findBySession_SessionIdOrderByQuestionIndex(String sessionId);
 
     /**
-     * 根据会话 sessionId 和问题索引查找单条答案（用于 upsert）
+     * 根据会话 sessionId 与**题目标识**查找单条轮次（P4-1：身份入口，upsert 走这里）
      */
-    Optional<InterviewAnswerEntity> findBySession_SessionIdAndQuestionIndex(String sessionId, Integer questionIndex);
+    Optional<InterviewAnswerEntity> findBySession_SessionIdAndQuestionId(String sessionId, String questionId);
+
+    /**
+     * 真实发生顺序（P4-1）：只在 {@code turnOrdinal} 非空的轮次里取最大值。
+     *
+     * <p>报告补写的「未考察」行不占序号——它们不属于面试轨迹。
+     * 调用方须在写事务内使用，保证并发下序号不重复。
+     */
+    @Query("""
+        select coalesce(max(a.turnOrdinal), 0) from InterviewAnswerEntity a
+         where a.session.sessionId = :sessionId
+        """)
+    int findMaxTurnOrdinal(@Param("sessionId") String sessionId);
+
+    /**
+     * 面试轨迹（P4-1）：只取真实发生过的轮次，按发生顺序返回。
+     *
+     * <p>{@code turnOrdinal} 为空的报告补写行会被排除——「未考察不进入实际轨迹」的落点。
+     */
+    @Query("""
+        select a from InterviewAnswerEntity a
+         where a.session.sessionId = :sessionId and a.turnOrdinal is not null
+         order by a.turnOrdinal asc
+        """)
+    List<InterviewAnswerEntity> findTurnsBySessionId(@Param("sessionId") String sessionId);
+
 
     /**
      * 按答案状态与分数筛选（P4Q-5 历史修复）：只挑「已标记作答但得 0 分」的候选做语义复核。

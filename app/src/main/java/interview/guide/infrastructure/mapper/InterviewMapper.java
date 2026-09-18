@@ -44,6 +44,7 @@ public interface InterviewMapper {
      * 注意：keyPoints 需要从 JSON 解析后传入
      */
     @Mapping(target = "keyPoints", source = "keyPoints")
+    @Mapping(target = "questionOrdinal", source = "entity.turnOrdinal")
     InterviewDetailDTO.AnswerDetailDTO toAnswerDetailDTO(
         InterviewAnswerEntity entity,
         List<String> keyPoints

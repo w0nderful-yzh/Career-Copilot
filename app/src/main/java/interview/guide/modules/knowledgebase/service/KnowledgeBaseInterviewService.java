@@ -157,9 +157,8 @@ public class KnowledgeBaseInterviewService {
     List<InterviewQuestionDTO> questions = new ArrayList<>();
     for (QuestionSource source : selected) {
       KnowledgeBaseQuestionEntity entity = source.question();
-      int mainIndex = questions.size();
-      questions.add(InterviewQuestionDTO.fromQuestionBank(
-          mainIndex,
+      InterviewQuestionDTO main = InterviewQuestionDTO.fromQuestionBank(
+          questions.size(),
           entity.getQuestion(),
           defaultString(entity.getType(), "KNOWLEDGE_BASE"),
           defaultString(entity.getCategory(), "知识库"),
@@ -168,7 +167,8 @@ public class KnowledgeBaseInterviewService {
           source.keyPoints(),
           entity.getScoringRubric(),
           entity.getSourceContext()
-      ));
+      );
+      questions.add(main);
 
       // 在可用的追问池里随机抽 followUpCount 个，避免每次面试都问同一组追问
       List<KnowledgeBaseQuestionFollowUpDTO> picked = pickFollowUps(source.followUps(), followUpCount);
@@ -178,7 +178,7 @@ public class KnowledgeBaseInterviewService {
             followUp.question(),
             defaultString(entity.getType(), "KNOWLEDGE_BASE"),
             defaultString(entity.getCategory(), "知识库追问"),
-            mainIndex,
+            main.questionId(),
             followUp.referenceAnswer(),
             followUp.keyPoints(),
             followUp.scoringRubric(),

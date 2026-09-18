@@ -93,17 +93,19 @@ public interface InterviewSessionRepository extends JpaRepository<InterviewSessi
     @Query("""
         UPDATE InterviewSessionEntity s
            SET s.turnVersion = s.turnVersion + 1,
+               s.currentQuestionId = :newQuestionId,
                s.currentQuestionIndex = :newIndex,
                s.status = :newStatus,
                s.completedAt = :completedAt
          WHERE s.sessionId = :sessionId
            AND s.turnVersion = :expectedVersion
-           AND s.currentQuestionIndex = :expectedIndex
+           AND s.currentQuestionId = :expectedQuestionId
            AND s.status IN :activeStatuses
         """)
     int applyTurn(@Param("sessionId") String sessionId,
                   @Param("expectedVersion") int expectedVersion,
-                  @Param("expectedIndex") int expectedIndex,
+                  @Param("expectedQuestionId") String expectedQuestionId,
+                  @Param("newQuestionId") String newQuestionId,
                   @Param("newIndex") int newIndex,
                   @Param("newStatus") SessionStatus newStatus,
                   @Param("completedAt") LocalDateTime completedAt,
@@ -120,23 +122,27 @@ public interface InterviewSessionRepository extends JpaRepository<InterviewSessi
     @Query("""
         UPDATE InterviewSessionEntity s
            SET s.turnVersion = s.turnVersion + 1,
+               s.currentQuestionId = :newQuestionId,
                s.currentQuestionIndex = :newIndex,
                s.status = :completedStatus,
                s.completedAt = :completedAt,
+               s.endReason = :endReason,
                s.evaluateStatus = :pending,
                s.evaluateError = NULL,
                s.evaluateEpoch = s.evaluateEpoch + 1
          WHERE s.sessionId = :sessionId
            AND s.turnVersion = :expectedVersion
-           AND s.currentQuestionIndex = :expectedIndex
+           AND s.currentQuestionId = :expectedQuestionId
            AND s.status IN :activeStatuses
         """)
     int applyTurnRequestingEvaluation(@Param("sessionId") String sessionId,
                                       @Param("expectedVersion") int expectedVersion,
-                                      @Param("expectedIndex") int expectedIndex,
+                                      @Param("expectedQuestionId") String expectedQuestionId,
+                                      @Param("newQuestionId") String newQuestionId,
                                       @Param("newIndex") int newIndex,
                                       @Param("completedStatus") SessionStatus completedStatus,
                                       @Param("pending") AsyncTaskStatus pending,
+                                      @Param("endReason") String endReason,
                                       @Param("completedAt") LocalDateTime completedAt,
                                       @Param("activeStatuses") List<SessionStatus> activeStatuses);
 
@@ -150,6 +156,7 @@ public interface InterviewSessionRepository extends JpaRepository<InterviewSessi
            SET s.turnVersion = s.turnVersion + 1,
                s.status = :completedStatus,
                s.completedAt = :completedAt,
+               s.endReason = :endReason,
                s.evaluateStatus = :pending,
                s.evaluateError = NULL,
                s.evaluateEpoch = s.evaluateEpoch + 1
@@ -161,6 +168,7 @@ public interface InterviewSessionRepository extends JpaRepository<InterviewSessi
                     @Param("expectedVersion") int expectedVersion,
                     @Param("completedStatus") SessionStatus completedStatus,
                     @Param("pending") AsyncTaskStatus pending,
+                    @Param("endReason") String endReason,
                     @Param("completedAt") LocalDateTime completedAt,
                     @Param("activeStatuses") List<SessionStatus> activeStatuses);
 

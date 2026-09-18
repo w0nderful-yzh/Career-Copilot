@@ -3,6 +3,7 @@ package interview.guide.infrastructure.redis;
 import interview.guide.common.exception.BusinessException;
 import interview.guide.common.exception.ErrorCode;
 import interview.guide.modules.interview.model.InterviewQuestionDTO;
+import interview.guide.modules.interview.model.InterviewTurnDTO;
 import interview.guide.modules.interview.model.InterviewSessionDTO.SessionStatus;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
@@ -54,8 +55,16 @@ public class InterviewSessionCache {
         private Long resumeId;
         private Long knowledgeBaseId;
         private String interviewCategory;
-        private String questionsJson;  // 序列化的问题列表
+        private String questionsJson;  // 序列化的候选素材（P4-1：只读素材，不再回写答案）
+        /**
+         * 序列化的实际轨迹（P4-1）：作答 / 跳过 / 明确不会，按发生顺序。
+         *
+         * <p>与候选素材分开存储：把答案写在素材里，会让「候选择问」与「真实轮次」再也分不开。
+         */
+        private String turnsJson;
         private int currentIndex;
+        /** 当前待答题的稳定标识（P4-1）：定位与提交校验都基于它 */
+        private String currentQuestionId;
         private SessionStatus status;
         private Boolean adaptive = false;  // P4-3 是否自适应（逐题评估+决策选题）
         // P4Q-1 简历上下文的来源与版本（出题实际依据；供 DTO 展示与追溯，null = 未记录）
@@ -96,8 +105,14 @@ public class InterviewSessionCache {
             this.adaptive = adaptive != null ? adaptive : false;
             this.resumeSource = resumeSource;
             this.resumeVersion = resumeVersion;
+            this.currentQuestionId = (status == SessionStatus.CREATED || status == SessionStatus.IN_PROGRESS)
+                && questions != null && currentIndex >= 0 && currentIndex < questions.size()
+                ? questions.get(currentIndex).questionId()
+                : null;
             try {
                 this.questionsJson = objectMapper.writeValueAsString(questions);
+                // 新会话的轨迹是确定的空快照，不需要首次读取时再回源数据库。
+                this.turnsJson = objectMapper.writeValueAsString(List.of());
             } catch (JacksonException e) {
                 throw new BusinessException(ErrorCode.INTERNAL_ERROR, "序列化问题列表失败", e);
             }
@@ -108,6 +123,31 @@ public class InterviewSessionCache {
                 return objectMapper.readValue(questionsJson, new TypeReference<>() {});
             } catch (JacksonException e) {
                 throw new BusinessException(ErrorCode.INTERNAL_ERROR, "反序列化问题列表失败");
+            }
+        }
+
+        /**
+         * 轨迹快照是否已写过（P4-1）。
+         *
+         * <p>与「轨迹为空」是两件事：新会话没问过任何题时快照就是 {@code []}，
+         * 只有从未写过（旧缓存 / 刚创建的会话）才需要回源数据库。
+         */
+        public boolean hasTurnsSnapshot() {
+            return turnsJson != null;
+        }
+
+        /** 实际轨迹（P4-1）：缓存里没有时返回空列表，由调用方回源数据库 */
+        public List<InterviewTurnDTO> getTurns(ObjectMapper objectMapper) {
+            if (turnsJson == null || turnsJson.isBlank()) {
+                return List.of();
+            }
+            try {
+                return objectMapper.readValue(turnsJson, new TypeReference<>() {});
+            } catch (JacksonException e) {
+                // 轨迹解析失败不该让整个会话读不出来：回源数据库即可（读取侧自愈）
+                log.warn("反序列化会话轨迹失败，回源数据库重建: sessionId={}", sessionId, e);
+                turnsJson = null;
+                return List.of();
             }
         }
     }
@@ -208,7 +248,43 @@ public class InterviewSessionCache {
     }
 
     /**
-     * 更新推进版本（P4-9a）。
+     * 一次性写回「本轮之后」的会话视图（P4-1）。
+     *
+     * <p>候选素材、实际轨迹、当前题标识 / 序号、状态、版本本来分五次写会各打一次 Redis，
+     * 且中间态（轨迹更新了但当前题没动）会误导下一次读取；这里合成一次写。
+     */
+    public void applyTurnState(String sessionId, List<InterviewQuestionDTO> candidates,
+                               List<InterviewTurnDTO> turns, int currentIndex,
+                               String currentQuestionId, SessionStatus status, Integer turnVersion) {
+        getSession(sessionId).ifPresent(session -> {
+            try {
+                session.setQuestionsJson(objectMapper.writeValueAsString(candidates));
+                session.setTurnsJson(objectMapper.writeValueAsString(turns));
+                session.setCurrentIndex(currentIndex);
+                session.setCurrentQuestionId(currentQuestionId);
+                session.setStatus(status);
+                session.setTurnVersion(turnVersion != null ? turnVersion : 0);
+                String key = buildSessionKey(sessionId);
+                redisService.set(key, session, SESSION_TTL);
+                if (!isUnfinishedStatus(status) && session.getResumeId() != null) {
+                    removeResumeSessionMapping(session.getResumeId(), sessionId);
+                }
+            } catch (JacksonException e) {
+                log.error("序列化会话轨迹失败：读取侧会回源数据库重建: sessionId={}", sessionId, e);
+            }
+        });
+    }
+
+    /** 更新当前题标识（P4-1）：旧数据或外部写入路径用 */
+    public void updateCurrentQuestionId(String sessionId, String currentQuestionId) {
+        getSession(sessionId).ifPresent(session -> {
+            session.setCurrentQuestionId(currentQuestionId);
+            String key = buildSessionKey(sessionId);
+            redisService.set(key, session, SESSION_TTL);
+        });
+    }
+
+    /** 更新推进版本（P4-9a）。
      *
      * <p>单独一个方法而不是塞进 saveSession 的参数表：saveSession 已有十几个位置参数，
      * 再加一个只会让调用点更难读；版本只在「提交完成后」和「从数据库重建后」两个时机更新。

@@ -5,6 +5,7 @@ import interview.guide.common.ai.StructuredOutputInvoker;
 import interview.guide.common.ai.StructuredOutputProperties;
 import interview.guide.common.exception.ErrorCode;
 import interview.guide.modules.interview.model.InterviewQuestionDTO;
+import interview.guide.modules.interview.model.InterviewTurnDTO;
 import interview.guide.modules.interview.model.TurnEvaluation;
 import interview.guide.modules.interview.model.TurnEvaluationRequest;
 import interview.guide.modules.interview.model.TurnEvaluation.AnswerState;
@@ -220,34 +221,34 @@ public class TurnEvaluationService {
     }
 
     /**
-     * 同技能的最近几轮问答（不含当前轮）。
+     * 同技能的最近几轮问答（不含当前轮），取自**实际轨迹**（P4-1）。
      *
-     * <p>判据是「该题确有作答记录」而不是索引位置：题单里含候选择问，被策略跳过的候选
-     * 从未发生过——把它们的空答案当历史，会让模型以为「用户当时什么都没说」。
+     * <p>判据是「这一轮确有作答内容」而不是索引位置：候选素材里未问过的选择问没有轨迹，
+     * 被策略跳过的候选也从未发生——把它们的空答案当历史，会让模型以为「用户当时什么都没说」。
+     *
+     * @param turns 实际轨迹（按发生顺序）；当前轮已由调用方从轨迹中排除
      */
-    static List<String> recentTurnsFor(List<InterviewQuestionDTO> questions, int currentIndex,
-                                       String category) {
-        if (questions == null || currentIndex <= 0) {
+    static List<String> recentTurnsFor(List<InterviewTurnDTO> turns, String category) {
+        if (turns == null || turns.isEmpty()) {
             return List.of();
         }
-        List<String> turns = new ArrayList<>();
-        for (int index = Math.min(currentIndex, questions.size()) - 1; index >= 0; index--) {
-            InterviewQuestionDTO candidate = questions.get(index);
-            if (!candidate.wasAsked() || candidate.userAnswer() == null
-                || candidate.userAnswer().isBlank()) {
+        List<String> rendered = new ArrayList<>();
+        for (int index = turns.size() - 1; index >= 0; index--) {
+            InterviewTurnDTO turn = turns.get(index);
+            if (turn.userAnswer() == null || turn.userAnswer().isBlank()) {
                 continue;
             }
-            if (category != null && !category.isBlank() && candidate.category() != null
-                && !candidate.category().equalsIgnoreCase(category)) {
+            if (category != null && !category.isBlank() && turn.category() != null
+                && !turn.category().equalsIgnoreCase(category)) {
                 continue;
             }
-            turns.add(0, "- 问：" + shorten(candidate.question())
-                + "\n  答：" + shorten(candidate.userAnswer()));
-            if (turns.size() >= MAX_RECENT_TURNS) {
+            rendered.add(0, "- 问：" + shorten(turn.question())
+                + "\n  答：" + shorten(turn.userAnswer()));
+            if (rendered.size() >= MAX_RECENT_TURNS) {
                 break;
             }
         }
-        return turns;
+        return rendered;
     }
 
     /** 参照物为空时给出可读说明：留白会让模型以为「这段本来就没有」而不是「没有内容」 */

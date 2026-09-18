@@ -30,6 +30,8 @@ public record InterviewDetailDTO(
      */
     public record AnswerDetailDTO(
         Integer questionIndex,
+        /** 真实发生顺序（1 起）；P4-1 起历史详情按它显示「第 N 题」 */
+        Integer questionOrdinal,
         String question,
         String category,
         String userAnswer,

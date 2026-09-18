@@ -1,5 +1,8 @@
 package interview.guide.modules.profile.service;
 
+import interview.guide.modules.interview.model.InterviewAnswerEntity;
+import interview.guide.modules.interview.model.InterviewQuestionDTO;
+import interview.guide.modules.interview.repository.InterviewAnswerRepository;
 import interview.guide.modules.profile.dto.SkillProfileImpactResponse;
 import interview.guide.modules.profile.dto.SkillProfileImpactResponse.SessionEvidenceDTO;
 import interview.guide.modules.profile.dto.SkillProfileImpactResponse.SkillImpactDTO;
@@ -36,6 +39,8 @@ public class SkillProfileImpactService {
   private static final String DEFAULT_USER_ID = ProfileConstants.DEFAULT_USER_ID;
 
   private final SkillEvidenceRepository evidenceRepository;
+  /** 来源键 → 真实发生顺序（展示「第 N 题」）：证据里只有标识，序号在轮次行上 */
+  private final InterviewAnswerRepository answerRepository;
 
   /**
    * 计算某场面试带来的画像变化。
@@ -58,9 +63,16 @@ public class SkillProfileImpactService {
 
     Map<String, List<SkillEvidenceEntity>> bySkill = sessionEvidences.stream()
         .collect(Collectors.groupingBy(SkillEvidenceEntity::getSkill));
+    // 一次取回本场轨迹，避免每条证据都单独查答案行（N+1）。
+    Map<String, Integer> ordinalByQuestionId = answerRepository.findTurnsBySessionId(sessionId).stream()
+        .filter(answer -> answer.getQuestionId() != null)
+        .collect(Collectors.toMap(
+            InterviewAnswerEntity::getQuestionId,
+            InterviewAnswerEntity::getTurnOrdinal,
+            (first, ignored) -> first));
 
     List<SkillImpactDTO> skills = bySkill.entrySet().stream()
-        .map(entry -> toImpact(entry.getKey(), entry.getValue(), prefix))
+        .map(entry -> toImpact(entry.getKey(), entry.getValue(), prefix, ordinalByQuestionId))
         // 稳定返回顺序：展示排序（如按变化幅度）交给前端，后端不做二次排序
         .sorted(Comparator.comparing(SkillImpactDTO::skill))
         .toList();
@@ -68,7 +80,8 @@ public class SkillProfileImpactService {
   }
 
   private SkillImpactDTO toImpact(String skill, List<SkillEvidenceEntity> sessionEvidences,
-                                  String sessionPrefix) {
+                                  String sessionPrefix,
+                                  Map<String, Integer> ordinalByQuestionId) {
     List<SkillEvidenceEntity> scored = evidenceRepository
         .findByUserIdAndSkill(DEFAULT_USER_ID, skill).stream()
         .filter(evidence -> evidence.getScore() != null)
@@ -85,7 +98,7 @@ public class SkillProfileImpactService {
 
     List<SessionEvidenceDTO> details = sessionEvidences.stream()
         .sorted(Comparator.comparing(SkillEvidenceEntity::getOccurredAt))
-        .map(SkillProfileImpactService::toSessionEvidence)
+        .map(evidence -> toSessionEvidence(evidence, ordinalByQuestionId))
         .toList();
     return new SkillImpactDTO(skill, beforeScore, afterScore, delta, details);
   }
@@ -95,19 +108,29 @@ public class SkillProfileImpactService {
         evidences.stream().mapToInt(SkillEvidenceEntity::getScore).average().orElse(0));
   }
 
-  /** sourceId 形如 "sessionId:questionIndex"；题号解析失败不影响其余信息 */
-  private static SessionEvidenceDTO toSessionEvidence(SkillEvidenceEntity evidence) {
+  /**
+   * sourceId 形如 {@code "sessionId:questionKey"}（P4-1 起 key 是题目稳定标识；
+   * 旧数据是数字下标或 migration 回填的 {@code legacy-<下标>}）。
+   *
+   * <p>展示序号取轮次行的**真实发生顺序**（1 起），因此顺序调整或候选池重排都不会让
+   * 「第 N 题」指错；解析不出来时留空，前端退化为「场次记录」而不是显示一个假序号。
+   */
+  private static SessionEvidenceDTO toSessionEvidence(
+      SkillEvidenceEntity evidence, Map<String, Integer> ordinalByQuestionId) {
     String sourceId = evidence.getSourceId();
-    Integer questionIndex = null;
+    String questionKey = null;
+    Integer questionOrdinal = null;
     int separator = sourceId == null ? -1 : sourceId.lastIndexOf(':');
     if (separator > 0 && separator < sourceId.length() - 1) {
-      try {
-        questionIndex = Integer.valueOf(sourceId.substring(separator + 1));
-      } catch (NumberFormatException ignored) {
-        // 非数字后缀：保留 sourceId 供追溯，题号留空
+      questionKey = sourceId.substring(separator + 1);
+      questionOrdinal = ordinalByQuestionId.get(questionKey);
+      if (questionOrdinal == null && questionKey.chars().allMatch(Character::isDigit)) {
+        // P4-1 之前 evidence.sourceId 的后缀是裸下标；答案迁移后对应 legacy-<下标>。
+        questionOrdinal = ordinalByQuestionId.get(
+            InterviewQuestionDTO.LEGACY_ID_PREFIX + questionKey);
       }
     }
     return new SessionEvidenceDTO(
-        sourceId, questionIndex, evidence.getScore(), evidence.getOccurredAt());
+        sourceId, questionKey, questionOrdinal, evidence.getScore(), evidence.getOccurredAt());
   }
 }

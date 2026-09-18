@@ -10,6 +10,7 @@ import interview.guide.modules.interview.model.InterviewQuestionDTO;
 import interview.guide.modules.interview.model.InterviewSessionDTO.SessionStatus;
 import interview.guide.modules.interview.model.InterviewSessionEntity;
 import interview.guide.modules.interview.model.InterviewTurnCommit;
+import interview.guide.modules.interview.model.InterviewTurnDTO;
 import interview.guide.modules.interview.model.InterviewTurnResult;
 import interview.guide.modules.interview.model.SubmitAnswerRequest;
 import interview.guide.modules.interview.model.SubmitAnswerResponse;
@@ -23,6 +24,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 
 import java.util.ArrayList;
@@ -110,27 +112,54 @@ class InterviewSessionAdaptiveTest {
   }
 
   private static List<InterviewQuestionDTO> linearSession() {
+    // P4-1：追问的父链是父主问题的**稳定标识**
+    InterviewQuestionDTO first = InterviewQuestionDTO.createMain(
+        0, "Q1: JVM 内存模型？", "JVM", "JVM", "内存", 3, List.of("堆")).withQuestionId("q-a1");
+    InterviewQuestionDTO second = InterviewQuestionDTO.createMain(
+        2, "Q2: Redis 持久化？", "REDIS", "Redis", "持久化", 3, List.of("RDB"))
+        .withQuestionId("q-a2");
     List<InterviewQuestionDTO> list = new ArrayList<>();
-    list.add(InterviewQuestionDTO.createMain(0, "Q1: JVM 内存模型？", "JVM", "JVM", "内存", 3, List.of("堆")));
-    list.add(InterviewQuestionDTO.createFollowUp(1, "F1a: 堆区分代？", "JVM", "JVM", 0, 1, "DEPTH", List.of("young")));
-    list.add(InterviewQuestionDTO.createMain(2, "Q2: Redis 持久化？", "REDIS", "Redis", "持久化", 3, List.of("RDB")));
-    list.add(InterviewQuestionDTO.createFollowUp(3, "F2a: AOF 重写？", "REDIS", "Redis", 2, 1, "DEPTH", List.of("rewrite")));
+    list.add(first);
+    list.add(InterviewQuestionDTO.createFollowUp(1, "F1a: 堆区分代？", "JVM", "JVM", "q-a1", 1,
+        "DEPTH", List.of("young")).withQuestionId("q-a3"));
+    list.add(second);
+    list.add(InterviewQuestionDTO.createFollowUp(3, "F2a: AOF 重写？", "REDIS", "Redis", "q-a2", 1,
+        "DEPTH", List.of("rewrite")).withQuestionId("q-a4"));
     return list;
   }
 
   private CachedSession cached(List<InterviewQuestionDTO> questions, int index, boolean adaptive) {
-    return new CachedSession(SESSION, "", null, null, null,
+    CachedSession cached = new CachedSession(SESSION, "", null, null, null,
         questions, index, SessionStatus.IN_PROGRESS, adaptive, objectMapper);
+    cached.setCurrentQuestionId(questions.get(index).questionId());
+    if (index > 0) {
+      List<InterviewTurnDTO> previousTurns = questions.stream()
+          .filter(InterviewQuestionDTO::isMain)
+          .filter(question -> question.questionIndex() < index)
+          .map(question -> new InterviewTurnDTO(
+              question.questionId(), 1, question.questionIndex(), question.question(),
+              question.category(), question.topic(), "已回答", InterviewAnswerEntity.AnswerState.ANSWERED,
+              null, null, InterviewTurnDTO.ACTION_NEXT_MAIN, null, List.of(), null))
+          .toList();
+      try {
+        cached.setTurnsJson(objectMapper.writeValueAsString(previousTurns));
+      } catch (JacksonException e) {
+        throw new AssertionError(e);
+      }
+    }
+    return cached;
   }
 
   /**
    * 会话的权威实体（数据库那份）：待答题索引与缓存一致，否则提交会被判成「不是当前待答题」
    */
-  private static InterviewSessionEntity authoritative(int index) {
+  private static InterviewSessionEntity authoritative(List<InterviewQuestionDTO> questions,
+                                                       int index) {
     InterviewSessionEntity entity = new InterviewSessionEntity();
     entity.setSessionId(SESSION);
     entity.setStatus(InterviewSessionEntity.SessionStatus.IN_PROGRESS);
     entity.setCurrentQuestionIndex(index);
+    entity.setCurrentQuestionId(questions.get(index).questionId());
     entity.setTurnVersion(0);
     entity.setEvaluateEpoch(0L);
     entity.setLlmProvider("glm");
@@ -140,7 +169,8 @@ class InterviewSessionAdaptiveTest {
   /** 一次会话的准备：缓存副本 + 数据库权威实体（索引一致） */
   private void givenSession(List<InterviewQuestionDTO> questions, int index, boolean adaptive) {
     when(sessionCache.getSession(SESSION)).thenReturn(Optional.of(cached(questions, index, adaptive)));
-    when(persistenceService.findBySessionId(SESSION)).thenReturn(Optional.of(authoritative(index)));
+    when(persistenceService.findBySessionId(SESSION))
+        .thenReturn(Optional.of(authoritative(questions, index)));
   }
 
   @Test

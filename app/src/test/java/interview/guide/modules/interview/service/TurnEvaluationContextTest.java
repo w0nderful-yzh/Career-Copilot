@@ -9,6 +9,7 @@ import interview.guide.common.ai.StructuredOutputInvoker;
 import interview.guide.common.ai.StructuredOutputProperties;
 import interview.guide.modules.interview.model.InterviewAnswerEntity;
 import interview.guide.modules.interview.model.InterviewQuestionDTO;
+import interview.guide.modules.interview.model.InterviewTurnDTO;
 import interview.guide.modules.interview.model.TurnEvaluationRequest;
 import interview.guide.modules.interview.service.TurnEvaluationService.TurnEvalDTO;
 import java.util.List;
@@ -108,42 +109,51 @@ class TurnEvaluationContextTest {
   class RecentTurns {
 
     @Test
-    @DisplayName("只取「已发生」的轮次：候选择问从未发生过，不能当成用户说过的话")
+    @DisplayName("只取真实发生过的轮次：候选素材里的选择题不在轨迹里，自然不会当成用户说过的话")
     void onlyAskedTurns() {
-      List<InterviewQuestionDTO> questions = List.of(
-          answered(0, "Q1: JVM 内存模型？", "JVM", "堆分新生代与老年代"),
-          followUpCandidate(1, "F1: 堆为什么分代？", "JVM"),
-          InterviewQuestionDTO.createMain(
-              2, "Q2: Redis 持久化？", "REDIS", "Redis", null, 3, List.of()));
+      List<InterviewTurnDTO> turns = List.of(
+          answeredTurn(1, "Q1: JVM 内存模型？", "JVM", "堆分新生代与老年代"));
 
-      List<String> turns = TurnEvaluationService.recentTurnsFor(questions, 2, "JVM");
+      List<String> rendered = TurnEvaluationService.recentTurnsFor(turns, "JVM");
 
-      assertThat(turns).hasSize(1);
-      assertThat(turns.get(0)).contains("JVM 内存模型").contains("新生代");
+      assertThat(rendered).hasSize(1);
+      assertThat(rendered.get(0)).contains("JVM 内存模型").contains("新生代");
     }
 
     @Test
     @DisplayName("最多取 2 轮且取最近的，展示顺序仍是时间正序")
     void capsAndKeepsChronologicalOrder() {
-      List<InterviewQuestionDTO> questions = List.of(
-          answered(0, "Q1", "JVM", "答1"),
-          answered(1, "Q2", "JVM", "答2"),
-          answered(2, "Q3", "JVM", "答3"));
+      // 调用方传进来的轨迹已排除当前轮，因此这里取最后两轮
+      List<InterviewTurnDTO> turns = List.of(
+          answeredTurn(1, "Q1", "JVM", "答1"),
+          answeredTurn(2, "Q2", "JVM", "答2"),
+          answeredTurn(3, "Q3", "JVM", "答3"));
 
-      List<String> turns = TurnEvaluationService.recentTurnsFor(questions, 2, "JVM");
+      List<String> rendered = TurnEvaluationService.recentTurnsFor(turns, "JVM");
 
-      assertThat(turns).hasSize(2);
-      assertThat(turns.get(0)).contains("Q1").contains("答1");
-      assertThat(turns.get(1)).contains("Q2").contains("答2");
+      assertThat(rendered).hasSize(2);
+      assertThat(rendered.get(0)).contains("Q2").contains("答2");
+      assertThat(rendered.get(1)).contains("Q3").contains("答3");
     }
 
     @Test
     @DisplayName("只取同技能的轮次：跨技能的历史会把无关内容当成参照")
     void filteredBySkill() {
-      List<InterviewQuestionDTO> questions = List.of(
-          answered(0, "Q1: Redis 持久化？", "Redis", "RDB 和 AOF"));
+      List<InterviewTurnDTO> turns = List.of(
+          answeredTurn(1, "Q1: Redis 持久化？", "Redis", "RDB 和 AOF"));
 
-      assertThat(TurnEvaluationService.recentTurnsFor(questions, 1, "JVM")).isEmpty();
+      assertThat(TurnEvaluationService.recentTurnsFor(turns, "JVM")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("跳过与未作答的轮次不作为历史参照（没有作答内容就没有参照价值）")
+    void skipsNonAnswers() {
+      List<InterviewTurnDTO> turns = List.of(
+          new InterviewTurnDTO("q1", 1, 0, "Q1: JVM 内存模型？", "JVM", null, null,
+              InterviewAnswerEntity.AnswerState.SKIPPED, null, null,
+              InterviewTurnDTO.ACTION_NEXT_MAIN, null, List.of(), null));
+
+      assertThat(TurnEvaluationService.recentTurnsFor(turns, "JVM")).isEmpty();
     }
   }
 
@@ -201,19 +211,11 @@ class TurnEvaluationContextTest {
         List.of("触发条件", "发生区域"));
   }
 
-  /** 已作答的一轮（答案状态为 ANSWERED，才可能进历史参照） */
-  private static InterviewQuestionDTO answered(
-      int index, String question, String category, String answer) {
-    return InterviewQuestionDTO.createMain(index, question, category.toUpperCase(Locale.ROOT),
-            category, null, 3, List.of())
-        .withAnswer(answer)
-        .withAnswerState(InterviewAnswerEntity.AnswerState.ANSWERED);
-  }
-
-  /** 候选择问：在题单里存在，但从未被问到（没有作答记录） */
-  private static InterviewQuestionDTO followUpCandidate(
-      int index, String question, String category) {
-    return InterviewQuestionDTO.createFollowUp(index, question, category.toUpperCase(Locale.ROOT),
-        category, 0, 1, "WHY", List.of());
+  /** 已作答的一轮（P4-1：历史参照来自实际轨迹，不再从候选素材里推断） */
+  private static InterviewTurnDTO answeredTurn(
+      int ordinal, String question, String category, String answer) {
+    return new InterviewTurnDTO("q" + ordinal, ordinal, ordinal - 1, question,
+        category, null, answer, InterviewAnswerEntity.AnswerState.ANSWERED, null, null,
+        InterviewTurnDTO.ACTION_NEXT_MAIN, null, List.of(), null);
   }
 }

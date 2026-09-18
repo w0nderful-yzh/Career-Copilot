@@ -66,6 +66,7 @@ export const interviewApi = {
     return request.post<SubmitAnswerResponse>(
       `/api/interview/sessions/${req.sessionId}/answers`,
       {
+        questionId: req.questionId,
         questionIndex: req.questionIndex,
         answer: req.answer,
         requestId: req.requestId,
@@ -105,13 +106,13 @@ export const interviewApi = {
    */
   async skipQuestion(
     sessionId: string,
-    questionIndex: number,
+    questionId: string,
     requestId?: string,
     expectedVersion?: number,
   ): Promise<SubmitAnswerResponse> {
     return request.post<SubmitAnswerResponse>(
       `/api/interview/sessions/${sessionId}/skip`,
-      { questionIndex, requestId, expectedVersion }
+      { questionId, requestId, expectedVersion }
     );
   },
 

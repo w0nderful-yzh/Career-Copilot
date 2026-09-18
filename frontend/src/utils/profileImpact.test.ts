@@ -60,10 +60,10 @@ test('同幅度时按技能名稳定排序', () => {
   assert.deepEqual(ordered.map((item) => item.skill), ['Java', 'Redis']);
 });
 
-test('证据来源：题号从 0 计，显示为第 N 题；缺失时退化', () => {
-  assert.equal(evidenceSourceText({ sourceId: 'abc:2', questionIndex: 2, score: 80 }), '面试 · 第 3 题');
+test('证据来源：序号是真实发生顺序（1 起），缺失时退化为场次记录', () => {
+  assert.equal(evidenceSourceText({ sourceId: 'abc:2', questionOrdinal: 3, score: 80 }), '面试 · 第 3 题');
   assert.equal(
-    evidenceSourceText({ sourceId: 'abc:0', questionIndex: null, score: 80 }),
+    evidenceSourceText({ sourceId: 'abc:0', questionOrdinal: null, score: 80 }),
     '面试 · 场次记录',
   );
 });
@@ -75,7 +75,7 @@ test('证据时间格式化；缺失或非法时返回空串（不显示占位�
 });
 
 test('从证据 sourceId 解析场次 ID，用于追溯跳转', () => {
-  assert.equal(sessionIdOf({ sourceId: 'abc123:4', questionIndex: 4, score: 80 }), 'abc123');
-  assert.equal(sessionIdOf({ sourceId: 'abc123', questionIndex: null, score: 80 }), null);
-  assert.equal(sessionIdOf({ sourceId: ':3', questionIndex: 3, score: 80 }), null);
+  assert.equal(sessionIdOf({ sourceId: 'abc123:4', questionOrdinal: 5, score: 80 }), 'abc123');
+  assert.equal(sessionIdOf({ sourceId: 'abc123', questionOrdinal: null, score: 80 }), null);
+  assert.equal(sessionIdOf({ sourceId: ':3', questionOrdinal: 3, score: 80 }), null);
 });

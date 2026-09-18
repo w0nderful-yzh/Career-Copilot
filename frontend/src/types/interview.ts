@@ -6,14 +6,22 @@ export interface InterviewSession {
   sessionId: string;
   resumeText: string;
   /**
-   * 题库总数（含**候选择问**）。
+   * 候选素材总数（含**候选择问**）。
    *
-   * 注意：**不要**拿它当进度分母——自适应会话会跳过部分候选追问，用它做分母会让总进度虚高
-   * （用户只答了 3 题却显示「第 10 / 12 题」）。进度请用 answeredCount + 主问题数推导。
+   * 注意：**不要**拿它当进度分母——自适应会话会跳过部分候选追问，用它做分母会让总进度虚高。
+   * 进度请用 turns 的实际已答数 + 主问题数推导。
    */
   totalQuestions: number;
+  /** 候选池内顺序（展示/历史兼容用）；判断路径请用 currentQuestionId */
   currentQuestionIndex: number;
-  questions: InterviewQuestion[];
+  /** 当前待答题的稳定标识（P4-1）：提交与跳过都传它 */
+  currentQuestionId?: string | null;
+  /** 当前待答题：服务端按标识定位好，前端不必再按下标推 */
+  currentQuestion?: InterviewQuestion | null;
+  /** 候选素材（只读）：**可以问什么**，未问过的候选择问也在里面 */
+  candidates: InterviewQuestion[];
+  /** 实际轨迹：**实际发生了什么**（作答/跳过/明确不会，按发生顺序） */
+  turns: InterviewTurn[];
   status: 'CREATED' | 'IN_PROGRESS' | 'COMPLETED' | 'EVALUATED';
   knowledgeBaseId?: number | null;
   interviewCategory?: string | null;
@@ -31,34 +39,58 @@ export interface InterviewSession {
   /**
    * 会话推进版本（P4-9a）：每次作答 / 跳过 / 结束 +1。
    *
-   * 提交下一轮时把它作为 expectedVersion 回传；服务端据此拒绝过期请求
-   * （另一个标签页已答完这题、或用户已结束面试），不会静默改写历史。
+   * 提交下一轮时把它作为 expectedVersion 回传；服务端据此拒绝过期请求。
    */
   turnVersion?: number | null;
+  /** 结束原因（P4-1）：CANDIDATES_EXHAUSTED / USER_FINISHED；null = 未结束或历史场次 */
+  endReason?: string | null;
+}
+
+/** 实际发生的一轮（P4-1）：候选素材之外唯一可信的面试轨迹 */
+export interface InterviewTurn {
+  /** 题目稳定标识（候选池内唯一） */
+  questionId?: string | null;
+  /** 真实发生顺序（1 起）；报告补写的未考察项为 null */
+  ordinal?: number | null;
+  questionIndex?: number | null;
+  question?: string | null;
+  /** 考察技能名；话题类轮次为 null */
+  category?: string | null;
+  /** 交流话题，如「项目经历」 */
+  topic?: string | null;
+  userAnswer?: string | null;
+  answerState?: 'ANSWERED' | 'SKIPPED' | 'DECLINED' | 'UNANSWERED' | null;
+  score?: number | null;
+  feedback?: string | null;
+  /** 本轮最终决定：FOLLOW_UP / NEXT_MAIN / FINISH_EXHAUSTED / FINISH_USER */
+  decidedAction?: string | null;
+  referenceAnswer?: string | null;
+  keyPoints?: string[] | null;
+  occurredAt?: string | null;
 }
 
 export type AsyncTaskStatus = 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
 
 export interface InterviewQuestion {
+  /** 题目稳定标识（P4-1）：排序/合并不改变它 */
+  questionId: string;
+  /** 候选池内顺序；仅展示与历史兼容用 */
   questionIndex: number;
   question: string;
   type: string;
-  category: string;
+  /** 考察技能名；话题类候选为 null */
+  category: string | null;
+  /** 交流话题，如「项目经历」；与考察技能分开表达（P4-1） */
+  topic?: string | null;
   topicSummary?: string | null;
-  userAnswer: string | null;
-  score: number | null;
-  feedback: string | null;
   isFollowUp?: boolean;
-  parentQuestionIndex?: number | null;
-  /** 追问序号（P4Q-6）：同一主问题下的第几条追问，主问题为 null；技能名不再拼序号 */
+  /** 追问所属主问题的稳定标识 */
+  parentQuestionId?: string | null;
+  /** 追问序号（P4Q-6）：同一主问题下的第几条追问，主问题为 null */
   followUpIndex?: number | null;
-  /**
-   * 该题的作答状态（P4Q-5）：null/undefined = 尚未提问过。
-   *
-   * 跳过时 userAnswer 为空，只看答案文本会把已跳过的题从轨迹里丢掉，所以判据是
-   * 「有答案 或 有状态」。
-   */
-  answerState?: 'ANSWERED' | 'SKIPPED' | 'DECLINED' | 'UNANSWERED' | null;
+  difficulty?: number | null;
+  followUpType?: string | null;
+  expectedPoints?: string[] | null;
   referenceAnswer?: string | null;
   keyPoints?: string[];
   scoringRubric?: string | null;
@@ -67,10 +99,16 @@ export interface InterviewQuestion {
 
 // ===== 本场面试的画像变化（P3 待收口） =====
 
-/** 本场贡献的一条证据：题号由 sourceId（"sessionId:questionIndex"）解析而来 */
+/**
+ * 本场贡献的一条证据。
+ *
+ * sourceId 形如 "sessionId:questionKey"（P4-1 起 key 是题目稳定标识）；
+ * questionOrdinal 是**真实发生顺序**（1 起），解析不到时为 null。
+ */
 export interface ImpactEvidence {
   sourceId: string;
-  questionIndex: number | null;
+  questionKey?: string | null;
+  questionOrdinal: number | null;
   score: number;
   occurredAt?: string | null;
 }
@@ -106,7 +144,10 @@ export interface CreateInterviewRequest {
 
 export interface SubmitAnswerRequest {
   sessionId: string;
-  questionIndex: number;
+  /** 待答题的稳定标识（P4-1）：来自 currentQuestionId */
+  questionId: string;
+  /** 候选池内顺序：仅旧调用方兼容 */
+  questionIndex?: number;
   answer: string;
   /**
    * 请求标识（P4-9a）：同一次提交的重试必须复用同一个标识，

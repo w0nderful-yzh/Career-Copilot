@@ -1,7 +1,6 @@
 package interview.guide.modules.interview.model;
 
 import jakarta.validation.constraints.Min;
-import jakarta.validation.constraints.NotNull;
 
 /**
  * 逐轮提交的 HTTP 入参（P4-9a）。
@@ -23,7 +22,9 @@ public final class InterviewTurnRequests {
      *                        用来拒绝过期请求；为 null 时服务端以数据库当前版本为准
      */
     public record SubmitAnswerBody(
-        @NotNull(message = "问题索引不能为空")
+        /** 待答题的稳定标识（P4-1）：来自会话读取的 currentQuestionId */
+        String questionId,
+        /** 候选池内顺序：仅旧调用方兼容（新前端只传标识） */
         @Min(value = 0, message = "问题索引无效")
         Integer questionIndex,
         String answer,
@@ -34,7 +35,9 @@ public final class InterviewTurnRequests {
 
     /** 跳过当前题（一等动作，与提交共用同一条推进链路） */
     public record SkipBody(
-        @NotNull(message = "问题索引不能为空")
+        /** 待跳过的题目稳定标识（P4-1） */
+        String questionId,
+        /** 候选池内顺序：仅旧调用方兼容 */
         @Min(value = 0, message = "问题索引无效")
         Integer questionIndex,
         String requestId,

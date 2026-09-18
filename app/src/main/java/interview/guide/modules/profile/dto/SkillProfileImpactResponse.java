@@ -32,12 +32,14 @@ public record SkillProfileImpactResponse(
   /**
    * 本场贡献的一条证据。
    *
-   * <p>{@code questionIndex} 由 evidence.sourceId（"sessionId:questionIndex"）解析而来，
-   * 无法解析时为 null——它用于把「这一分」指回具体是哪一道题。
+   * @param sourceId        evidence.sourceId：{@code "sessionId:questionKey"}，供追溯
+   * @param questionKey     题目稳定标识（P4-1）；旧数据是下标或 {@code legacy-<下标>}
+   * @param questionOrdinal 真实发生顺序（1 起），用于展示「第 N 题」；解析不到时为 null
    */
   public record SessionEvidenceDTO(
       String sourceId,
-      Integer questionIndex,
+      String questionKey,
+      Integer questionOrdinal,
       int score,
       LocalDateTime occurredAt
   ) {}

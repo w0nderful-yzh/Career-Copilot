@@ -51,18 +51,9 @@ public class InterviewHistoryService {
         List<String> improvements = parseJson(session.getImprovementsJson(), new TypeReference<>() {});
         List<Object> referenceAnswers = parseJson(session.getReferenceAnswersJson(), new TypeReference<>() {});
 
-        // 解析所有题目（用于构建完整的答案列表）
-        List<InterviewQuestionDTO> allQuestions = parseJson(
-            session.getQuestionsJson(),
-                new TypeReference<>() {
-                }
-        );
-
-        // 构建答案详情列表（包含所有题目，未回答的也要显示）
-        List<InterviewDetailDTO.AnswerDetailDTO> answerList = buildAnswerDetailList(
-            allQuestions,
-            session.getAnswers()
-        );
+        // P4-1：答案列表 = **实际轨迹**（未问过的候选不在这里；未考察由报告覆盖范围表达）
+        List<InterviewAnswerEntity> turns = interviewPersistenceService.findTurnEntitiesBySessionId(sessionId);
+        List<InterviewDetailDTO.AnswerDetailDTO> answerList = buildAnswerDetailList(turns);
 
         // 使用 MapStruct 组装最终 DTO
         return interviewMapper.toDetailDTO(
@@ -76,49 +67,18 @@ public class InterviewHistoryService {
     }
 
     /**
-     * 构建答案详情列表（包含所有题目）
-     * 对于用户已回答的题目使用答案数据，对于未回答的题目构建空答案
+     * 构建答案详情列表（P4-1：只列**真实发生过**的轮次，按发生顺序）。
+     *
+     * <p>此前按候选池逐题遍历、未回答的补空行，于是「候选择问」也会出现在轨迹里；
+     * 现在轨迹就是轨迹——报告负责说明覆盖与未考察。
      */
     private List<InterviewDetailDTO.AnswerDetailDTO> buildAnswerDetailList(
-        List<InterviewQuestionDTO> allQuestions,
-        List<InterviewAnswerEntity> answers
+        List<InterviewAnswerEntity> turns
     ) {
-        if (allQuestions == null || allQuestions.isEmpty()) {
-            // 如果没有题目数据，回退到仅显示已回答的题目
-            return interviewMapper.toAnswerDetailDTOList(answers, this::extractKeyPoints);
+        if (turns == null || turns.isEmpty()) {
+            return List.of();
         }
-
-        // 将答案按 questionIndex 索引
-        java.util.Map<Integer, InterviewAnswerEntity> answerMap = answers.stream()
-            .collect(java.util.stream.Collectors.toMap(
-                InterviewAnswerEntity::getQuestionIndex,
-                a -> a,
-                (a1, a2) -> a1  // 如果有重复，取第一个
-            ));
-
-        // 遍历所有题目，构建完整的答案详情列表
-        return allQuestions.stream()
-            .map(question -> {
-                InterviewAnswerEntity answer = answerMap.get(question.questionIndex());
-                if (answer != null) {
-                    // 用户已回答，使用答案数据
-                    return interviewMapper.toAnswerDetailDTO(answer, extractKeyPoints(answer));
-                } else {
-                    // 用户未回答，构建空答案
-                    return new InterviewDetailDTO.AnswerDetailDTO(
-                        question.questionIndex(),
-                        question.question(),
-                        question.category(),
-                        null,  // userAnswer
-                        question.score() != null ? question.score() : 0,  // score
-                        question.feedback(),  // feedback
-                        null,  // referenceAnswer
-                        null,  // keyPoints
-                        null   // answeredAt
-                    );
-                }
-            })
-            .toList();
+        return interviewMapper.toAnswerDetailDTOList(turns, this::extractKeyPoints);
     }
 
     /**

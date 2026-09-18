@@ -3,6 +3,8 @@ package interview.guide.modules.interview.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -23,6 +25,7 @@ import interview.guide.modules.interview.model.InterviewAnswerEntity.AnswerState
 import interview.guide.modules.interview.model.InterviewQuestionDTO;
 import interview.guide.modules.interview.model.InterviewSessionDTO.SessionStatus;
 import interview.guide.modules.interview.model.InterviewSessionEntity;
+import interview.guide.modules.interview.model.InterviewTurnDTO;
 import interview.guide.modules.interview.model.InterviewTurnCommit;
 import interview.guide.modules.interview.model.InterviewTurnResult;
 import interview.guide.modules.interview.model.SubmitAnswerRequest;
@@ -111,18 +114,30 @@ class SkipSemanticsTest {
     lenient().when(redisService.setIfAbsent(anyString(), any(), any())).thenReturn(true);
     lenient().when(persistenceService.applyTurn(any())).thenAnswer(invocation -> {
       committed = invocation.getArgument(0, InterviewTurnCommit.class);
-      return new InterviewTurnResult(committed.expectedVersion() + 1, 1L);
+      return new InterviewTurnResult(committed.expectedVersion() + 1, 1L, 1);
     });
   }
 
-  /** 题单顺序：0 主问题 / 1 其候选追问 / 2 第二个主问题 */
+  /** 候选池顺序：0 主问题 / 1 其候选追问 / 2 第二个主问题（P4-1：父链用标识） */
   private static List<InterviewQuestionDTO> pool() {
+    InterviewQuestionDTO main = InterviewQuestionDTO.createMain(
+        0, "Q1: JVM 内存模型？", "JAVA", "Java", null, 3, List.of()).withQuestionId(Q1);
     return List.of(
-        InterviewQuestionDTO.createMain(0, "Q1: JVM 内存模型？", "JAVA", "Java", null, 3, List.of()),
-        InterviewQuestionDTO.createFollowUp(1, "F1: 堆为什么分代？", "JAVA", "Java", 0, 1, "WHY",
-            List.of()),
+        main,
+        InterviewQuestionDTO.createFollowUp(1, "F1: 堆为什么分代？", "JAVA", "Java", Q1, 1, "WHY",
+            List.of()).withQuestionId(F1),
         InterviewQuestionDTO.createMain(2, "Q2: Redis 持久化？", "REDIS", "Redis", null, 3,
-            List.of()));
+            List.of()).withQuestionId(Q2));
+  }
+
+  /** 固定题目标识：断言可读，且不依赖随机 id */
+  private static final String Q1 = "q-skip-1";
+  private static final String F1 = "q-skip-2";
+  private static final String Q2 = "q-skip-3";
+
+  /** 池内第 index 个候选的标识（原测试按序号表达意图，这里保持同样的可读性） */
+  private static String idAt(int index) {
+    return pool().get(index).questionId();
   }
 
   private void putSession(String sessionId, boolean adaptive) {
@@ -136,14 +151,17 @@ class SkipSemanticsTest {
    * 让本类只关注答案语义。
    */
   private void putSession(String sessionId, boolean adaptive, int currentIndex) {
-    cacheStore.put(sessionId, new CachedSession(
+    CachedSession cached = new CachedSession(
         sessionId, "简历", null, null, null, pool(), currentIndex,
-        SessionStatus.IN_PROGRESS, adaptive, objectMapper));
+        SessionStatus.IN_PROGRESS, adaptive, objectMapper);
+    cached.setCurrentQuestionId(idAt(currentIndex));
+    cacheStore.put(sessionId, cached);
 
     InterviewSessionEntity entity = new InterviewSessionEntity();
     entity.setSessionId(sessionId);
     entity.setStatus(InterviewSessionEntity.SessionStatus.IN_PROGRESS);
     entity.setCurrentQuestionIndex(currentIndex);
+    entity.setCurrentQuestionId(idAt(currentIndex));
     entity.setTurnVersion(0);
     entity.setEvaluateEpoch(0L);
     entity.setLlmProvider("glm");
@@ -155,7 +173,7 @@ class SkipSemanticsTest {
   void skipDoesNotCallModelAndSkipsFollowUpGroup() {
     putSession("s1", true);
 
-    SubmitAnswerResponse response = service.skipQuestion("s1", 0);
+    SubmitAnswerResponse response = service.skipQuestion("s1", idAt(0));
 
     assertThat(response.hasNextQuestion()).isTrue();
     assertThat(response.nextQuestion().questionIndex()).isEqualTo(2);
@@ -167,7 +185,7 @@ class SkipSemanticsTest {
   void skipOnFollowUpMovesToNextMainQuestion() {
     putSession("s2", true, 1);
 
-    SubmitAnswerResponse response = service.skipQuestion("s2", 1);
+    SubmitAnswerResponse response = service.skipQuestion("s2", idAt(1));
 
     assertThat(response.nextQuestion().questionIndex()).isEqualTo(2);
   }
@@ -177,7 +195,7 @@ class SkipSemanticsTest {
   void blankAnswerDoesNotCallModel() {
     putSession("s3", true);
 
-    service.submitAnswer(new SubmitAnswerRequest("s3", 0, "   "));
+    service.submitAnswer(new SubmitAnswerRequest("s3", idAt(0), "   "));
 
     verify(turnEvaluationService, never()).evaluateTurn(any(), any());
   }
@@ -187,7 +205,7 @@ class SkipSemanticsTest {
   void nonAdaptiveSessionRecognizesExactSkipPhrase() {
     putSession("s4", false);
 
-    SubmitAnswerResponse response = service.submitAnswer(new SubmitAnswerRequest("s4", 0, "跳过"));
+    SubmitAnswerResponse response = service.submitAnswer(new SubmitAnswerRequest("s4", idAt(0), "跳过"));
 
     assertThat(response.nextQuestion().questionIndex()).isEqualTo(1);
     verify(turnEvaluationService, never()).evaluateTurn(any(), any());
@@ -201,7 +219,7 @@ class SkipSemanticsTest {
         .thenReturn(TurnEvaluation.skipped());
 
     service.submitAnswer(new SubmitAnswerRequest(
-        "s5", 0, "这题我明确我会，打字的话太多了，跳过"));
+        "s5", idAt(0), "这题我明确我会，打字的话太多了，跳过"));
 
     // 跳过与 NO_ANSWER 同属「不深挖」：不追问、直接换主问题
     assertThat(committed.answerState()).isEqualTo(AnswerState.SKIPPED);
@@ -215,7 +233,7 @@ class SkipSemanticsTest {
     when(turnEvaluationService.evaluateTurn(any(), any()))
         .thenReturn(TurnEvaluation.noAnswer());
 
-    service.submitAnswer(new SubmitAnswerRequest("s6", 0, "这个原理我确实没搞明白"));
+    service.submitAnswer(new SubmitAnswerRequest("s6", idAt(0), "这个原理我确实没搞明白"));
 
     assertThat(committed.answerState()).isEqualTo(AnswerState.DECLINED);
   }
@@ -227,22 +245,25 @@ class SkipSemanticsTest {
     when(turnEvaluationService.evaluateTurn(any(), any()))
         .thenReturn(new TurnEvaluation(80, 0.8, List.of("堆"), List.of(), TURN_GOOD, "", true));
 
-    service.submitAnswer(new SubmitAnswerRequest("s7", 0, "堆和方法区……"));
+    service.submitAnswer(new SubmitAnswerRequest("s7", idAt(0), "堆和方法区……"));
 
     verify(turnEvaluationService).evaluateTurn(any(), any());
     assertThat(committed.answerState()).isEqualTo(AnswerState.ANSWERED);
   }
 
   @Test
-  @DisplayName("跳过后题目可还原「发生过」：刷新不会丢掉已跳过的轮次")
+  @DisplayName("跳过后可还原「发生过」：轨迹里留状态，候选素材保持只读")
   void skippedQuestionIsRecoverable() {
-    InterviewQuestionDTO skipped = pool().get(0).withAnswer(null)
-        .withAnswerState(AnswerState.SKIPPED);
+    // P4-1：跳过的轮次由**实际轨迹**表达（候选素材不再被写回答案）
+    InterviewTurnDTO skipped = new InterviewTurnDTO(Q1, 1, 0, "Q1: JVM 内存模型？", "Java", null,
+        null, AnswerState.SKIPPED, null, null, InterviewTurnDTO.ACTION_NEXT_MAIN, null,
+        List.of(), null);
     InterviewQuestionDTO untouched = pool().get(2);
 
-    assertThat(skipped.wasAsked()).isTrue();
+    assertThat(skipped.isTurn()).as("跳过是真实发生过的一轮").isTrue();
     assertThat(skipped.answerState()).isEqualTo(AnswerState.SKIPPED);
-    assertThat(untouched.wasAsked()).as("候选择问/未走到不算发生过").isFalse();
+    assertThat(skipped.countsAsAnswer()).as("跳过不参与评分与画像证据").isFalse();
+    assertThat(untouched.questionId()).as("候选择问从未发生，不会出现在轨迹里").isEqualTo(Q2);
   }
 
   @Test
@@ -264,12 +285,16 @@ class SkipSemanticsTest {
   @DisplayName("跳过最后一题仍照常入队评估（报告需要说明跳过）")
   void skipOnLastQuestionEnqueuesEvaluation() {
     putSession("s8", true);
-    cacheStore.put("s8", new CachedSession(
+    CachedSession onlyOne = new CachedSession(
         "s8", "简历", null, null, null,
-        List.of(InterviewQuestionDTO.createMain(0, "Q1", "JAVA", "Java", null, 3, List.of())),
-        0, SessionStatus.IN_PROGRESS, true, objectMapper));
+        List.of(InterviewQuestionDTO.createMain(0, "Q1", "JAVA", "Java", null, 3, List.of())
+            .withQuestionId(Q1)),
+        0, SessionStatus.IN_PROGRESS, true, objectMapper);
+    onlyOne.setCurrentQuestionId(Q1);
+    cacheStore.put("s8", onlyOne);
+    entityStore.get("s8").setCurrentQuestionId(Q1);
 
-    SubmitAnswerResponse response = service.skipQuestion("s8", 0);
+    SubmitAnswerResponse response = service.skipQuestion("s8", idAt(0));
 
     assertThat(response.hasNextQuestion()).isFalse();
     assertThat(committed.completing())
@@ -279,20 +304,23 @@ class SkipSemanticsTest {
   }
 
   @Test
-  @DisplayName("写回缓存题目列表时也带状态：否则刷新恢复看不到「已跳过」")
-  void cachedQuestionsCarryAnswerState() {
+  @DisplayName("写回缓存轨迹时带状态：否则刷新恢复看不到「已跳过」")
+  void cachedTrajectoryCarriesAnswerState() {
     putSession("s10", true);
 
-    service.skipQuestion("s10", 0);
+    service.skipQuestion("s10", idAt(0));
 
     @SuppressWarnings("unchecked")
-    org.mockito.ArgumentCaptor<List<InterviewQuestionDTO>> captor =
+    org.mockito.ArgumentCaptor<List<InterviewTurnDTO>> captor =
         org.mockito.ArgumentCaptor.forClass(List.class);
-    verify(sessionCache).updateQuestions(eq("s10"), captor.capture());
+    verify(sessionCache).applyTurnState(eq("s10"), anyList(), captor.capture(), anyInt(),
+        any(), any(), any());
     assertThat(captor.getValue().get(0).answerState())
         .as("缓存是进行中会话的读取来源，状态漏写会让跳过的轮次在刷新后消失")
         .isEqualTo(AnswerState.SKIPPED);
-    assertThat(captor.getValue().get(1).answerState()).isNull();
+    assertThat(captor.getValue().get(0).decidedAction())
+        .as("本轮最终决定也要落下来，复盘才能解释「为什么换题」")
+        .isEqualTo(InterviewTurnDTO.ACTION_NEXT_MAIN);
   }
 
   @Test
@@ -300,9 +328,11 @@ class SkipSemanticsTest {
   void cacheTurnVersionFollowsCommit() {
     putSession("s11", true);
 
-    service.skipQuestion("s11", 0);
+    service.skipQuestion("s11", idAt(0));
 
-    verify(sessionCache).updateTurnVersion("s11", 1);
+    // 候选 + 轨迹 + 当前题 + 状态 + 版本一次写齐（P4-1 起不再分四次写）
+    verify(sessionCache).applyTurnState(eq("s11"), anyList(), anyList(), anyInt(), any(),
+        any(), eq(1));
   }
 
   @Test
@@ -311,7 +341,7 @@ class SkipSemanticsTest {
     putSession("s9", true);
     doThrow(new RuntimeException("db down")).when(persistenceService).applyTurn(any());
 
-    assertThatThrownBy(() -> service.skipQuestion("s9", 0))
+    assertThatThrownBy(() -> service.skipQuestion("s9", idAt(0)))
         .isInstanceOf(BusinessException.class);
   }
 }

@@ -3,8 +3,11 @@ package interview.guide.modules.profile.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import interview.guide.modules.interview.model.InterviewAnswerEntity;
+import interview.guide.modules.interview.repository.InterviewAnswerRepository;
 import interview.guide.modules.profile.dto.SkillProfileImpactResponse;
 import interview.guide.modules.profile.model.EvidenceSourceType;
 import interview.guide.modules.profile.model.SkillEvidenceEntity;
@@ -33,6 +36,10 @@ class SkillProfileImpactServiceTest {
   @Mock
   private SkillEvidenceRepository evidenceRepository;
 
+  /** P4-1：证据里只有题目标识，展示序号要回轮次行取（真实发生顺序） */
+  @Mock
+  private InterviewAnswerRepository answerRepository;
+
   @InjectMocks
   private SkillProfileImpactService impactService;
 
@@ -40,6 +47,13 @@ class SkillProfileImpactServiceTest {
     return new SkillEvidenceEntity(ProfileConstants.DEFAULT_USER_ID, skill,
         EvidenceSourceType.INTERVIEW_TURN, sourceId, score,
         LocalDateTime.of(2026, 9, day, 10, 0));
+  }
+
+  private static InterviewAnswerEntity turn(String questionId, int ordinal) {
+    InterviewAnswerEntity answer = new InterviewAnswerEntity();
+    answer.setQuestionId(questionId);
+    answer.setTurnOrdinal(ordinal);
+    return answer;
   }
 
   @Test
@@ -50,6 +64,8 @@ class SkillProfileImpactServiceTest {
         EvidenceSourceType.INTERVIEW_TURN, "s1:")).thenReturn(sessionEvidence);
     when(evidenceRepository.findByUserIdAndSkill(anyString(), eq("JVM")))
         .thenReturn(List.of(evidence("JVM", "s0:0", 60, 10), sessionEvidence.getFirst()));
+    when(answerRepository.findTurnsBySessionId(SESSION))
+        .thenReturn(List.of(turn("legacy-0", 1)));
 
     SkillProfileImpactResponse response = impactService.impactOf(SESSION);
 
@@ -59,9 +75,10 @@ class SkillProfileImpactServiceTest {
     assertThat(impact.afterScore()).isEqualTo(70);
     assertThat(impact.delta()).isEqualTo(10);
     assertThat(impact.sessionEvidences())
-        .extracting(SkillProfileImpactResponse.SessionEvidenceDTO::questionIndex,
+        .extracting(SkillProfileImpactResponse.SessionEvidenceDTO::questionKey,
+            SkillProfileImpactResponse.SessionEvidenceDTO::questionOrdinal,
             SkillProfileImpactResponse.SessionEvidenceDTO::score)
-        .containsExactly(org.assertj.core.groups.Tuple.tuple(0, 80));
+        .containsExactly(org.assertj.core.groups.Tuple.tuple("0", 1, 80));
   }
 
   @Test
@@ -126,5 +143,6 @@ class SkillProfileImpactServiceTest {
     assertThat(impactService.impactOf(SESSION).skills())
         .extracting(SkillProfileImpactResponse.SkillImpactDTO::skill)
         .containsExactly("JVM", "Redis");
+    verify(answerRepository).findTurnsBySessionId(SESSION);
   }
 }

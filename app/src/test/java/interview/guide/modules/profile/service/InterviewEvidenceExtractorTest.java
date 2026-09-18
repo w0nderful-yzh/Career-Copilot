@@ -51,7 +51,7 @@ class InterviewEvidenceExtractorTest {
   class Extraction {
 
     @Test
-    @DisplayName("真实作答的题目提取为 INTERVIEW_TURN 证据，sourceId 为 sessionId:idx")
+    @DisplayName("真实作答提取为 INTERVIEW_TURN 证据，旧题号归一为 legacy 标识")
     void extractsAnsweredTurns() {
       LocalDateTime completedAt = LocalDateTime.of(2026, 8, 28, 12, 0);
       when(sessionRepository.findBySessionId("abc123")).thenReturn(Optional.of(
@@ -65,7 +65,7 @@ class InterviewEvidenceExtractorTest {
       SkillEvidenceEntity first = evidences.get(0);
       assertThat(first.getSkill()).isEqualTo("MySQL");
       assertThat(first.getSourceType()).isEqualTo(EvidenceSourceType.INTERVIEW_TURN);
-      assertThat(first.getSourceId()).isEqualTo("abc123:0");
+      assertThat(first.getSourceId()).isEqualTo("abc123:legacy-0");
       assertThat(first.getScore()).isEqualTo(88);
       assertThat(first.getOccurredAt()).isEqualTo(completedAt);
     }
@@ -130,7 +130,7 @@ class InterviewEvidenceExtractorTest {
 
       assertThat(evidences)
           .extracting(SkillEvidenceEntity::getSourceId)
-          .containsExactly("abc123:0", "abc123:1");
+          .containsExactly("abc123:legacy-0", "abc123:legacy-1");
       assertThat(evidences)
           .allSatisfy(e -> assertThat(e.getSkill()).isEqualTo("Java"));
     }

@@ -1,6 +1,7 @@
 package interview.guide.modules.profile.service;
 
 import interview.guide.modules.interview.model.InterviewAnswerEntity;
+import interview.guide.modules.interview.model.InterviewQuestionDTO;
 import interview.guide.modules.interview.model.InterviewSessionEntity;
 import interview.guide.modules.interview.repository.InterviewSessionRepository;
 import interview.guide.modules.profile.model.EvidenceSourceType;
@@ -65,12 +66,27 @@ public class InterviewEvidenceExtractor {
           ProfileConstants.DEFAULT_USER_ID,
           skill,
           EvidenceSourceType.INTERVIEW_TURN,
-          sessionId + ":" + answer.getQuestionIndex(),
+          sessionId + ":" + evidenceKey(answer),
           answer.getScore(),
           session.getCompletedAt() != null ? session.getCompletedAt() : LocalDateTime.now()));
     }
     log.info("面试证据已提取: sessionId={}, 证据数={}", sessionId, evidences.size());
     return evidences;
+  }
+
+  /**
+   * 证据来源键（P4-1）：优先**题目标识**，旧数据没有标识时才退回 `legacy-<下标>`。
+   *
+   * <p>格式仍是 {@code sessionId:key}——它是「同一轮次只计一次分」的唯一依据
+   * （唯一索引 (user_id, skill, source_type, source_id)）。
+   */
+  private static String evidenceKey(InterviewAnswerEntity answer) {
+    if (answer.getQuestionId() != null && !answer.getQuestionId().isBlank()) {
+      return answer.getQuestionId();
+    }
+    return answer.getQuestionIndex() == null
+        ? "unknown"
+        : InterviewQuestionDTO.legacyIdFor(answer.getQuestionIndex());
   }
 
   /**

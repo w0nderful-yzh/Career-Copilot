@@ -36,12 +36,17 @@ export function orderImpacts(skills: SkillImpact[]): SkillImpact[] {
   });
 }
 
-/** 证据来源的可读文本："面试 · 第 3 题"；题号缺失时退化为场次标识 */
+/**
+ * 证据来源的可读文本："面试 · 第 3 题"；序号缺失时退化为场次标识。
+ *
+ * questionOrdinal 是**真实发生顺序**（1 起，P4-1），不再需要 +1；拿不到时宁可不显示序号，
+ * 也不编一个可能指错题的假号。
+ */
 export function evidenceSourceText(evidence: ImpactEvidence): string {
-  if (evidence.questionIndex === null || evidence.questionIndex === undefined) {
+  if (evidence.questionOrdinal === null || evidence.questionOrdinal === undefined) {
     return '面试 · 场次记录';
   }
-  return `面试 · 第 ${evidence.questionIndex + 1} 题`;
+  return `面试 · 第 ${evidence.questionOrdinal} 题`;
 }
 
 /** 证据时间："2026-09-15 10:00"；缺失或非法时返回空串（不显示占位假时间） */

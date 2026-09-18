@@ -143,6 +143,29 @@ public class InterviewSessionEntity {
     @Column(name = "evaluate_epoch", nullable = false)
     private Long evaluateEpoch = 0L;
 
+    /**
+     * 结束原因（P4-1）：候选素材耗尽与用户主动结束必须能分开表达。
+     *
+     * <p>此前结束只有 status=COMPLETED 一种说法，「候选问完了」「用户不想聊了」「预算到了」
+     * 在数据上无法区分，报告与复盘也就说不出「为什么这场结束了」。覆盖与预算原因由 P4Q-2 扩展。
+     */
+    @Column(name = "end_reason", length = 32)
+    private String endReason;
+
+    /** 候选素材已耗尽（不是「考察完成」——覆盖是否充分是另一件事） */
+    public static final String END_CANDIDATES_EXHAUSTED = "CANDIDATES_EXHAUSTED";
+    /** 用户主动结束（提前交卷 / 自然语言要求结束） */
+    public static final String END_USER_FINISHED = "USER_FINISHED";
+
+    /**
+     * 当前待答题的稳定标识（P4-1）。
+     *
+     * <p>推进闸门与「当前题」定位都基于它；{@link #currentQuestionIndex} 退化为展示顺序
+     * 与旧数据兼容。旧会话由迁移按 {@code legacy-<index>} 回填。
+     */
+    @Column(name = "current_question_id", length = 64)
+    private String currentQuestionId;
+
     public enum SessionStatus {
         CREATED,      // 会话已创建
         IN_PROGRESS,  // 面试进行中
@@ -398,6 +421,22 @@ public class InterviewSessionEntity {
 
     public void setEvaluateEpoch(Long evaluateEpoch) {
         this.evaluateEpoch = evaluateEpoch;
+    }
+
+    public String getEndReason() {
+        return endReason;
+    }
+
+    public void setEndReason(String endReason) {
+        this.endReason = endReason;
+    }
+
+    public String getCurrentQuestionId() {
+        return currentQuestionId;
+    }
+
+    public void setCurrentQuestionId(String currentQuestionId) {
+        this.currentQuestionId = currentQuestionId;
     }
 
     public void addAnswer(InterviewAnswerEntity answer) {

@@ -10,10 +10,13 @@ import java.time.LocalDateTime;
 @Entity
 @Table(name = "interview_answers",
     uniqueConstraints = {
-        @UniqueConstraint(name = "uk_interview_answer_session_question", columnNames = {"session_id", "question_index"})
+        // P4-1：身份从「数组下标」迁到「题目标识」——排序与合并都不再影响它
+        @UniqueConstraint(name = "uk_interview_answer_session_question_id",
+            columnNames = {"session_id", "question_id"})
     },
     indexes = {
-        @Index(name = "idx_interview_answer_session_question", columnList = "session_id,question_index")
+        @Index(name = "idx_interview_answer_session_question", columnList = "session_id,question_index"),
+        @Index(name = "idx_interview_answer_session_ordinal", columnList = "session_id,turn_ordinal")
     })
 public class InterviewAnswerEntity {
     
@@ -25,8 +28,32 @@ public class InterviewAnswerEntity {
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "session_id", nullable = false)
     private InterviewSessionEntity session;
-    
-    // 问题索引
+
+    /**
+     * 题目稳定标识（P4-1）：候选池内唯一，跨排序不变。
+     *
+     * <p>旧数据由迁移按 {@code legacy-<questionIndex>} 回填，读取端用同一规则派生。
+     */
+    @Column(name = "question_id", nullable = false, length = 64)
+    private String questionId;
+
+    /**
+     * 真实发生顺序（1 起，P4-1）。
+     *
+     * <p>为空 = 报告补写的「未考察」行：它不属于面试轨迹，前端不会把它当成问过的题。
+     */
+    @Column(name = "turn_ordinal")
+    private Integer turnOrdinal;
+
+    /**
+     * 本轮最终决定（P4-1）：跟进追问 / 转下一主问题 / 候选耗尽结束 / 用户结束。
+     *
+     * <p>记的是**被 Java 接纳后真正执行**的那个动作，不是模型的建议。
+     */
+    @Column(name = "decided_action", length = 32)
+    private String decidedAction;
+
+    // 问题索引（候选池内顺序；展示与旧数据兼容用，不再作身份）
     @Column(name = "question_index")
     private Integer questionIndex;
     
@@ -65,7 +92,7 @@ public class InterviewAnswerEntity {
      *
      * <p>只有 {@link AnswerState#ANSWERED} 参与报告评分与画像证据——否则「跳过」会被
      * 当成技术答案打 0 分并污染画像（缺陷期间真实发生过）。
-     * 未考察不落库：没有答案行即为未考察。
+     * 未考察不落库：没有答案行即为未考察（报告补写的行 {@code turnOrdinal} 为空，不属于轨迹）。
      */
     @Enumerated(EnumType.STRING)
     @Column(name = "answer_state", nullable = false, length = 16)
@@ -89,6 +116,10 @@ public class InterviewAnswerEntity {
 
     @PrePersist
     protected void onCreate() {
+        // 兼容仍按候选顺序构造答案实体的内部调用：数据库身份始终非空。
+        if ((questionId == null || questionId.isBlank()) && questionIndex != null) {
+            questionId = InterviewQuestionDTO.legacyIdFor(questionIndex);
+        }
         answeredAt = LocalDateTime.now();
     }
     
@@ -109,6 +140,30 @@ public class InterviewAnswerEntity {
         this.session = session;
     }
     
+    public String getQuestionId() {
+        return questionId;
+    }
+
+    public void setQuestionId(String questionId) {
+        this.questionId = questionId;
+    }
+
+    public Integer getTurnOrdinal() {
+        return turnOrdinal;
+    }
+
+    public void setTurnOrdinal(Integer turnOrdinal) {
+        this.turnOrdinal = turnOrdinal;
+    }
+
+    public String getDecidedAction() {
+        return decidedAction;
+    }
+
+    public void setDecidedAction(String decidedAction) {
+        this.decidedAction = decidedAction;
+    }
+
     public Integer getQuestionIndex() {
         return questionIndex;
     }

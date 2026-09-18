@@ -13,6 +13,8 @@ import interview.guide.modules.interview.model.CreateInterviewRequest;
 import interview.guide.modules.interview.model.HistoricalQuestion;
 import interview.guide.modules.interview.model.InterviewAnswerEntity;
 import interview.guide.modules.interview.model.InterviewQuestionDTO;
+import interview.guide.modules.interview.model.InterviewQuestionIdentity;
+import interview.guide.modules.interview.model.InterviewTurnDTO;
 import interview.guide.modules.interview.model.InterviewResumeContext;
 import interview.guide.modules.interview.model.InterviewReportDTO;
 import interview.guide.modules.interview.model.InterviewSessionDTO;
@@ -35,13 +37,19 @@ import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -328,7 +336,8 @@ public class InterviewSessionService {
             sessionCache.updateSessionStatus(sessionId, authoritative);
             cached.setStatus(authoritative);
         }
-        return toDTO(cached, entity.getEvaluateStatus(), entity.getEvaluateError());
+        return toDTO(cached, entity.getEvaluateStatus(), entity.getEvaluateError(),
+            entity.getEndReason());
     }
 
     /** 补齐评估状态字段（缓存未命中路径：已经读过数据库，顺手带上版本与评估状态） */
@@ -336,9 +345,11 @@ public class InterviewSessionService {
         return persistenceService.findBySessionId(sessionId)
             .map(entity -> new InterviewSessionDTO(
                 dto.sessionId(), dto.resumeText(), dto.totalQuestions(), dto.currentQuestionIndex(),
-                dto.questions(), dto.status(), dto.knowledgeBaseId(), dto.interviewCategory(),
+                dto.currentQuestionId(), dto.currentQuestion(), dto.candidates(), dto.turns(),
+                dto.status(), dto.knowledgeBaseId(), dto.interviewCategory(),
                 dto.adaptive(), entity.getEvaluateStatus(), entity.getEvaluateError(),
-                dto.resumeSource(), dto.resumeVersion(), entity.getTurnVersion()))
+                dto.resumeSource(), dto.resumeVersion(), entity.getTurnVersion(),
+                entity.getEndReason()))
             .orElse(dto);
     }
 
@@ -407,17 +418,10 @@ public class InterviewSessionService {
                 new TypeReference<>() {}
             );
 
-            // 恢复已保存的答案
-            List<InterviewAnswerEntity> answers = persistenceService.findAnswersBySessionId(entity.getSessionId());
-            for (InterviewAnswerEntity answer : answers) {
-                int index = answer.getQuestionIndex();
-                if (index >= 0 && index < questions.size()) {
-                    InterviewQuestionDTO question = questions.get(index);
-                    // 带上作答状态：跳过时答案为空，只靠答案文本会把已跳过的题从轨迹里丢掉
-                    questions.set(index, question.withAnswer(answer.getUserAnswer())
-                        .withAnswerState(answer.getAnswerState()));
-                }
-            }
+            // P4-1：候选素材补上缺失的标识（旧数据按 legacy-<下标> 派生），但**不把答案写回素材**
+            questions = InterviewQuestionIdentity.withDerivedIds(questions);
+            // 实际轨迹单独取：只含真实发生过的轮次，与素材互不污染
+            List<InterviewTurnDTO> turns = persistenceService.findTurnsBySessionId(entity.getSessionId());
 
             SessionStatus status = convertStatus(entity.getStatus());
 
@@ -433,6 +437,9 @@ public class InterviewSessionService {
                 status,
                 Boolean.TRUE.equals(entity.getAdaptive())
             );
+            sessionCache.applyTurnState(entity.getSessionId(), questions, turns,
+                entity.getCurrentQuestionIndex() != null ? entity.getCurrentQuestionIndex() : 0,
+                entity.getCurrentQuestionId(), status, entity.getTurnVersion());
 
             log.info("从数据库恢复会话到 Redis: sessionId={}, currentIndex={}, status={}",
                 entity.getSessionId(), entity.getCurrentQuestionIndex(), entity.getStatus());
@@ -476,15 +483,11 @@ public class InterviewSessionService {
     }
 
     /**
-     * 获取当前问题
+     * 获取当前问题（P4-1：按**题目标识**定位，不再用数组下标推算）
      */
     public InterviewQuestionDTO getCurrentQuestion(String sessionId) {
         CachedSession session = getOrRestoreSession(sessionId);
-        List<InterviewQuestionDTO> questions = session.getQuestions(objectMapper);
-
-        if (session.getCurrentIndex() >= questions.size()) {
-            return null; // 所有问题已回答完
-        }
+        InterviewQuestionDTO question = currentQuestionOf(session);
 
         // 更新状态为进行中
         if (session.getStatus() == SessionStatus.CREATED) {
@@ -500,7 +503,37 @@ public class InterviewSessionService {
             }
         }
 
-        return questions.get(session.getCurrentIndex());
+        return question;
+    }
+
+    /**
+     * 会话的当前待答题（P4-1）。
+     *
+     * <p>优先按标识定位；旧缓存 / 旧会话没有标识时按展示顺序兜底，并且接受「已问尽」（返回 null）。
+     */
+    private InterviewQuestionDTO currentQuestionOf(CachedSession session) {
+        if (session.getStatus() == SessionStatus.COMPLETED
+            || session.getStatus() == SessionStatus.EVALUATED) {
+            return null;
+        }
+        List<InterviewQuestionDTO> candidates = InterviewQuestionIdentity.withDerivedIds(
+            session.getQuestions(objectMapper));
+        Optional<InterviewQuestionDTO> byId =
+            InterviewQuestionIdentity.byId(candidates, session.getCurrentQuestionId());
+        if (byId.isPresent()) {
+            return byId.get();
+        }
+        int index = session.getCurrentIndex();
+        return index >= 0 && index < candidates.size() ? candidates.get(index) : null;
+    }
+
+    /** 会话的实际轨迹（P4-1）：缓存里有一份；缺失时回源数据库 */
+    private List<InterviewTurnDTO> turnsOf(CachedSession session) {
+        List<InterviewTurnDTO> cached = session.getTurns(objectMapper);
+        if (session.hasTurnsSnapshot()) {
+            return cached;
+        }
+        return persistenceService.findTurnsBySessionId(session.getSessionId());
     }
 
     /**
@@ -508,8 +541,8 @@ public class InterviewSessionService {
      * 如果是最后一题，自动触发异步评估
      */
     public SubmitAnswerResponse submitAnswer(SubmitAnswerRequest request) {
-        return recordTurn(request.sessionId(), request.questionIndex(), request.answer(), null,
-            request.requestId(), request.expectedVersion());
+        return recordTurn(request.sessionId(), request.questionId(), request.questionIndex(),
+            request.answer(), null, request.requestId(), request.expectedVersion());
     }
 
     /**
@@ -519,8 +552,8 @@ public class InterviewSessionService {
      * 答错是有作答内容但质量差（正常计分），跳过是没有作答（只记录发生过）。
      * 自适应会话按「答不上来」处理：中断当前追问组，切下一主问题。
      */
-    public SubmitAnswerResponse skipQuestion(String sessionId, int questionIndex) {
-        return skipQuestion(sessionId, questionIndex, null, null);
+    public SubmitAnswerResponse skipQuestion(String sessionId, String questionId) {
+        return skipQuestion(sessionId, questionId, null, null, null);
     }
 
     /**
@@ -528,10 +561,13 @@ public class InterviewSessionService {
      *
      * <p>跳过与提交答案共用同一条推进链路，因此共享同一套并发边界：请求标识、预期版本、
      * 待答题校验、单事务落库、缓存跟随提交。
+     *
+     * @param questionIndex 旧调用方兼容：没有题目标识时按候选池顺序定位（新前端只传标识）
      */
-    public SubmitAnswerResponse skipQuestion(String sessionId, int questionIndex, String requestId,
+    public SubmitAnswerResponse skipQuestion(String sessionId, String questionId,
+                                             Integer questionIndex, String requestId,
                                              Integer expectedVersion) {
-        return recordTurn(sessionId, questionIndex, null,
+        return recordTurn(sessionId, questionId, questionIndex, null,
             InterviewAnswerEntity.AnswerState.SKIPPED, requestId, expectedVersion);
     }
 
@@ -553,12 +589,17 @@ public class InterviewSessionService {
      * @param requestId       请求标识；null 表示调用方未提供（只保留并发闸门，不做重放保护）
      * @param expectedVersion 提交方看到的会话版本；null 表示以数据库当前版本为准
      */
-    private SubmitAnswerResponse recordTurn(String sessionId, int index, String answer,
+    private SubmitAnswerResponse recordTurn(String sessionId, String questionId, Integer questionIndex,
+                                            String answer,
                                             InterviewAnswerEntity.AnswerState forcedState,
                                             String requestId, Integer expectedVersion) {
         String normalizedRequestId = normalizeRequestId(requestId, "requestId");
         String action = forcedState == InterviewAnswerEntity.AnswerState.SKIPPED ? "SKIP" : "ANSWER";
-        String payloadHash = turnPayloadHash(action, index, answer);
+        // 指纹用**题目标识**：旧调用方没有标识时退回下标（只影响兼容期的重放判定）
+        String identity = questionId != null && !questionId.isBlank()
+            ? questionId
+            : "index:" + questionIndex;
+        String payloadHash = turnPayloadHash(action, identity, answer);
 
         Optional<InterviewTurnRequestEntity> handled =
             persistenceService.findTurnRequest(sessionId, normalizedRequestId);
@@ -583,8 +624,8 @@ public class InterviewSessionService {
         }
 
         try {
-            return commitTurn(sessionId, index, answer, forcedState, normalizedRequestId,
-                expectedVersion, action, payloadHash);
+            return commitTurn(sessionId, questionId, questionIndex, answer, forcedState,
+                normalizedRequestId, expectedVersion, action, payloadHash);
         } finally {
             if (inflightKey != null) {
                 // 成功时幂等记录已在库，重放走记录；失败时必须释放，否则用户重试会被自己挡住
@@ -594,29 +635,37 @@ public class InterviewSessionService {
     }
 
     /**
-     * 校验提交并一次性落库（P4-9a）。
+     * 校验提交并一次性落库（P4-1 / P4-9a）。
      *
-     * <p>权威状态直接读数据库：并发闸门、会话状态、待答题、LLM provider 都用同一份实体，
-     * 缓存只是可恢复副本。版本与待答题在**条件更新**里再校验一次，因此即使两个请求同时
+     * <p>权威状态直接读数据库：并发闸门、会话状态、当前题、LLM provider 都用同一份实体，
+     * 缓存只是可恢复副本。版本与当前题在**条件更新**里再校验一次，因此即使两个请求同时
      * 通过了这里的前置校验，也只有一个能真正推进。
+     *
+     * <p>P4-1：候选素材只读，本轮事实写进实际轨迹（数据库 + 缓存各一份），
+     * 因此「未问候选」永远不会因为作答而被改写。
      */
-    private SubmitAnswerResponse commitTurn(String sessionId, int index, String answer,
+    private SubmitAnswerResponse commitTurn(String sessionId, String questionId, Integer questionIndex,
+                                            String answer,
                                             InterviewAnswerEntity.AnswerState forcedState,
                                             String requestId, Integer expectedVersion,
                                             String action, String payloadHash) {
         InterviewSessionEntity entity = persistenceService.findBySessionId(sessionId)
             .orElseThrow(() -> new BusinessException(ErrorCode.INTERVIEW_SESSION_NOT_FOUND));
-        int baseVersion = assertTurnAcceptable(entity, index, expectedVersion);
+        int baseVersion = assertTurnAcceptable(entity, questionId, questionIndex, expectedVersion);
 
         CachedSession session = getOrRestoreSession(sessionId);
-        List<InterviewQuestionDTO> questions = session.getQuestions(objectMapper);
-        if (index < 0 || index >= questions.size()) {
-            throw new BusinessException(ErrorCode.INTERVIEW_QUESTION_NOT_FOUND, "无效的问题索引: " + index);
+        List<InterviewQuestionDTO> candidates = InterviewQuestionIdentity.withDerivedIds(
+            session.getQuestions(objectMapper));
+        List<InterviewTurnDTO> turns = turnsOf(session);
+
+        InterviewQuestionDTO question = resolveCandidate(candidates, questionId, questionIndex);
+        if (question == null) {
+            throw new BusinessException(ErrorCode.INTERVIEW_QUESTION_NOT_FOUND,
+                "提交的题目不在本场候选内: " + (questionId != null ? questionId : questionIndex));
         }
+        String resolvedId = question.questionId();
 
-        InterviewQuestionDTO question = questions.get(index);
         InterviewAnswerEntity.AnswerState answerState = forcedState;
-
         boolean adaptive = Boolean.TRUE.equals(session.getAdaptive());
 
         // 只对「可能有真实作答」的内容才花模型调用；跳过与空作答直接短路
@@ -632,13 +681,18 @@ public class InterviewSessionService {
             }
         }
 
-        int nextIndex;
+        // 已问过的标识来自实际轨迹：路径不再由下标决定，同一题也不会被问第二遍
+        Set<String> askedIds = turns.stream()
+            .map(InterviewTurnDTO::questionId)
+            .filter(Objects::nonNull)
+            .collect(Collectors.toCollection(LinkedHashSet::new));
+        askedIds.add(resolvedId);
+
         InterviewQuestionDTO nextQuestion;
-        boolean hasNextQuestion;
         if (adaptive) {
             TurnEvaluation evaluation;
             if (answerState == InterviewAnswerEntity.AnswerState.ANSWERED) {
-                evaluation = evaluateTurn(entity, session, questions, index, answer);
+                evaluation = evaluateTurn(entity, session, candidates, turns, question, answer);
                 // 语义判定优先：模型识别出「要求跳过」时改判，本轮不计分也不追问
                 answerState = answerStateOf(evaluation);
             } else {
@@ -646,43 +700,85 @@ public class InterviewSessionService {
                     ? TurnEvaluation.skipped()
                     : TurnEvaluation.noAnswer();
             }
-            nextQuestion = AdaptiveInterviewPolicy.selectNext(questions, index, evaluation);
-            hasNextQuestion = nextQuestion != null;
-            nextIndex = hasNextQuestion ? nextQuestion.questionIndex() : questions.size();
+            nextQuestion = AdaptiveInterviewPolicy.selectNext(candidates, askedIds, question, evaluation);
         } else {
-            nextIndex = index + 1;
-            hasNextQuestion = nextIndex < questions.size();
-            nextQuestion = hasNextQuestion ? questions.get(nextIndex) : null;
+            nextQuestion = nextUnasked(candidates, askedIds);
         }
 
+        boolean hasNextQuestion = nextQuestion != null;
+        int nextIndex = hasNextQuestion ? nextQuestion.questionIndex() : candidates.size();
+        String nextQuestionId = hasNextQuestion ? nextQuestion.questionId() : null;
         SessionStatus newStatus = hasNextQuestion ? SessionStatus.IN_PROGRESS : SessionStatus.COMPLETED;
-
-        // 答案与状态一起写回题目列表：跳过时答案为空，只靠答案文本前端无法还原「这题发生过」；
-        // 这里写入的内容会经缓存 / 数据库进入刷新恢复路径
-        questions.set(index, question.withAnswer(answer).withAnswerState(answerState));
+        String decidedAction = decidedActionOf(question, nextQuestion);
 
         // 本轮只保存答案事实；正式评分由异步报告回填，不写可被误提取为证据的占位分
         SubmitAnswerResponse response = new SubmitAnswerResponse(hasNextQuestion, nextQuestion,
-            nextIndex, questions.size(), baseVersion + 1);
+            nextIndex, candidates.size(), baseVersion + 1);
         InterviewTurnResult result = commitOrFail(InterviewTurnCommit.ofTurn(
-            sessionId, requestId, action, payloadHash, baseVersion, index, nextIndex,
-            newStatus == SessionStatus.COMPLETED, index, question.question(), question.category(),
-            answer, answerState, serializeTurnResponse(response)));
+            sessionId, requestId, action, payloadHash, baseVersion,
+            resolvedId, nextIndex, nextQuestionId, resolvedId, decidedAction,
+            newStatus == SessionStatus.COMPLETED, question.questionIndex(), question.question(),
+            question.category(), answer, answerState, serializeTurnResponse(response)));
 
-        // 缓存跟随数据库提交：只有落库成功才会走到这里，缓存写失败可由后续读取回源数据库恢复
-        updateCacheAfterTurn(sessionId, questions, nextIndex, newStatus, result.turnVersion());
+        // 缓存跟随数据库提交：候选保持只读，轨迹追加本轮（序号用落库分配的那个）
+        List<InterviewTurnDTO> updatedTurns = new ArrayList<>(turns);
+        updatedTurns.add(new InterviewTurnDTO(resolvedId, result.turnOrdinal(),
+            question.questionIndex(), question.question(), question.category(), question.topic(),
+            answer, answerState, null, null, decidedAction, null, null, LocalDateTime.now()));
+        sessionCache.applyTurnState(sessionId, candidates, updatedTurns, nextIndex, nextQuestionId,
+            newStatus, result.turnVersion());
 
-        log.info("会话 {} 记录轮次: 问题{}, state={}, adaptive={}, 剩余{}题",
-            sessionId, index, answerState, adaptive,
-            adaptive ? (hasNextQuestion ? questions.size() - nextIndex - 1 : 0)
-                : questions.size() - nextIndex);
+        log.info("会话 {} 记录轮次: 题目{}, state={}, adaptive={}, 决定={}, 已问候选 {}/{}",
+            sessionId, resolvedId, answerState, adaptive, decidedAction,
+            askedIds.size(), candidates.size());
 
         if (newStatus == SessionStatus.COMPLETED) {
             enqueueEvaluationTask(sessionId, result.evaluateEpoch());
         }
 
-        return new SubmitAnswerResponse(hasNextQuestion, nextQuestion, nextIndex, questions.size(),
+        return new SubmitAnswerResponse(hasNextQuestion, nextQuestion, nextIndex, candidates.size(),
             result.turnVersion());
+    }
+
+    /** 按标识（优先）或候选池顺序（旧调用方）定位题目 */
+    private static InterviewQuestionDTO resolveCandidate(List<InterviewQuestionDTO> candidates,
+                                                        String questionId, Integer questionIndex) {
+        if (questionId != null && !questionId.isBlank()) {
+            return InterviewQuestionIdentity.byId(candidates, questionId).orElse(null);
+        }
+        if (questionIndex != null && questionIndex >= 0 && questionIndex < candidates.size()) {
+            return candidates.get(questionIndex);
+        }
+        return null;
+    }
+
+    /** 顺序题单的下一题：池内第一个还没问过的候选 */
+    private static InterviewQuestionDTO nextUnasked(List<InterviewQuestionDTO> candidates,
+                                                    Set<String> askedIds) {
+        return candidates.stream()
+            .filter(question -> !askedIds.contains(question.questionId()))
+            .findFirst()
+            .orElse(null);
+    }
+
+    /**
+     * 本轮最终决定（P4-1）：记 Java **真正执行**的那个动作，不是模型的建议。
+     *
+     * <p>「候选耗尽」与「用户结束」由此可区分；覆盖与预算原因由 P4Q-2 扩展。
+     */
+    private static String decidedActionOf(InterviewQuestionDTO answered, InterviewQuestionDTO next) {
+        if (next == null) {
+            return InterviewTurnDTO.ACTION_FINISH_EXHAUSTED;
+        }
+        boolean sameGroup = next.isFollowUp()
+            && answered.parentQuestionId() != null
+            && answered.parentQuestionId().equals(next.parentQuestionId());
+        boolean enteringAnsweredGroup = next.isFollowUp()
+            && answered.questionId() != null
+            && answered.questionId().equals(next.parentQuestionId());
+        return sameGroup || enteringAnsweredGroup
+            ? InterviewTurnDTO.ACTION_FOLLOW_UP
+            : InterviewTurnDTO.ACTION_NEXT_MAIN;
     }
 
     /**
@@ -693,7 +789,8 @@ public class InterviewSessionService {
      *
      * @return 本次提交应据以更新的会话版本
      */
-    private int assertTurnAcceptable(InterviewSessionEntity entity, int index, Integer expectedVersion) {
+    private int assertTurnAcceptable(InterviewSessionEntity entity, String questionId,
+                                     Integer questionIndex, Integer expectedVersion) {
         if (entity.getStatus() == InterviewSessionEntity.SessionStatus.COMPLETED
             || entity.getStatus() == InterviewSessionEntity.SessionStatus.EVALUATED) {
             // 已结束的会话不得再产出「下一题」，也不得被写回进行中（晚到的提交走这里）
@@ -702,15 +799,34 @@ public class InterviewSessionService {
 
         int baseVersion = assertVersionAcceptable(entity, expectedVersion);
 
-        Integer currentIndex = entity.getCurrentQuestionIndex();
-        if (currentIndex == null || currentIndex != index) {
-            log.info("逐轮提交的题号不是当前待答题: sessionId={}, submitted={}, current={}",
-                entity.getSessionId(), index, currentIndex);
+        if (!matchesCurrentQuestion(entity, questionId, questionIndex)) {
+            log.info("逐轮提交的题目不是当前待答题: sessionId={}, submitted={}, current={}",
+                entity.getSessionId(), questionId, entity.getCurrentQuestionId());
             restoreSessionFromEntity(entity);
             throw new BusinessException(ErrorCode.INTERVIEW_TURN_INDEX_MISMATCH);
         }
 
         return baseVersion;
+    }
+
+    /**
+     * 提交的是不是当前待答题（P4-1）。
+     *
+     * <p>标识优先；旧会话（会话行没有标识）退回按下标比较——兼容期两条路都必须能走通。
+     */
+    private static boolean matchesCurrentQuestion(InterviewSessionEntity entity, String questionId,
+                                                  Integer questionIndex) {
+        String currentId = entity.getCurrentQuestionId();
+        if (currentId != null) {
+            if (questionId != null && !questionId.isBlank()) {
+                return currentId.equals(questionId);
+            }
+            // 兼容迁移前客户端：它只知道候选池顺序，不知道新生成的稳定标识。
+            Integer currentIndex = entity.getCurrentQuestionIndex();
+            return currentIndex != null && questionIndex != null && currentIndex.equals(questionIndex);
+        }
+        Integer currentIndex = entity.getCurrentQuestionIndex();
+        return currentIndex != null && questionIndex != null && currentIndex.equals(questionIndex);
     }
 
     /**
@@ -728,22 +844,6 @@ public class InterviewSessionService {
             throw new BusinessException(ErrorCode.INTERVIEW_TURN_STALE);
         }
         return baseVersion;
-    }
-
-    /**
-     * 缓存跟随提交（P4-9a）：题目列表、索引、状态、版本一次写齐。
-     *
-     * <p>四个字段分开写会出现「索引更新了但版本还是旧的」这种中间态，而版本是提交方的
-     * 判据——中间态会让下一次提交被误判为过期。
-     */
-    private void updateCacheAfterTurn(String sessionId, List<InterviewQuestionDTO> questions,
-                                      int nextIndex, SessionStatus status, int turnVersion) {
-        sessionCache.updateQuestions(sessionId, questions);
-        sessionCache.updateCurrentIndex(sessionId, nextIndex);
-        if (status == SessionStatus.COMPLETED) {
-            sessionCache.updateSessionStatus(sessionId, SessionStatus.COMPLETED);
-        }
-        sessionCache.updateTurnVersion(sessionId, turnVersion);
     }
 
     /** 已处理请求的原结果（重放）：载荷不一致说明是「同一标识不同载荷」，明确拒绝 */
@@ -806,8 +906,8 @@ public class InterviewSessionService {
      * <p>包级可见是为了让同包测试能构造出「与本次提交完全一致的记录」，
      * 而不是把算法复制一份到测试里（复制品会随实现漂移而失去意义）。
      */
-    static String turnPayloadHash(String action, int index, String answer) {
-        String raw = action + "|" + index + "|" + (answer == null ? "" : answer);
+    static String turnPayloadHash(String action, String identity, String answer) {
+        String raw = action + "|" + identity + "|" + (answer == null ? "" : answer);
         try {
             byte[] hash = MessageDigest.getInstance("SHA-256")
                 .digest(raw.getBytes(StandardCharsets.UTF_8));
@@ -849,18 +949,18 @@ public class InterviewSessionService {
      * <p>provider 与简历文本都来自调用方已经读到的实体/缓存，不再自己回查一次数据库。
      */
     private TurnEvaluation evaluateTurn(InterviewSessionEntity entity, CachedSession session,
-                                        List<InterviewQuestionDTO> questions,
-                                        int index, String answer) {
-        String sessionId = session.getSessionId();
-        InterviewQuestionDTO question = questions.get(index);
+                                        List<InterviewQuestionDTO> candidates,
+                                        List<InterviewTurnDTO> turns,
+                                        InterviewQuestionDTO question, String answer) {
         ChatClient chatClient = llmProviderRegistry.getChatClientOrDefault(entity.getLlmProvider());
         // P4Q-1：喂进三类参照物——只看一道孤立的题，模型无法判断「他说的是不是自己简历里的事」
         // 「这轮有没有新信息」「这次表现是否超出长期水平」
+        // P4-1：历史问答取自**实际轨迹**（turns 已排除当前轮），未问过的候选不会被当成历史
         return turnEvaluationService.evaluateTurn(chatClient, new TurnEvaluationRequest(
             question,
             answer,
             TurnEvaluationService.resumeSnippetFor(session.getResumeText(), question.category()),
-            TurnEvaluationService.recentTurnsFor(questions, index, question.category()),
+            TurnEvaluationService.recentTurnsFor(turns, question.category()),
             profileBaselineFor(question.category())));
     }
 
@@ -905,40 +1005,32 @@ public class InterviewSessionService {
      */
     public void saveAnswer(SubmitAnswerRequest request) {
         CachedSession session = getOrRestoreSession(request.sessionId());
-        List<InterviewQuestionDTO> questions = session.getQuestions(objectMapper);
+        List<InterviewQuestionDTO> candidates = InterviewQuestionIdentity.withDerivedIds(
+            session.getQuestions(objectMapper));
 
-        int index = request.questionIndex();
-        if (index < 0 || index >= questions.size()) {
-            throw new BusinessException(ErrorCode.INTERVIEW_QUESTION_NOT_FOUND, "无效的问题索引: " + index);
+        InterviewQuestionDTO question = resolveCandidate(candidates, request.questionId(),
+            request.questionIndex());
+        if (question == null) {
+            throw new BusinessException(ErrorCode.INTERVIEW_QUESTION_NOT_FOUND,
+                "暂存的题目不在本场候选内: " + request.questionId());
         }
-
-        // 更新问题答案
-        InterviewQuestionDTO question = questions.get(index);
-        InterviewQuestionDTO answeredQuestion = question.withAnswer(request.answer());
-        questions.set(index, answeredQuestion);
-
-        // 更新 Redis 缓存
-        sessionCache.updateQuestions(request.sessionId(), questions);
 
         // 更新状态为进行中
         if (session.getStatus() == SessionStatus.CREATED) {
             sessionCache.updateSessionStatus(request.sessionId(), SessionStatus.IN_PROGRESS);
         }
 
-        // 保存答案到数据库（不更新currentIndex）
+        // P4-1：草稿写进答案行但**不占发生顺序、不记为已作答**——
+        // 它既不属于实际轨迹，也不会被报告评分（候选素材保持只读，不再回写答案）
         try {
-            persistenceService.saveAnswer(
-                request.sessionId(), index,
-                question.question(), question.category(),
-                request.answer(), 0, null
-            );
+            persistenceService.saveDraft(request.sessionId(), question, request.answer());
             persistenceService.updateSessionStatus(request.sessionId(),
                 InterviewSessionEntity.SessionStatus.IN_PROGRESS);
         } catch (Exception e) {
             log.warn("暂存答案到数据库失败: {}", e.getMessage());
         }
 
-        log.info("会话 {} 暂存答案: 问题{}", request.sessionId(), index);
+        log.info("会话 {} 暂存草稿: 题目{}", request.sessionId(), question.questionId());
     }
 
     /**
@@ -957,7 +1049,7 @@ public class InterviewSessionService {
      */
     public void completeInterview(String sessionId, String requestId, Integer expectedVersion) {
         String normalizedRequestId = normalizeRequestId(requestId, "requestId");
-        String payloadHash = turnPayloadHash(InterviewTurnCommit.ACTION_COMPLETE, -1, null);
+        String payloadHash = turnPayloadHash(InterviewTurnCommit.ACTION_COMPLETE, "complete", null);
 
         Optional<InterviewTurnRequestEntity> handled =
             persistenceService.findTurnRequest(sessionId, normalizedRequestId);
@@ -991,7 +1083,8 @@ public class InterviewSessionService {
                 ? entity.getCurrentQuestionIndex() : 0;
 
             InterviewTurnResult result = commitOrFail(InterviewTurnCommit.ofFinish(
-                sessionId, normalizedRequestId, payloadHash, baseVersion, currentIndex, "{}"));
+                sessionId, normalizedRequestId, payloadHash, baseVersion,
+                entity.getCurrentQuestionId(), currentIndex, "{}"));
 
             // 状态与版本在提交成功之后才写缓存（缓存跟随数据库提交）
             sessionCache.updateSessionStatus(sessionId, SessionStatus.COMPLETED);
@@ -1089,7 +1182,8 @@ public class InterviewSessionService {
             chatClient,
             sessionId,
             session.getResumeText(),
-            questions
+            InterviewQuestionIdentity.withDerivedIds(questions),
+            turnsOf(session)
         );
 
         // 更新 Redis 缓存状态
@@ -1115,13 +1209,30 @@ public class InterviewSessionService {
     /** 带评估状态的转换（仅「已完成」会话需要，评估状态不在缓存里，数据库才是权威） */
     private InterviewSessionDTO toDTO(CachedSession session, AsyncTaskStatus evaluateStatus,
                                       String evaluateError) {
-        List<InterviewQuestionDTO> questions = session.getQuestions(objectMapper);
+        return toDTO(session, evaluateStatus, evaluateError, null);
+    }
+
+    /** 带结束原因的转换：结束原因是数据库权威事实，缓存里没有 */
+    private InterviewSessionDTO toDTO(CachedSession session, AsyncTaskStatus evaluateStatus,
+                                      String evaluateError, String endReason) {
+        List<InterviewQuestionDTO> candidates = InterviewQuestionIdentity.withDerivedIds(
+            session.getQuestions(objectMapper));
+        // P4-1：轨迹是独立字段；只有「从未写过轨迹快照」的缓存（旧缓存 / 刚创建）才回源数据库
+        List<InterviewTurnDTO> turns = session.getTurns(objectMapper);
+        if (!session.hasTurnsSnapshot()) {
+            turns = turnsOf(session);
+        }
+        boolean active = session.getStatus() == SessionStatus.CREATED
+            || session.getStatus() == SessionStatus.IN_PROGRESS;
         return new InterviewSessionDTO(
             session.getSessionId(),
             session.getResumeText(),
-            questions.size(),
+            candidates.size(),
             session.getCurrentIndex(),
-            questions,
+            active ? session.getCurrentQuestionId() : null,
+            currentQuestionOf(session),
+            candidates,
+            turns,
             session.getStatus(),
             session.getKnowledgeBaseId(),
             session.getInterviewCategory(),
@@ -1129,7 +1240,9 @@ public class InterviewSessionService {
             evaluateStatus,
             evaluateError,
             session.getResumeSource(),
-            session.getResumeVersion()
+            session.getResumeVersion(),
+            session.getTurnVersion(),
+            endReason
         );
     }
 }

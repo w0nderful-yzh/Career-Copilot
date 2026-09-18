@@ -1,62 +1,59 @@
 package interview.guide.modules.interview.model;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 import java.util.List;
+import java.util.UUID;
 
 /**
- * 面试问题DTO
- * type 由 Skill category key 驱动（如 MYSQL、CSS、DYNAMIC_PROGRAMMING 等），不再使用枚举
+ * 面试候选素材（P4-1）。
  *
- * P4-1 题库结构化：追加 difficulty（数值难度）/ followUpType（追问语义类型）/
- * expectedPoints（考察要点）。生成时写入，评估与决策可消费；旧 questionsJson
- * 缺这些字段时 Jackson 反序列化为 null，向后兼容。
+ * <p><b>本类型只描述「可以问什么」，不描述「实际发生了什么」。</b>
+ * 作答、状态、评分、最终决定都属于实际轮次，见 {@link InterviewTurnDTO} 与
+ * {@code interview_answers} 表。此前两者同处一个 record，靠
+ * {@code withAnswer/withAnswerState} 原地写回同一数组，于是「候选择问」与「真实轮次」
+ * 只能靠「有没有 answerState」区分——这次把两者彻底分开。
+ *
+ * <p><b>身份用 {@link #questionId}，不再用数组下标。</b>
+ * {@link #questionIndex} 只是候选池内的顺序（供展示与历史兼容）；排序、合并、追问归属
+ * 都不再依赖它。旧会话的题目没有 id，读取时按 {@link #legacyIdFor(int)} 派生，
+ * 与实际轮次里回填的 {@code legacy-<questionIndex>} 对齐。
+ *
+ * @param questionId        稳定标识（P4-1）；候选池内唯一，跨排序不变
+ * @param questionIndex     候选池内顺序（0 起）；仅用于展示与旧数据兼容
+ * @param type              Skill category key，如 "MYSQL"、"CSS"、"DP"
+ * @param category          考察技能名，如 "MySQL"、"Java"；话题类候选为 null（见 topic）
+ * @param topic             交流话题，如「项目经历」；与「考察技能」分开表达（P4-1）
+ * @param topicSummary      知识点摘要，如 "Redis RDB/AOF 持久化对比"，用于历史去重压缩
+ * @param isFollowUp        是否为追问
+ * @param parentQuestionId  追问所属主问题的稳定标识；主问题为 null
+ * @param difficulty        数值难度 1-5（低→高），null 表示未标注（知识库题等来源）
+ * @param followUpType      追问语义类型（DEPTH/SCENARIO/WHY/...），主问题为 null
+ * @param expectedPoints    期望答出的要点（供评估与决策参考），可为 null
+ * @param followUpIndex     追问序号：同一主问题下的第几条追问，主问题为 null
  */
 public record InterviewQuestionDTO(
+    String questionId,
     int questionIndex,
     String question,
-    String type,           // Skill category key，如 "MYSQL"、"CSS"、"DP"
-    String category,       // 展示用标签，如 "MySQL"、"CSS"、"动态规划"
-    String topicSummary,   // 知识点摘要，如 "Redis RDB/AOF 持久化对比"，用于历史去重压缩
-    String userAnswer,
-    Integer score,
-    String feedback,
+    String type,
+    String category,
+    String topic,
+    String topicSummary,
     boolean isFollowUp,
+    String parentQuestionId,
+    /** 只用于读取 P4-1 之前的 questions_json；新响应不再暴露旧父索引 */
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     Integer parentQuestionIndex,
     String referenceAnswer,
     List<String> keyPoints,
     String scoringRubric,
     String sourceContext,
-    Integer difficulty,    // 数值难度 1-5（低→高），null 表示未标注（知识库题等来源）
-    String followUpType,   // 追问语义类型（DEPTH/SCENARIO/WHY/...），主问题为 null
-    List<String> expectedPoints,  // 期望答出的要点（供评估与决策参考），可为 null
-    /**
-     * 追问序号（P4Q-6）：同一主问题下的第几条追问，主问题为 null。
-     *
-     * <p>此前追问序号被**烘焙进 category**（如 "JVM（追问1）"），而 category 同时是
-     * 画像证据的技能名，于是产生「Java（追问1）」这类伪技能。追问身份改为本字段独立表达，
-     * category 恒为稳定技能名。
-     */
-    Integer followUpIndex,
-    /**
-     * 该题的作答状态（P4Q-5）：ANSWERED/SKIPPED/DECLINED/UNANSWERED；
-     * null = 尚未提问过（候选择问或未走到）。
-     *
-     * <p>前端据此判断「这题发生过没有」——跳过时 userAnswer 为空，
-     * 只看答案文本会把已跳过的题从轨迹里丢掉。
-     */
-    interview.guide.modules.interview.model.InterviewAnswerEntity.AnswerState answerState
+    Integer difficulty,
+    String followUpType,
+    List<String> expectedPoints,
+    Integer followUpIndex
 ) {
-    /** 是否已经发生过（有作答、跳过或明确不会都算）；候选择问为 false */
-    public boolean wasAsked() {
-        return answerState != null;
-    }
-
-    public InterviewQuestionDTO withAnswerState(
-        interview.guide.modules.interview.model.InterviewAnswerEntity.AnswerState state) {
-        return new InterviewQuestionDTO(
-            questionIndex, question, type, category, topicSummary, userAnswer, score, feedback,
-            isFollowUp, parentQuestionIndex, referenceAnswer, keyPoints, scoringRubric,
-            sourceContext, difficulty, followUpType, expectedPoints, followUpIndex, state);
-    }
     /** 追问类型：继续深挖原理（默认） */
     public static final String FOLLOW_UP_DEPTH = "DEPTH";
     /** 追问类型：换场景考察应用 */
@@ -66,43 +63,61 @@ public record InterviewQuestionDTO(
     /** 追问类型：澄清回答 */
     public static final String FOLLOW_UP_CLARIFICATION = "CLARIFICATION";
 
-    /** 主问题/基础题工厂（无追问语义与难度标注，知识库等旧来源保持默认） */
-    public static InterviewQuestionDTO create(int index, String question, String type, String category) {
-        return new InterviewQuestionDTO(
-            index, question, type, category, null, null, null, null, false, null, null, null, null, null,
-            null, null, null, null, null);
+    /** 旧数据（P4-1 之前的 questions_json 与实际轮次）按此规则派生题目标识 */
+    public static final String LEGACY_ID_PREFIX = "legacy-";
+
+    /** 新题目的稳定标识（不依赖下标：排序、合并都不影响它） */
+    public static String newId() {
+        return "q" + UUID.randomUUID().toString().replace("-", "").substring(0, 10);
     }
 
-    /** 顺序题单工厂（现 /interview 页沿用线性语义；P4-1 生成的题也走此工厂） */
-    public static InterviewQuestionDTO create(int index, String question, String type, String category,
-                                               String topicSummary, boolean isFollowUp, Integer parentQuestionIndex) {
-        return new InterviewQuestionDTO(
-            index, question, type, category, topicSummary, null, null, null, isFollowUp, parentQuestionIndex,
+    /** 旧题目的派生标识：与迁移里回填的 {@code interview_answers.question_id} 同一规则 */
+    public static String legacyIdFor(int questionIndex) {
+        return LEGACY_ID_PREFIX + questionIndex;
+    }
+
+    /** 是否为旧数据派生出来的标识（意味着「顺序变化后不再稳定」，仅用于兼容与排查） */
+    public boolean legacyIdentity() {
+        return questionId != null && questionId.startsWith(LEGACY_ID_PREFIX);
+    }
+
+    // ===== 工厂 =====
+
+    /** 主问题/基础题工厂（无追问语义与难度标注，知识库等旧来源保持默认） */
+    public static InterviewQuestionDTO create(int index, String question, String type, String category) {
+        return new InterviewQuestionDTO(newId(), index, question, type, category, null, null, false, null,
             null, null, null, null, null, null, null, null, null);
     }
 
-    /** P4-1 主问题工厂：带数值难度与考察要点（供自适应决策/评估） */
+    /** 顺序题单工厂（现 /interview 页沿用线性语义） */
+    public static InterviewQuestionDTO create(int index, String question, String type, String category,
+                                              String topicSummary, boolean isFollowUp,
+                                              String parentQuestionId) {
+        return new InterviewQuestionDTO(newId(), index, question, type, category, null, topicSummary,
+            isFollowUp, parentQuestionId, null, null, null, null, null, null, null, null, null);
+    }
+
+    /** 主问题工厂：带数值难度与考察要点（供自适应决策/评估） */
     public static InterviewQuestionDTO createMain(int index, String question, String type, String category,
-                                                   String topicSummary, Integer difficulty,
-                                                   List<String> expectedPoints) {
-        return new InterviewQuestionDTO(
-            index, question, type, category, topicSummary, null, null, null, false, null,
-            null, null, null, null, difficulty, null, expectedPoints, null, null);
+                                                  String topicSummary, Integer difficulty,
+                                                  List<String> expectedPoints) {
+        return new InterviewQuestionDTO(newId(), index, question, type, category, null, topicSummary,
+            false, null, null, null, null, null, null, difficulty, null, expectedPoints, null);
     }
 
     /**
-     * P4-1 追问工厂：挂到父主问题，带追问语义类型与**追问序号**。
+     * 追问工厂：挂到父主问题（用父的稳定标识），带追问语义类型与**追问序号**。
      *
      * <p>category 传主问题的稳定技能名（不要自己拼「（追问N）」）——追问身份由
      * followUpIndex 独立表达，拼进技能名会污染画像证据（见 P4Q-6）。
      */
-    public static InterviewQuestionDTO createFollowUp(int index, String question, String type, String category,
-                                                       int mainIndex, int followUpIndex, String followUpType,
-                                                       List<String> expectedPoints) {
-        return new InterviewQuestionDTO(
-            index, question, type, category, null, null, null, null, true, mainIndex,
-            null, null, null, null, null, followUpType, expectedPoints,
-            followUpIndex > 0 ? followUpIndex : null, null);
+    public static InterviewQuestionDTO createFollowUp(int index, String question, String type,
+                                                      String category, String parentQuestionId,
+                                                      int followUpIndex, String followUpType,
+                                                      List<String> expectedPoints) {
+        return new InterviewQuestionDTO(newId(), index, question, type, category, null, null, true,
+            parentQuestionId, null, null, null, null, null, null, followUpType, expectedPoints,
+            followUpIndex > 0 ? followUpIndex : null);
     }
 
     /** 题库来源工厂（知识库等：无 P4-1 数值难度，difficulty 留空由决策期默认） */
@@ -110,46 +125,59 @@ public record InterviewQuestionDTO(
                                                         String category, String topicSummary,
                                                         String referenceAnswer, List<String> keyPoints,
                                                         String scoringRubric, String sourceContext) {
-        return new InterviewQuestionDTO(
-            index, question, type, category, topicSummary, null, null, null, false, null,
-            referenceAnswer, keyPoints, scoringRubric, sourceContext, null, null, null, null, null);
+        return new InterviewQuestionDTO(newId(), index, question, type, category, null, topicSummary,
+            false, null, null, referenceAnswer, keyPoints, scoringRubric, sourceContext, null, null,
+            null, null);
     }
 
     /** 题库追问工厂（知识库等来源的追问：带参考答案，但无 P4-1 followUpType 标注） */
     public static InterviewQuestionDTO fromQuestionBankFollowUp(int index, String question, String type,
-                                                                String category, int mainIndex,
-                                                                String referenceAnswer, List<String> keyPoints,
-                                                                String scoringRubric, String sourceContext) {
-        return new InterviewQuestionDTO(
-            index, question, type, category, null, null, null, null, true, mainIndex,
-            referenceAnswer, keyPoints, scoringRubric, sourceContext, null, null, null, null, null);
+                                                                String category, String parentQuestionId,
+                                                                String referenceAnswer,
+                                                                List<String> keyPoints,
+                                                                String scoringRubric,
+                                                                String sourceContext) {
+        return new InterviewQuestionDTO(newId(), index, question, type, category, null, null, true,
+            parentQuestionId, null, referenceAnswer, keyPoints, scoringRubric, sourceContext, null,
+            null, null, null);
     }
 
-    public InterviewQuestionDTO withAnswer(String answer) {
-        return new InterviewQuestionDTO(
-            questionIndex, question, type, category, topicSummary, answer, score, feedback,
-            isFollowUp, parentQuestionIndex, referenceAnswer, keyPoints, scoringRubric, sourceContext,
-            difficulty, followUpType, expectedPoints, followUpIndex, answerState);
+    // ===== 派生（只改素材自身的字段，绝不承载实际轮次） =====
+
+    /** 重新编号（合并两批题单时用）：只改展示顺序，标识与父链保持不变 */
+    public InterviewQuestionDTO withIndex(int newIndex) {
+        return new InterviewQuestionDTO(questionId, newIndex, question, type, category, topic,
+            topicSummary, isFollowUp, parentQuestionId, parentQuestionIndex, referenceAnswer,
+            keyPoints, scoringRubric, sourceContext, difficulty, followUpType, expectedPoints,
+            followUpIndex);
     }
 
-    public InterviewQuestionDTO withEvaluation(int score, String feedback) {
-        return new InterviewQuestionDTO(
-            questionIndex, question, type, category, topicSummary, userAnswer, score, feedback,
-            isFollowUp, parentQuestionIndex, referenceAnswer, keyPoints, scoringRubric, sourceContext,
-            difficulty, followUpType, expectedPoints, followUpIndex, answerState);
+    /** 补上稳定标识（旧数据读取路径 / 合并后统一发号） */
+    public InterviewQuestionDTO withQuestionId(String newQuestionId) {
+        return new InterviewQuestionDTO(newQuestionId, questionIndex, question, type, category, topic,
+            topicSummary, isFollowUp, parentQuestionId, parentQuestionIndex, referenceAnswer,
+            keyPoints, scoringRubric, sourceContext, difficulty, followUpType, expectedPoints,
+            followUpIndex);
     }
 
-    /**
-     * 批量合并题单时重排索引：只改 questionIndex / parentQuestionIndex，其余字段原样保留。
-     *
-     * <p>合并「简历题 + 方向题」必须走本方法。此前用 {@code create(...)}（顺序题单工厂）
-     * 重建，会把 difficulty / followUpType / expectedPoints 静默丢掉——自适应决策与轻量评估
-     * 都依赖这些元数据，丢了就退化成无难度的固定题单。
-     */
-    public InterviewQuestionDTO withIndex(int newIndex, Integer newParentQuestionIndex) {
-        return new InterviewQuestionDTO(
-            newIndex, question, type, category, topicSummary, userAnswer, score, feedback,
-            isFollowUp, newParentQuestionIndex, referenceAnswer, keyPoints, scoringRubric,
-            sourceContext, difficulty, followUpType, expectedPoints, followUpIndex, answerState);
+    /** 补上话题 / 技能归属（P4-1：出题侧决定，读取路径不猜） */
+    public InterviewQuestionDTO withFocus(String newCategory, String newTopic) {
+        return new InterviewQuestionDTO(questionId, questionIndex, question, type, newCategory, newTopic,
+            topicSummary, isFollowUp, parentQuestionId, parentQuestionIndex, referenceAnswer,
+            keyPoints, scoringRubric, sourceContext, difficulty, followUpType, expectedPoints,
+            followUpIndex);
+    }
+
+    /** 旧 questions_json 的 parentQuestionIndex → 新稳定父标识。 */
+    public InterviewQuestionDTO withParentQuestionId(String newParentQuestionId) {
+        return new InterviewQuestionDTO(questionId, questionIndex, question, type, category, topic,
+            topicSummary, isFollowUp, newParentQuestionId, parentQuestionIndex, referenceAnswer,
+            keyPoints, scoringRubric, sourceContext, difficulty, followUpType, expectedPoints,
+            followUpIndex);
+    }
+
+    /** 该题是否属于追问组（供决策与展示分组） */
+    public boolean isMain() {
+        return !isFollowUp;
     }
 }

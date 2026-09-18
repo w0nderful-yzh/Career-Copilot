@@ -200,6 +200,20 @@ public class InterviewSessionEntity {
     @Column(name = "current_question_id", length = 64)
     private String currentQuestionId;
 
+    /**
+     * 本场难度偏好（P4Q-3c）：显式节奏指令当轮生效，只影响本场后续选题与生成的难度基线，
+     * 不写长期画像。junior/mid/senior；NULL 表示未调整。
+     */
+    @Column(name = "difficulty_preference", length = 16)
+    private String difficultyPreference;
+
+    /**
+     * 候选代次（P4-4b）：受限生成与后台预备候选都带上当时的代次；
+     * 后台异步预备回写前比对代次，晚到/过期的结果不驱动状态。
+     */
+    @Column(name = "candidate_version", nullable = false)
+    private Integer candidateVersion = 0;
+
     public enum SessionStatus {
         CREATED,      // 会话已创建
         IN_PROGRESS,  // 面试进行中
@@ -503,6 +517,22 @@ public class InterviewSessionEntity {
 
     public void setCurrentQuestionId(String currentQuestionId) {
         this.currentQuestionId = currentQuestionId;
+    }
+
+    public String getDifficultyPreference() {
+        return difficultyPreference;
+    }
+
+    public void setDifficultyPreference(String difficultyPreference) {
+        this.difficultyPreference = difficultyPreference;
+    }
+
+    public Integer getCandidateVersion() {
+        return candidateVersion;
+    }
+
+    public void setCandidateVersion(Integer candidateVersion) {
+        this.candidateVersion = candidateVersion != null ? candidateVersion : 0;
     }
 
     public void addAnswer(InterviewAnswerEntity answer) {

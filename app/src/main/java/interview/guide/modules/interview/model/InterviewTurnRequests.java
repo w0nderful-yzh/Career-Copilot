@@ -61,4 +61,15 @@ public final class InterviewTurnRequests {
         @Max(value = 120, message = "剩余时间最多120分钟")
         int remainingMinutes
     ) {}
+
+    /**
+     * 显式难度调整（P4Q-3c）：与「只剩五分钟」同级的确定性节奏动作。
+     *
+     * <p>只改本场难度偏好（影响后续选题与生成），**不调模型、不推进轮次、不改当前题**；
+     * 自然语言里的难度/换话题指令仍随普通提交由语义识别处理。
+     */
+    public record PaceBody(
+        @NotNull(message = "难度不能为空")
+        String difficulty
+    ) {}
 }

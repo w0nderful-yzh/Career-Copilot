@@ -32,6 +32,9 @@ import java.util.UUID;
  * @param followUpType      追问语义类型（DEPTH/SCENARIO/WHY/...），主问题为 null
  * @param expectedPoints    期望答出的要点（供评估与决策参考），可为 null
  * @param followUpIndex     追问序号：同一主问题下的第几条追问，主问题为 null
+ * @param candidateSource   候选来源（P4-4b）：PRE_GENERATED / MODEL_GENERATED / BACKGROUND
+ * @param candidateVersion  候选所属的会话代次（P4-4b）：受限生成与后台预备带上当时的 candidate_version，
+ *                          后台结果据此判过期失效；预生成候选为 null
  */
 public record InterviewQuestionDTO(
     String questionId,
@@ -53,7 +56,9 @@ public record InterviewQuestionDTO(
     Integer difficulty,
     String followUpType,
     List<String> expectedPoints,
-    Integer followUpIndex
+    Integer followUpIndex,
+    String candidateSource,
+    Integer candidateVersion
 ) {
     /** 追问类型：继续深挖原理（默认） */
     public static final String FOLLOW_UP_DEPTH = "DEPTH";
@@ -63,6 +68,19 @@ public record InterviewQuestionDTO(
     public static final String FOLLOW_UP_WHY = "WHY";
     /** 追问类型：澄清回答 */
     public static final String FOLLOW_UP_CLARIFICATION = "CLARIFICATION";
+    /** 追问类型：技术取舍（为什么选 A 不选 B） */
+    public static final String FOLLOW_UP_TRADEOFF = "TRADEOFF";
+    /** 追问类型：线上故障定位与修复 */
+    public static final String FOLLOW_UP_FAILURE = "FAILURE";
+    /** 追问类型：个人贡献澄清（团队里你做了什么） */
+    public static final String FOLLOW_UP_CONTRIBUTION = "CONTRIBUTION";
+
+    /** 候选来源：创建时一次性预生成（默认） */
+    public static final String CANDIDATE_SOURCE_PRE_GENERATED = "PRE_GENERATED";
+    /** 候选来源：无合适候选时同轮受限生成（P4-4b） */
+    public static final String CANDIDATE_SOURCE_MODEL_GENERATED = "MODEL_GENERATED";
+    /** 候选来源：后台异步预备（P4-4b） */
+    public static final String CANDIDATE_SOURCE_BACKGROUND = "BACKGROUND";
 
     /** 旧数据（P4-1 之前的 questions_json 与实际轮次）按此规则派生题目标识 */
     public static final String LEGACY_ID_PREFIX = "legacy-";
@@ -87,7 +105,7 @@ public record InterviewQuestionDTO(
     /** 主问题/基础题工厂（无追问语义与难度标注，知识库等旧来源保持默认） */
     public static InterviewQuestionDTO create(int index, String question, String type, String category) {
         return new InterviewQuestionDTO(newId(), index, question, type, category, null, null, false, null,
-            null, null, null, null, null, null, null, null, null);
+            null, null, null, null, null, null, null, null, null, CANDIDATE_SOURCE_PRE_GENERATED, null);
     }
 
     /** 顺序题单工厂（现 /interview 页沿用线性语义） */
@@ -95,7 +113,8 @@ public record InterviewQuestionDTO(
                                               String topicSummary, boolean isFollowUp,
                                               String parentQuestionId) {
         return new InterviewQuestionDTO(newId(), index, question, type, category, null, topicSummary,
-            isFollowUp, parentQuestionId, null, null, null, null, null, null, null, null, null);
+            isFollowUp, parentQuestionId, null, null, null, null, null, null, null, null, null,
+            CANDIDATE_SOURCE_PRE_GENERATED, null);
     }
 
     /** 主问题工厂：带数值难度与考察要点（供自适应决策/评估） */
@@ -103,7 +122,8 @@ public record InterviewQuestionDTO(
                                                   String topicSummary, Integer difficulty,
                                                   List<String> expectedPoints) {
         return new InterviewQuestionDTO(newId(), index, question, type, category, null, topicSummary,
-            false, null, null, null, null, null, null, difficulty, null, expectedPoints, null);
+            false, null, null, null, null, null, null, difficulty, null, expectedPoints, null,
+            CANDIDATE_SOURCE_PRE_GENERATED, null);
     }
 
     /**
@@ -118,7 +138,7 @@ public record InterviewQuestionDTO(
                                                       List<String> expectedPoints) {
         return new InterviewQuestionDTO(newId(), index, question, type, category, null, null, true,
             parentQuestionId, null, null, null, null, null, null, followUpType, expectedPoints,
-            followUpIndex > 0 ? followUpIndex : null);
+            followUpIndex > 0 ? followUpIndex : null, CANDIDATE_SOURCE_PRE_GENERATED, null);
     }
 
     /** 题库来源工厂（知识库等：无 P4-1 数值难度，difficulty 留空由决策期默认） */
@@ -128,7 +148,7 @@ public record InterviewQuestionDTO(
                                                         String scoringRubric, String sourceContext) {
         return new InterviewQuestionDTO(newId(), index, question, type, category, null, topicSummary,
             false, null, null, referenceAnswer, keyPoints, scoringRubric, sourceContext, null, null,
-            null, null);
+            null, null, CANDIDATE_SOURCE_PRE_GENERATED, null);
     }
 
     /** 题库追问工厂（知识库等来源的追问：带参考答案，但无 P4-1 followUpType 标注） */
@@ -140,7 +160,7 @@ public record InterviewQuestionDTO(
                                                                 String sourceContext) {
         return new InterviewQuestionDTO(newId(), index, question, type, category, null, null, true,
             parentQuestionId, null, referenceAnswer, keyPoints, scoringRubric, sourceContext, null,
-            null, null, null);
+            null, null, null, CANDIDATE_SOURCE_PRE_GENERATED, null);
     }
 
     // ===== 派生（只改素材自身的字段，绝不承载实际轮次） =====
@@ -150,7 +170,7 @@ public record InterviewQuestionDTO(
         return new InterviewQuestionDTO(questionId, newIndex, question, type, category, topic,
             topicSummary, isFollowUp, parentQuestionId, parentQuestionIndex, referenceAnswer,
             keyPoints, scoringRubric, sourceContext, difficulty, followUpType, expectedPoints,
-            followUpIndex);
+            followUpIndex, candidateSource, candidateVersion);
     }
 
     /** 补上稳定标识（旧数据读取路径 / 合并后统一发号） */
@@ -158,7 +178,7 @@ public record InterviewQuestionDTO(
         return new InterviewQuestionDTO(newQuestionId, questionIndex, question, type, category, topic,
             topicSummary, isFollowUp, parentQuestionId, parentQuestionIndex, referenceAnswer,
             keyPoints, scoringRubric, sourceContext, difficulty, followUpType, expectedPoints,
-            followUpIndex);
+            followUpIndex, candidateSource, candidateVersion);
     }
 
     /** 补上话题 / 技能归属（P4-1：出题侧决定，读取路径不猜） */
@@ -166,7 +186,7 @@ public record InterviewQuestionDTO(
         return new InterviewQuestionDTO(questionId, questionIndex, question, type, newCategory, newTopic,
             topicSummary, isFollowUp, parentQuestionId, parentQuestionIndex, referenceAnswer,
             keyPoints, scoringRubric, sourceContext, difficulty, followUpType, expectedPoints,
-            followUpIndex);
+            followUpIndex, candidateSource, candidateVersion);
     }
 
     /** 旧 questions_json 的 parentQuestionIndex → 新稳定父标识。 */
@@ -174,7 +194,24 @@ public record InterviewQuestionDTO(
         return new InterviewQuestionDTO(questionId, questionIndex, question, type, category, topic,
             topicSummary, isFollowUp, newParentQuestionId, parentQuestionIndex, referenceAnswer,
             keyPoints, scoringRubric, sourceContext, difficulty, followUpType, expectedPoints,
-            followUpIndex);
+            followUpIndex, candidateSource, candidateVersion);
+    }
+
+    /**
+     * 标记候选来源与会话代次（P4-4b）：受限生成写 MODEL_GENERATED、后台预备写 BACKGROUND，
+     * 都带上当时的 candidateVersion 以便过期结果据版本失效。
+     */
+    public InterviewQuestionDTO withCandidateSource(String newSource, Integer newVersion) {
+        return new InterviewQuestionDTO(questionId, questionIndex, question, type, category, topic,
+            topicSummary, isFollowUp, parentQuestionId, parentQuestionIndex, referenceAnswer,
+            keyPoints, scoringRubric, sourceContext, difficulty, followUpType, expectedPoints,
+            followUpIndex, newSource, newVersion);
+    }
+
+    /** 是否为运行期动态产生的候选（同轮生成或后台预备），用于展示与审计区分 */
+    public boolean isDynamicallyGenerated() {
+        return CANDIDATE_SOURCE_MODEL_GENERATED.equals(candidateSource)
+            || CANDIDATE_SOURCE_BACKGROUND.equals(candidateSource);
     }
 
     /** 该题是否属于追问组（供决策与展示分组） */

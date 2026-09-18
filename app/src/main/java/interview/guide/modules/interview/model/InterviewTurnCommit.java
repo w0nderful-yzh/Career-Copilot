@@ -43,7 +43,13 @@ public record InterviewTurnCommit(
     String category,
     String answer,
     InterviewAnswerEntity.AnswerState answerState,
-    String responseJson
+    String responseJson,
+    /** 接纳受限生成后追加了生成题的完整候选池 JSON；null = 本轮未改候选池（P4-4b） */
+    String newQuestionsJson,
+    /** 本轮接纳的生成题标识；非生成时为 null（P4-4b） */
+    String generatedQuestionId,
+    /** 追加候选后的新会话候选代次；非生成时为 null（P4-4b） */
+    Integer newCandidateVersion
 ) {
 
     /** 提前交卷的动作名（与会话推进动作区分：它不改当前题，只把会话收束到评估） */
@@ -64,7 +70,7 @@ public record InterviewTurnCommit(
         return new InterviewTurnCommit(sessionId, requestId, action, payloadHash, expectedVersion,
             expectedQuestionId, newIndex, newQuestionId, questionId, null, answerSeconds,
             decidedAction, decisionReason, transitionMessage, completing, questionIndex, question,
-            category, answer, answerState, responseJson);
+            category, answer, answerState, responseJson, null, null, null);
     }
 
     /** 兼容 P4Q-3b 之前的构造点 */
@@ -97,7 +103,22 @@ public record InterviewTurnCommit(
         return new InterviewTurnCommit(sessionId, requestId, ACTION_COMPLETE, payloadHash,
             expectedVersion, expectedQuestionId, currentIndex, expectedQuestionId, null, null, 0,
             InterviewTurnDTO.ACTION_FINISH_USER, "用户主动结束面试", null, true,
-            null, null, null, null, null, responseJson);
+            null, null, null, null, null, responseJson, null, null, null);
+    }
+
+    /**
+     * 携带本轮接纳的受限生成候选池（P4-4b）：与推进同一个短事务原子写回 questions_json。
+     *
+     * @param questionsJson   追加生成题后的完整候选池 JSON
+     * @param generatedId     生成题的稳定标识
+     * @param candidateVersion 追加后的新候选代次
+     */
+    public InterviewTurnCommit withGenerated(String questionsJson, String generatedId,
+                                             Integer candidateVersion) {
+        return new InterviewTurnCommit(sessionId, requestId, action, payloadHash, expectedVersion,
+            expectedQuestionId, newIndex, newQuestionId, questionId, turnOrdinal, answerSeconds,
+            decidedAction, decisionReason, transitionMessage, completing, questionIndex, question,
+            category, answer, answerState, responseJson, questionsJson, generatedId, candidateVersion);
     }
 
     /** 是否为「提前交卷」（不动当前题，只收束会话） */

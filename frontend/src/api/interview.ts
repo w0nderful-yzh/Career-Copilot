@@ -111,6 +111,14 @@ export const interviewApi = {
     });
   },
 
+  /**
+   * 显式难度调整（P4Q-3c）：与跳过/预算同级的确定性节奏动作，不等模型。
+   * 只改本场难度偏好，下一轮选题/生成立即生效，不推进轮次也不改当前题。
+   */
+  async updatePace(sessionId: string, difficulty: 'junior' | 'mid' | 'senior'): Promise<void> {
+    await request.post<void>(`/api/interview/sessions/${sessionId}/pace`, { difficulty });
+  },
+
   async skipQuestion(
     sessionId: string,
     questionId: string,

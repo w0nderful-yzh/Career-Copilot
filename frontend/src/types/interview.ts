@@ -109,6 +109,8 @@ export interface InterviewQuestion {
   keyPoints?: string[];
   scoringRubric?: string | null;
   sourceContext?: string | null;
+  /** 候选来源（P4-4b）：PRE_GENERATED / MODEL_GENERATED（同轮受限生成）/ BACKGROUND（后台预备） */
+  candidateSource?: string | null;
 }
 
 // ===== 本场面试的画像变化（P3 待收口） =====

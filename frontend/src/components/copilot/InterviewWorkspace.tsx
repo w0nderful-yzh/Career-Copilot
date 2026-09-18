@@ -91,6 +91,8 @@ export default function InterviewWorkspace({
   } | null>(null);
   /** 预算调整输入（P4Q-2）：用户说「只剩五分钟」时当轮生效 */
   const [budgetDraft, setBudgetDraft] = useState<number | null>(null);
+  /** 本场难度偏好（P4Q-3c）：显式「难一点/简单一点」就地调整，下一轮生效 */
+  const [paceLevel, setPaceLevel] = useState<'junior' | 'mid' | 'senior'>('mid');
   const [summary, setSummary] = useState<{ overallScore: number; categoryScores: Array<{ category: string; score: number }> } | null>(null);
   // 本场带来的画像变化（P3 待收口）；拉取失败静默降级（结果卡本身不依赖它）
   const [impact, setImpact] = useState<ProfileImpact | null>(null);
@@ -343,6 +345,27 @@ export default function InterviewWorkspace({
     }
   }, [current, submitting, mode, onChangeStatus, pollEvaluation, resyncAfterTurnConflict, markCurrentTopicCovered]);
 
+  /**
+   * 显式难度调整（P4Q-3c）：与跳过/预算同级的确定性节奏动作，不等模型。
+   * dir<0 降一档、dir>0 升一档；只改本场偏好，下一轮选题/生成立即生效。
+   */
+  const adjustDifficulty = useCallback(
+    async (dir: number) => {
+      const order: Array<'junior' | 'mid' | 'senior'> = ['junior', 'mid', 'senior'];
+      const nextIndex = Math.max(0, Math.min(order.length - 1, order.indexOf(paceLevel) + dir));
+      const next = order[nextIndex];
+      if (next === paceLevel) return;
+      setPaceLevel(next);
+      try {
+        await interviewApi.updatePace(mode.sessionId, next);
+      } catch (err) {
+        console.error('难度调整失败:', err);
+        setPaceLevel(paceLevel);
+      }
+    },
+    [mode.sessionId, paceLevel],
+  );
+
   /** 重试生成报告：重置轮询计数后重新入队并继续轮询 */
   const retryEvaluation = useCallback(async () => {
     try {
@@ -361,7 +384,7 @@ export default function InterviewWorkspace({
     }
   }, [mode, onChangeStatus, pollEvaluation]);
 
-  // 结束面试（提前交卷）→ Java 置 COMPLETED → 进入评估轮询
+    // 结束面试（提前交卷）→ Java 置 COMPLETED → 进入评估轮询
   const finish = useCallback(async () => {
     setTurnNotice(null);
     // 结束与逐轮推进同一并发边界：带标识即可安全重试，不会重复入队评估（P4-9a）
@@ -518,6 +541,26 @@ export default function InterviewWorkspace({
               title="跳过当前问题并切换到下一个主话题"
             >
               换话题
+            </button>
+          )}
+          {!isDone && !isEvaluating && (
+            <button
+              onClick={() => void adjustDifficulty(-1)}
+              disabled={submitting || paceLevel === 'junior'}
+              className="rounded-md px-2 py-1 font-medium text-slate-400 transition hover:bg-slate-100 hover:text-slate-600 disabled:opacity-40 dark:hover:bg-slate-800"
+              title="整体简单一点（下一轮生效，只影响本场）"
+            >
+              简单一点
+            </button>
+          )}
+          {!isDone && !isEvaluating && (
+            <button
+              onClick={() => void adjustDifficulty(1)}
+              disabled={submitting || paceLevel === 'senior'}
+              className="rounded-md px-2 py-1 font-medium text-slate-400 transition hover:bg-slate-100 hover:text-slate-600 disabled:opacity-40 dark:hover:bg-slate-800"
+              title="整体难一点（下一轮生效，只影响本场）"
+            >
+              难一点
             </button>
           )}
           {!isDone && !isEvaluating && (

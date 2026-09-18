@@ -95,7 +95,11 @@ async def test_unknown_tool_is_rejected_before_http():
         # 空数组（@NotEmpty → minItems）
         ("search_knowledge", {"knowledgeBaseIds": [], "question": "JVM"}, "knowledgeBaseIds"),
         # 超出范围
-        ("create_interview", {"skillId": "java-backend", "questionCount": 99}, "范围"),
+        (
+            "create_interview",
+            {"skillId": "java-backend", "plannedDurationMinutes": 121},
+            "范围",
+        ),
         # 必填为空串（@NotBlank → minLength）
         ("create_interview", {"skillId": ""}, "skillId"),
     ],
@@ -117,8 +121,8 @@ async def test_invalid_arguments_are_rejected_before_http(tool, arguments, hint)
 
 
 @pytest.mark.asyncio
-async def test_create_interview_sends_request_id_and_focus():
-    """requestId / focusCategories 必须真的出现在请求体里（参数存在就要真生效）。"""
+async def test_create_interview_sends_plan_request_id_and_focus():
+    """计划、requestId 与 focus 都必须进入请求体，不能只停留在提案 UI。"""
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -133,9 +137,13 @@ async def test_create_interview_sends_request_id_and_focus():
         await client.create_interview(
             "java-backend",
             "mid",
+            planned_duration_minutes=30,
+            required_topics=["JVM", "PROJECT"],
             request_id="confirm-abc",
             focus_categories=["JVM"],
         )
+        assert captured["arguments"]["plannedDurationMinutes"] == 30
+        assert captured["arguments"]["requiredTopics"] == ["JVM", "PROJECT"]
         assert captured["arguments"]["requestId"] == "confirm-abc"
         assert captured["arguments"]["focusCategories"] == ["JVM"]
     finally:

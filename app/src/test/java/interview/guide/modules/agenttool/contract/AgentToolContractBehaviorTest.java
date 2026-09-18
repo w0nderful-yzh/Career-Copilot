@@ -122,13 +122,19 @@ class AgentToolContractBehaviorTest {
   }
 
   @Test
-  @DisplayName("questionCount 真的改变题数上限，缺省时落到服务端默认 8")
-  void questionCountControlsRequestedCount() {
-    service.execute("create_interview", Map.of("skillId", "java-backend", "questionCount", 12));
-    assertThat(capturedCreateRequest().questionCount()).isEqualTo(12);
+  @DisplayName("时长与必要覆盖到达面试引擎，缺省时交给引擎采用默认计划")
+  void planControlsReachInterviewEngine() {
+    service.execute("create_interview", Map.of(
+        "skillId", "java-backend",
+        "plannedDurationMinutes", 30,
+        "requiredTopics", List.of("JVM", "PROJECT")));
+    assertThat(capturedCreateRequest().plannedDurationMinutes()).isEqualTo(30);
+    assertThat(capturedCreateRequest().requiredTopics()).containsExactly("JVM", "PROJECT");
+    assertThat(capturedCreateRequest().questionCount()).isNull();
 
     service.execute("create_interview", Map.of("skillId", "java-backend"));
-    assertThat(capturedCreateRequest().questionCount()).isEqualTo(8);
+    assertThat(capturedCreateRequest().plannedDurationMinutes()).isNull();
+    assertThat(capturedCreateRequest().requiredTopics()).isEmpty();
   }
 
   @Test
@@ -166,9 +172,9 @@ class AgentToolContractBehaviorTest {
 
     // ④ 约束不满足：中文说明直接指出越界
     assertThatThrownBy(() -> service.execute(
-        "create_interview", Map.of("skillId", "java-backend", "questionCount", 99)))
+        "create_interview", Map.of("skillId", "java-backend", "plannedDurationMinutes", 121)))
         .hasFieldOrPropertyWithValue("code", ErrorCode.AGENT_TOOL_ARGUMENT_INVALID.getCode())
-        .hasMessageContaining("20");
+        .hasMessageContaining("120");
   }
 
   @Test

@@ -37,6 +37,10 @@ public record InterviewDetailDTO(
         String userAnswer,
         Integer score,
         String feedback,
+        String decidedAction,
+        String decidedNextQuestionId,
+        String decisionReason,
+        String transitionMessage,
         String referenceAnswer,
         List<String> keyPoints,
         LocalDateTime answeredAt

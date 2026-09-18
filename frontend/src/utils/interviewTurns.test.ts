@@ -5,6 +5,7 @@ import {
   buildAnsweredTurns,
   currentQuestionOf,
   deriveInterviewView,
+  interviewPlanProgress,
   interviewProgress,
   nonAnswerLabel,
   toInterviewerTurn,
@@ -99,6 +100,75 @@ test('刷新恢复：轨迹只来自实际轮次，候选池里没问过的追�
   assert.equal(turns[1].answer, '只记得堆和栈');
   // 关键回归点：F1 从未被提问，不能因为它在候选池里就渲染出来
   assert.ok(!turns.some((item) => item.question === 'F1: 堆区分代？'));
+});
+
+test('刷新恢复：已接纳的承接语跟随决策轮次恢复，不伪装成新问题', () => {
+  const s = session({
+    candidates: adaptivePool(),
+    turns: [
+      turn({
+        questionId: 'q0',
+        ordinal: 1,
+        userAnswer: '只记得堆和栈',
+        transitionMessage: '基础点已经覆盖，下面转到 Redis。',
+      }),
+    ],
+  });
+
+  const turns = buildAnsweredTurns(s);
+
+  assert.deepEqual(turns.map((item) => item.role), ['interviewer', 'user', 'interviewer']);
+  assert.equal(turns[2].question, '基础点已经覆盖，下面转到 Redis。');
+  assert.equal(turns[2].transition, true);
+});
+
+test('计划进度按实际主问题轨迹计算必要覆盖，不把候选择问算作已覆盖', () => {
+  const s = session({
+    candidates: adaptivePool(),
+    requiredTopics: ['Java', 'Redis'],
+    turns: [
+      turn({ questionId: 'q0', ordinal: 1, userAnswer: '堆和栈' }),
+      turn({
+        questionId: 'q3',
+        ordinal: 2,
+        questionIndex: 3,
+        category: 'Redis',
+        userAnswer: 'AOF 重写',
+      }),
+    ],
+    currentQuestion: candidate({
+      questionIndex: 2,
+      question: 'Q2: Redis 持久化？',
+      category: 'Redis',
+    }),
+  });
+
+  const progress = interviewPlanProgress(s);
+
+  assert.equal(progress.answeredCount, 2);
+  assert.equal(progress.currentTopic, 'Redis');
+  assert.deepEqual(progress.coveredRequiredTopics, ['Java']);
+});
+
+test('必要覆盖支持分类 key：PROJECT 能匹配题目展示名“项目经历”', () => {
+  const project = candidate({
+    questionIndex: 0,
+    type: 'PROJECT',
+    category: '项目经历',
+    question: '介绍一个你主导的项目',
+  });
+  const progress = interviewPlanProgress(session({
+    candidates: [project],
+    requiredTopics: ['PROJECT'],
+    turns: [turn({
+      questionId: project.questionId,
+      ordinal: 1,
+      category: '项目经历',
+      userAnswer: '订单系统',
+    })],
+  }));
+
+  assert.deepEqual(progress.coveredRequiredTopics, ['PROJECT']);
 });
 
 test('刷新恢复：视图包含已答轮次、当前题与主问题分母，且不含候选追问', () => {

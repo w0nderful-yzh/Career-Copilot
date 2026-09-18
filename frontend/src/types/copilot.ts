@@ -43,7 +43,8 @@ export interface InterviewProposalBlock {
   difficulty_name: string;
   mode: 'TEXT' | 'VOICE';
   focus: string[];
-  question_count: number;
+  planned_duration_minutes: number;
+  required_topics: string[];
   resume_id?: number | null;
   summary: string;
 }
@@ -59,7 +60,8 @@ export interface InterviewProposalBlock {
 export interface InterviewConfig {
   direction: string;
   difficulty: string;
-  question_count: number;
+  planned_duration_minutes: number;
+  required_topics: string[];
   focus: string[];
 }
 
@@ -75,7 +77,8 @@ export interface InterviewSessionBlock {
   difficulty?: string | null;
   mode: 'TEXT' | 'VOICE';
   focus?: string[];
-  question_count?: number | null;
+  planned_duration_minutes?: number | null;
+  required_topics?: string[];
   direction_name?: string | null;
 }
 

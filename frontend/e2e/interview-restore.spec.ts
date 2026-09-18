@@ -98,6 +98,10 @@ function sessionPayload(overrides: Record<string, unknown> = {}) {
     status: 'IN_PROGRESS',
     adaptive: true,
     turnVersion: 1,
+    plannedDurationMinutes: 20,
+    requiredTopics: ['Redis'],
+    consumedSeconds: 45,
+    remainingSeconds: 1155,
     ...overrides,
   };
 }
@@ -109,7 +113,8 @@ const interviewSessionBlock = {
   difficulty: 'mid',
   mode: 'TEXT',
   focus: [],
-  question_count: 2,
+  planned_duration_minutes: 20,
+  required_topics: ['Redis'],
   direction_name: 'Java 后端',
 };
 
@@ -174,8 +179,15 @@ test.describe('Interview Mode 刷新恢复', () => {
     await expect(page.getByText('F1: 堆区分代？')).toHaveCount(0);
     await expect(page.getByText('F2: AOF 重写？')).toHaveCount(0);
 
-    // 进度分母用主问题数（2），不是题库总数（4）——否则会显示「第 3 / 4 题」这种虚高进度
-    await expect(page.getByText('已答 1 题 · 主题 2/2')).toBeVisible();
+    // 动态主循环不再用预生成题数伪装进度：展示真实话题、轨迹、必要覆盖与答题用时
+    await expect(page.getByText('话题：Redis')).toBeVisible();
+    await expect(page.getByText('已答 1 轮')).toBeVisible();
+    await expect(page.getByText('覆盖 0/1')).toBeVisible();
+    await page.getByText('覆盖 0/1').click();
+    const coverageDetail = page.getByTestId('interview-coverage-detail');
+    await expect(coverageDetail.getByText('Redis')).toBeVisible();
+    await expect(coverageDetail.getByText('待覆盖')).toBeVisible();
+    await expect(page.getByText(/已用 \d+:\d{2} · 剩余 20 分钟/)).toBeVisible();
     await expect(page.getByText('第 3 / 4 题')).toHaveCount(0);
   });
 

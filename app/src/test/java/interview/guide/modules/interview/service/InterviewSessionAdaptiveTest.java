@@ -16,6 +16,7 @@ import interview.guide.modules.interview.model.SubmitAnswerRequest;
 import interview.guide.modules.interview.model.SubmitAnswerResponse;
 import interview.guide.modules.interview.model.TurnEvaluation;
 import interview.guide.modules.interview.model.TurnEvaluation.AnswerState;
+import interview.guide.modules.interview.model.TurnEvaluation.RecommendedAction;
 import interview.guide.modules.interview.model.TurnEvaluationRequest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -209,6 +210,26 @@ class InterviewSessionAdaptiveTest {
   }
 
   @Test
+  @DisplayName("合法语义建议的候选、依据与承接语进入响应和持久化事实")
+  void acceptedSemanticDecisionIsPersisted() {
+    List<InterviewQuestionDTO> questions = linearSession();
+    givenSession(questions, 0, true);
+    when(turnEvaluationService.evaluateTurn(any(), any())).thenReturn(new TurnEvaluation(
+        75, 0.5, List.of("堆"), List.of("分代"), AnswerState.GOOD, "验证分代",
+        true, false, RecommendedAction.FOLLOW_UP, "q-a3",
+        "分代机制仍需验证", "我们继续看一下分代机制。"));
+
+    SubmitAnswerResponse response = service.submitAnswer(
+        new SubmitAnswerRequest(SESSION, 0, "堆和栈……"));
+
+    assertThat(response.nextQuestion().questionId()).isEqualTo("q-a3");
+    assertThat(response.transitionMessage()).isEqualTo("我们继续看一下分代机制。");
+    assertThat(committed.newQuestionId()).isEqualTo("q-a3");
+    assertThat(committed.decisionReason()).isEqualTo("分代机制仍需验证");
+    assertThat(committed.transitionMessage()).isEqualTo("我们继续看一下分代机制。");
+  }
+
+  @Test
   @DisplayName("逐轮决策上下文接入覆盖摘要、剩余预算与合法候选（P4Q-2 批 2b）")
   void turnContextCarriesCoverageBudgetAndLegalCandidates() {
     List<InterviewQuestionDTO> questions = linearSession();
@@ -238,6 +259,53 @@ class InterviewSessionAdaptiveTest {
         .anyMatch(line -> line.startsWith("[q-a2]"))
         .noneMatch(line -> line.contains("[q-a1]"))
         .noneMatch(line -> line.contains("[q-a4]"));
+    assertThat(committed.newQuestionId())
+        .as("必要覆盖已完成但仍有关键缺口时，不应机械提前收束")
+        .isEqualTo("q-a3");
+  }
+
+  @Test
+  @DisplayName("覆盖完成且模型确认无关键缺口时按真实原因收束")
+  void semanticFinishRequiresCompletedCoverage() {
+    List<InterviewQuestionDTO> questions = linearSession();
+    when(sessionCache.getSession(SESSION)).thenReturn(Optional.of(cached(questions, 0, true)));
+    InterviewSessionEntity entity = authoritative(questions, 0);
+    entity.setPlannedDurationMinutes(20);
+    entity.setRequiredTopicsJson("[\"JVM\"]");
+    when(persistenceService.findBySessionId(SESSION)).thenReturn(Optional.of(entity));
+    when(turnEvaluationService.evaluateTurn(any(), any())).thenReturn(new TurnEvaluation(
+        92, 1.0, List.of("堆"), List.of(), AnswerState.EXCELLENT, "",
+        true, false, RecommendedAction.FINISH, null,
+        "必要范围已经充分验证", "信息已经足够，我们到这里。"));
+
+    SubmitAnswerResponse response = service.submitAnswer(
+        new SubmitAnswerRequest(SESSION, 0, "JVM 内存结构包括……"));
+
+    assertThat(response.hasNextQuestion()).isFalse();
+    assertThat(response.transitionMessage()).isEqualTo("信息已经足够，我们到这里。");
+    assertThat(committed.decidedAction()).isEqualTo(InterviewTurnDTO.ACTION_FINISH_COVERAGE);
+    assertThat(committed.decisionReason()).contains("必要覆盖");
+    assertThat(committed.transitionMessage()).isEqualTo("信息已经足够，我们到这里。");
+  }
+
+  @Test
+  @DisplayName("进入必要话题预留窗口后，Java 用未覆盖主问题覆盖可选追问")
+  void reservesTimeForPendingRequiredTopic() {
+    List<InterviewQuestionDTO> questions = linearSession();
+    when(sessionCache.getSession(SESSION)).thenReturn(Optional.of(cached(questions, 0, true)));
+    InterviewSessionEntity entity = authoritative(questions, 0);
+    entity.setPlannedDurationMinutes(5);
+    entity.setConsumedSeconds(61);
+    entity.setRequiredTopicsJson("[\"REDIS\"]");
+    when(persistenceService.findBySessionId(SESSION)).thenReturn(Optional.of(entity));
+    when(turnEvaluationService.evaluateTurn(any(), any())).thenReturn(eval(AnswerState.GOOD));
+
+    SubmitAnswerResponse response = service.submitAnswer(
+        new SubmitAnswerRequest(SESSION, 0, "堆和栈……"));
+
+    assertThat(response.nextQuestion().questionId()).isEqualTo("q-a2");
+    assertThat(committed.decisionReason()).contains("必要话题预留窗口");
+    assertThat(committed.transitionMessage()).isNull();
   }
 
   @Test
@@ -297,6 +365,6 @@ class InterviewSessionAdaptiveTest {
 
   private static TurnEvaluation eval(AnswerState state) {
     return new TurnEvaluation(TurnEvaluation.defaultScoreFor(state), 0.5,
-        List.of(), List.of(), state, "", true);
+        List.of(), List.of("关键缺口"), state, "继续验证关键缺口", true);
   }
 }

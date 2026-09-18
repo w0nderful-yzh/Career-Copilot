@@ -6,22 +6,28 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import interview.guide.common.ai.LlmProviderRegistry;
 import interview.guide.infrastructure.redis.InterviewSessionCache;
+import interview.guide.infrastructure.redis.InterviewSessionCache.CachedSession;
 import interview.guide.infrastructure.redis.RedisService;
 import interview.guide.modules.interview.listener.EvaluateStreamProducer;
 import interview.guide.modules.interview.model.CreateInterviewRequest;
 import interview.guide.modules.interview.model.InterviewQuestionDTO;
+import interview.guide.modules.interview.model.InterviewPlan;
 import interview.guide.modules.interview.model.InterviewResumeContext;
 import interview.guide.modules.interview.model.InterviewSessionDTO;
+import interview.guide.modules.interview.model.InterviewSessionDTO.SessionStatus;
 import interview.guide.modules.resume.model.ResumeContentJson;
 import interview.guide.modules.resume.model.ResumeVersionEntity;
 import interview.guide.modules.resume.service.ResumePersistenceService;
 import interview.guide.modules.resume.service.ResumeVersionService;
 import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -70,6 +76,7 @@ class InterviewSessionResumeContextWiringTest {
   private final ObjectMapper objectMapper = new ObjectMapper();
 
   private InterviewSessionService service;
+  private final AtomicReference<CachedSession> cachedSession = new AtomicReference<>();
 
   @BeforeEach
   void setUp() {
@@ -91,6 +98,25 @@ class InterviewSessionResumeContextWiringTest {
         any(), anyString(), anyString(), any(), anyInt(), any(), any(), any(), any()))
         .thenReturn(List.of(InterviewQuestionDTO.createMain(
             0, "Q1: 你在订单系统里做了什么？", "JAVA", "Java", null, 3, List.of())));
+    doAnswer(invocation -> {
+      cachedSession.set(new CachedSession(
+          invocation.getArgument(0), invocation.getArgument(1), invocation.getArgument(2),
+          invocation.getArgument(3), invocation.getArgument(4), invocation.getArgument(5),
+          invocation.getArgument(6), invocation.getArgument(7, SessionStatus.class),
+          invocation.getArgument(8), invocation.getArgument(9), invocation.getArgument(10),
+          objectMapper));
+      return null;
+    }).when(sessionCache).saveSession(
+        anyString(), anyString(), any(), any(), any(), any(), anyInt(), any(), any(), any(), any());
+    doAnswer(invocation -> {
+      InterviewPlan plan = invocation.getArgument(1, InterviewPlan.class);
+      cachedSession.get().setPlannedDurationMinutes(plan.plannedDurationMinutes());
+      cachedSession.get().setRequiredTopicsJson(
+          objectMapper.writeValueAsString(plan.requiredTopics()));
+      return null;
+    }).when(sessionCache).applyPlan(anyString(), any());
+    when(sessionCache.getSession(anyString()))
+        .thenAnswer(invocation -> Optional.ofNullable(cachedSession.get()));
   }
 
   @Test
@@ -118,13 +144,15 @@ class InterviewSessionResumeContextWiringTest {
 
     ArgumentCaptor<InterviewResumeContext> persisted =
         ArgumentCaptor.forClass(InterviewResumeContext.class);
+    ArgumentCaptor<InterviewPlan> plan = ArgumentCaptor.forClass(InterviewPlan.class);
     verify(persistenceService).saveSession(
         anyString(), any(), anyInt(), any(), any(), anyString(), anyString(), anyBoolean(),
-        persisted.capture());
+        persisted.capture(), plan.capture());
     assertThat(persisted.getValue().source())
         .isEqualTo(InterviewResumeContext.Source.RESUME_VERSION);
     assertThat(persisted.getValue().version()).isEqualTo(2);
     assertThat(persisted.getValue().text()).contains("Kafka 重平衡排查");
+    assertThat(plan.getValue().plannedDurationMinutes()).isEqualTo(20);
 
     ArgumentCaptor<String> source = ArgumentCaptor.forClass(String.class);
     ArgumentCaptor<Integer> version = ArgumentCaptor.forClass(Integer.class);

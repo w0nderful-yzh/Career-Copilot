@@ -154,12 +154,12 @@ public class InterviewSessionService {
 
         // P4Q-2：计划以「预计时长 + 必要覆盖」表达；规模（主问题数）由时长推导。
         // 旧调用方只传题数 → 按每主问题 4 分钟折算，保持规模意图不丢（P4-8a 再改契约）。
-        InterviewPlan plan = InterviewPlan.of(request.plannedDurationMinutes(),
+        InterviewPlan requestedPlan = InterviewPlan.of(request.plannedDurationMinutes(),
             request.requiredTopics(), request.questionCount());
-        int mainCount = InterviewPlan.mainCountFor(plan.plannedDurationMinutes());
+        int mainCount = InterviewPlan.mainCountFor(requestedPlan.plannedDurationMinutes());
 
         log.info("创建新面试会话: {}, skill: {}, difficulty: {}, 计划 {} 分钟（约 {} 个主问题）, resumeId: {}",
-            sessionId, skillId, difficulty, plan.plannedDurationMinutes(), mainCount,
+            sessionId, skillId, difficulty, requestedPlan.plannedDurationMinutes(), mainCount,
             request.resumeId());
 
         // 获取历史问题（通用模式按 skillId 查询，有简历时按 resumeId + skillId 精确匹配）
@@ -184,6 +184,9 @@ public class InterviewSessionService {
             request.jdText(),
             request.focusCategories()
         );
+        // 必要覆盖只能引用本场真实存在的主问题。简历没有实习经历时，即使上游提案仍带了
+        // 「实习经历」，也不能留下一个永远无法完成的覆盖目标。
+        InterviewPlan plan = applicablePlan(requestedPlan, questions);
 
         if (requestId != null) {
             try {
@@ -213,7 +216,7 @@ public class InterviewSessionService {
             try {
                 persistenceService.saveSession(sessionId, request.resumeId(),
                     questions.size(), questions, request.llmProvider(), skillId, difficulty,
-                    adaptive, resumeContext);
+                    adaptive, resumeContext, plan);
             } catch (Exception e) {
                 log.warn("保存面试会话到数据库失败: {}", e.getMessage());
             }
@@ -237,21 +240,8 @@ public class InterviewSessionService {
         );
         sessionCache.applyPlan(sessionId, plan);
 
-        return new InterviewSessionDTO(
-            sessionId,
-            contextText,
-            questions.size(),
-            0,
-            questions,
-            SessionStatus.CREATED,
-            null,
-            null,
-            adaptive,
-            null,
-            null,
-            resumeContext.source().name(),
-            resumeContext.version()
-        );
+        return toDTO(sessionCache.getSession(sessionId)
+            .orElseThrow(() -> new BusinessException(ErrorCode.INTERNAL_ERROR, "读取新建面试会话失败")));
     }
 
     public InterviewSessionDTO createSessionFromQuestions(List<InterviewQuestionDTO> questions,
@@ -453,6 +443,10 @@ public class InterviewSessionService {
                 entity.getCurrentQuestionIndex() != null ? entity.getCurrentQuestionIndex() : 0,
                 entity.getCurrentQuestionId(), status, entity.getTurnVersion(),
                 entity.getConsumedSeconds());
+            InterviewPlan restoredPlan = planOf(entity);
+            if (restoredPlan != null) {
+                sessionCache.applyPlan(entity.getSessionId(), restoredPlan);
+            }
 
             log.info("从数据库恢复会话到 Redis: sessionId={}, currentIndex={}, status={}",
                 entity.getSessionId(), entity.getCurrentQuestionIndex(), entity.getStatus());
@@ -708,6 +702,8 @@ public class InterviewSessionService {
         long evaluationStarted = System.nanoTime();
         long evaluationMillis = 0;
         InterviewQuestionDTO nextQuestion;
+        AdaptiveInterviewPolicy.Decision decision;
+        boolean coverageSatisfied = requiredCoverageSatisfied(candidates, askedIds, plan);
         if (adaptive) {
             TurnEvaluation evaluation;
             if (answerState == InterviewAnswerEntity.AnswerState.ANSWERED) {
@@ -720,20 +716,43 @@ public class InterviewSessionService {
                     ? TurnEvaluation.skipped()
                     : TurnEvaluation.noAnswer();
             }
-            nextQuestion = AdaptiveInterviewPolicy.selectNext(candidates, askedIds, question, evaluation);
+            decision = AdaptiveInterviewPolicy.decideNext(
+                candidates, askedIds, question, evaluation, coverageSatisfied);
+            nextQuestion = decision.nextQuestion();
         } else {
             nextQuestion = nextUnasked(candidates, askedIds);
+            decision = new AdaptiveInterviewPolicy.Decision(nextQuestion,
+                "非自适应会话按候选顺序推进", "", false, false);
         }
 
         // P4Q-2：预算与覆盖的**硬边界**（Java 判定，不依赖模型自觉）。
-        // 收束优先级：必要覆盖完成 > 预算用尽 > 候选耗尽；前两者会掐断尚未展示的下一题，
-        // 并且当前题不越过刚答完的这道（没有展示过就没有「当前题」）。
-        int consumedSeconds = baseConsumedSeconds(entity) + answerSecondsOf(entity, evaluationMillis);
+        // 模型可以建议结束，但只有必要覆盖真实完成时才接纳；预算用尽仍由代码强制收束。
+        int answerSeconds = answerSecondsOf(entity, evaluationMillis);
+        int consumedSeconds = baseConsumedSeconds(entity) + answerSeconds;
+        int remainingAfterTurn = plan != null
+            ? Math.max(0, plan.budgetSeconds() - consumedSeconds)
+            : Integer.MAX_VALUE;
+
+        // 必要话题预留：剩余时间进入「每个未覆盖必要话题约 4 分钟」窗口后，
+        // Java 会把下一题校正为尚未覆盖的必要主问题，避免模型把最后预算继续花在可选话题。
+        InterviewQuestionDTO reservedRequired = requiredTopicToReserve(
+            candidates, askedIds, plan, remainingAfterTurn);
+        if (nextQuestion != null && reservedRequired != null
+            && !reservedRequired.questionId().equals(nextQuestion.questionId())) {
+            nextQuestion = reservedRequired;
+            decision = new AdaptiveInterviewPolicy.Decision(nextQuestion,
+                "剩余时间已进入必要话题预留窗口，优先补齐必要覆盖", "", false, false);
+        }
+
         String finishReason = null;
-        if (requiredCoverageSatisfied(candidates, askedIds, plan)) {
+        if (decision.finishRecommended() && coverageSatisfied) {
             finishReason = InterviewSessionEntity.END_COVERAGE_SATISFIED;
         } else if (plan != null && consumedSeconds >= plan.budgetSeconds()) {
             finishReason = InterviewSessionEntity.END_BUDGET_EXHAUSTED;
+        } else if (nextQuestion == null) {
+            finishReason = coverageSatisfied
+                ? InterviewSessionEntity.END_COVERAGE_SATISFIED
+                : InterviewSessionEntity.END_CANDIDATES_EXHAUSTED;
         }
 
         String nextQuestionId;
@@ -746,7 +765,6 @@ public class InterviewSessionService {
             nextQuestionId = nextQuestion.questionId();
             nextIndex = nextQuestion.questionIndex();
         } else {
-            finishReason = InterviewSessionEntity.END_CANDIDATES_EXHAUSTED;
             nextQuestionId = null;
             nextIndex = candidates.size();
         }
@@ -754,6 +772,15 @@ public class InterviewSessionService {
         boolean hasNextQuestion = nextQuestion != null;
         SessionStatus newStatus = hasNextQuestion ? SessionStatus.IN_PROGRESS : SessionStatus.COMPLETED;
         String decidedAction = decidedActionOf(question, nextQuestion, finishReason);
+        String decisionReason = finishReason != null
+            ? finishReasonText(finishReason)
+            : decision.reason();
+        // 承接语只跟随被接纳的模型决定；预算等硬边界改写动作时必须丢弃。
+        // 语义 FINISH 本身被接纳时仍保留自然收束语，而不是突然只剩「评估中」。
+        String transitionMessage = decision.recommendationAccepted()
+            && (finishReason == null || decision.finishRecommended())
+            ? emptyToNull(decision.transitionMessage())
+            : null;
 
         // 本轮只保存答案事实；正式评分由异步报告回填，不写可被误提取为证据的占位分。
         // 预算随载荷带回（P4Q-2）：前端刷新顶栏不必再发一次会话请求
@@ -761,11 +788,12 @@ public class InterviewSessionService {
             ? Math.max(0, plan.budgetSeconds() - consumedSeconds)
             : null;
         SubmitAnswerResponse response = new SubmitAnswerResponse(hasNextQuestion, nextQuestion,
-            nextIndex, candidates.size(), baseVersion + 1, consumedSeconds, remainingSeconds);
+            nextIndex, candidates.size(), baseVersion + 1, consumedSeconds, remainingSeconds,
+            transitionMessage);
         InterviewTurnResult result = commitOrFail(InterviewTurnCommit.ofTurn(
             sessionId, requestId, action, payloadHash, baseVersion,
             resolvedId, nextIndex, nextQuestionId, resolvedId,
-            answerSecondsOf(entity, evaluationMillis), decidedAction,
+            answerSeconds, decidedAction, decisionReason, transitionMessage,
             newStatus == SessionStatus.COMPLETED, question.questionIndex(), question.question(),
             question.category(), answer, answerState, serializeTurnResponse(response)));
 
@@ -773,7 +801,8 @@ public class InterviewSessionService {
         List<InterviewTurnDTO> updatedTurns = new ArrayList<>(turns);
         updatedTurns.add(new InterviewTurnDTO(resolvedId, result.turnOrdinal(),
             question.questionIndex(), question.question(), question.category(), question.topic(),
-            answer, answerState, null, null, decidedAction, null, null, LocalDateTime.now()));
+            answer, answerState, null, null, decidedAction, null, null, LocalDateTime.now(),
+            nextQuestionId, decisionReason, transitionMessage));
         sessionCache.applyTurnState(sessionId, candidates, updatedTurns, nextIndex, nextQuestionId,
             newStatus, result.turnVersion(), consumedSeconds);
 
@@ -786,7 +815,7 @@ public class InterviewSessionService {
         }
 
         return new SubmitAnswerResponse(hasNextQuestion, nextQuestion, nextIndex, candidates.size(),
-            result.turnVersion(), consumedSeconds, remainingSeconds);
+            result.turnVersion(), consumedSeconds, remainingSeconds, transitionMessage);
     }
 
     /** 按标识（优先）或候选池顺序（旧调用方）定位题目 */
@@ -862,6 +891,29 @@ public class InterviewSessionService {
         return new InterviewPlan(entity.getPlannedDurationMinutes(), required);
     }
 
+    /**
+     * 只保留候选池里真实存在的必要话题。
+     *
+     * <p>上游提案可能要求「实习经历」，但简历没有实习、出题池也就没有对应主问题；
+     * 这时继续保存该目标会让覆盖永远无法完成，只能等预算强制结束。
+     */
+    private static InterviewPlan applicablePlan(InterviewPlan requested,
+                                                List<InterviewQuestionDTO> candidates) {
+        if (requested == null || requested.requiredTopics().isEmpty()) {
+            return requested;
+        }
+        List<String> available = requested.requiredTopics().stream()
+            .filter(Objects::nonNull)
+            .map(String::strip)
+            .filter(topic -> !topic.isEmpty())
+            .filter(topic -> candidates.stream()
+                .filter(InterviewQuestionDTO::isMain)
+                .anyMatch(question -> question.matchesTopic(topic)))
+            .distinct()
+            .toList();
+        return new InterviewPlan(requested.plannedDurationMinutes(), available);
+    }
+
     private static int baseConsumedSeconds(InterviewSessionEntity entity) {
         return entity.getConsumedSeconds() != null ? entity.getConsumedSeconds() : 0;
     }
@@ -901,6 +953,58 @@ public class InterviewSessionService {
             }
         }
         return true;
+    }
+
+    /**
+     * 剩余预算进入必要话题预留窗口时，返回下一条必须优先展示的主问题。
+     *
+     * <p>每个未覆盖必要话题按 {@link InterviewPlan#MINUTES_PER_MAIN_QUESTION} 分钟预留；
+     * 只使用池内真实存在且尚未问过的主问题，不动态生成、不跨越候选边界。
+     */
+    private static InterviewQuestionDTO requiredTopicToReserve(
+            List<InterviewQuestionDTO> candidates, Set<String> askedIds,
+            InterviewPlan plan, int remainingSeconds) {
+        if (plan == null || plan.requiredTopics().isEmpty() || remainingSeconds <= 0) {
+            return null;
+        }
+        List<String> pending = plan.requiredTopics().stream()
+            .filter(topic -> candidates.stream()
+                .filter(InterviewQuestionDTO::isMain)
+                .filter(question -> question.matchesTopic(topic))
+                .noneMatch(question -> askedIds.contains(question.questionId())))
+            .toList();
+        int reserveSeconds = pending.size()
+            * InterviewPlan.MINUTES_PER_MAIN_QUESTION * 60;
+        if (pending.isEmpty() || remainingSeconds > reserveSeconds) {
+            return null;
+        }
+        for (String topic : pending) {
+            Optional<InterviewQuestionDTO> candidate = candidates.stream()
+                .filter(InterviewQuestionDTO::isMain)
+                .filter(question -> !askedIds.contains(question.questionId()))
+                .filter(question -> question.matchesTopic(topic))
+                .findFirst();
+            if (candidate.isPresent()) {
+                return candidate.get();
+            }
+        }
+        return null;
+    }
+
+    private static String finishReasonText(String finishReason) {
+        return switch (finishReason) {
+            case InterviewSessionEntity.END_COVERAGE_SATISFIED ->
+                "必要覆盖已完成，且本轮语义判断没有继续提问的收益";
+            case InterviewSessionEntity.END_BUDGET_EXHAUSTED ->
+                "用户答题时间已达到本场预算";
+            case InterviewSessionEntity.END_USER_FINISHED ->
+                "用户主动结束面试";
+            default -> "没有剩余的合法候选问题";
+        };
+    }
+
+    private static String emptyToNull(String value) {
+        return value == null || value.isBlank() ? null : value;
     }
 
     /**

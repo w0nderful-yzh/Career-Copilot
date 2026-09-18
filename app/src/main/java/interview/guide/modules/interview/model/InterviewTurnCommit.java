@@ -35,6 +35,8 @@ public record InterviewTurnCommit(
     /** 本轮用户答题耗时（秒，P4Q-2）：展示→提交的墙钟扣除模型评估耗时；模型等待不扣 */
     int answerSeconds,
     String decidedAction,
+    String decisionReason,
+    String transitionMessage,
     boolean completing,
     Integer questionIndex,
     String question,
@@ -53,6 +55,7 @@ public record InterviewTurnCommit(
                                              String expectedQuestionId, int newIndex,
                                              String newQuestionId, String questionId,
                                              int answerSeconds, String decidedAction,
+                                             String decisionReason, String transitionMessage,
                                              boolean completing,
                                              int questionIndex, String question, String category,
                                              String answer,
@@ -60,7 +63,24 @@ public record InterviewTurnCommit(
                                              String responseJson) {
         return new InterviewTurnCommit(sessionId, requestId, action, payloadHash, expectedVersion,
             expectedQuestionId, newIndex, newQuestionId, questionId, null, answerSeconds,
-            decidedAction, completing, questionIndex, question, category, answer, answerState,
+            decidedAction, decisionReason, transitionMessage, completing, questionIndex, question,
+            category, answer, answerState, responseJson);
+    }
+
+    /** 兼容 P4Q-3b 之前的构造点 */
+    public static InterviewTurnCommit ofTurn(String sessionId, String requestId, String action,
+                                             String payloadHash, int expectedVersion,
+                                             String expectedQuestionId, int newIndex,
+                                             String newQuestionId, String questionId,
+                                             int answerSeconds, String decidedAction,
+                                             boolean completing,
+                                             int questionIndex, String question, String category,
+                                             String answer,
+                                             InterviewAnswerEntity.AnswerState answerState,
+                                             String responseJson) {
+        return ofTurn(sessionId, requestId, action, payloadHash, expectedVersion,
+            expectedQuestionId, newIndex, newQuestionId, questionId, answerSeconds, decidedAction,
+            null, null, completing, questionIndex, question, category, answer, answerState,
             responseJson);
     }
 
@@ -76,7 +96,8 @@ public record InterviewTurnCommit(
                                                int currentIndex, String responseJson) {
         return new InterviewTurnCommit(sessionId, requestId, ACTION_COMPLETE, payloadHash,
             expectedVersion, expectedQuestionId, currentIndex, expectedQuestionId, null, null, 0,
-            InterviewTurnDTO.ACTION_FINISH_USER, true, null, null, null, null, null, responseJson);
+            InterviewTurnDTO.ACTION_FINISH_USER, "用户主动结束面试", null, true,
+            null, null, null, null, null, responseJson);
     }
 
     /** 是否为「提前交卷」（不动当前题，只收束会话） */

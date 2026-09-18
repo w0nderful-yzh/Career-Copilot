@@ -12,6 +12,7 @@ import interview.guide.modules.interview.model.InterviewTurnDTO;
 import interview.guide.modules.interview.model.TurnEvaluation;
 import interview.guide.modules.interview.model.TurnEvaluationRequest;
 import interview.guide.modules.interview.model.TurnEvaluation.AnswerState;
+import interview.guide.modules.interview.model.TurnEvaluation.RecommendedAction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
@@ -107,6 +108,9 @@ public class TurnEvaluationService {
     private static final String DEFAULT_DIFFICULTY_LABEL = "中级(3/5)";
     private static final int MAX_ANSWER_CHARS = 3000;
     private static final int MAX_FOCUS_CHARS = 30;
+    private static final int MAX_QUESTION_ID_CHARS = 64;
+    private static final int MAX_DECISION_REASON_CHARS = 120;
+    private static final int MAX_TRANSITION_CHARS = 80;
 
     private final PromptTemplate systemPromptTemplate;
     private final PromptTemplate userPromptTemplate;
@@ -126,8 +130,20 @@ public class TurnEvaluationService {
         List<String> missingPoints,
         String recommendedFocus,
         /** 用户是否在作答中明确要求跳过本题（P4Q-5）；有实质回答内容时即使夹带指令也应为 false */
-        Boolean skipRequested
-    ) {}
+        Boolean skipRequested,
+        String recommendedAction,
+        String recommendedQuestionId,
+        String decisionReason,
+        String transitionMessage
+    ) {
+        /** 兼容既有单测与历史结构化结果：缺少节奏字段时由 Java 走保守回落策略 */
+        TurnEvalDTO(Integer score, String answerState, List<String> coveredPoints,
+                    List<String> missingPoints, String recommendedFocus,
+                    Boolean skipRequested) {
+            this(score, answerState, coveredPoints, missingPoints, recommendedFocus,
+                skipRequested, null, null, null, null);
+        }
+    }
 
     public TurnEvaluationService(
             StructuredOutputInvoker structuredOutputInvoker,
@@ -635,11 +651,32 @@ public class TurnEvaluationService {
         List<String> covered = cleanList(dto.coveredPoints());
         List<String> missing = cleanList(dto.missingPoints());
         double coverage = coverageOf(covered, missing);
-        String focus = dto.recommendedFocus() == null ? "" : dto.recommendedFocus().trim();
-        if (focus.length() > MAX_FOCUS_CHARS) {
-            focus = focus.substring(0, MAX_FOCUS_CHARS);
+        String focus = cleanText(dto.recommendedFocus(), MAX_FOCUS_CHARS);
+        RecommendedAction recommendedAction = parseAction(dto.recommendedAction());
+        String recommendedQuestionId = cleanText(dto.recommendedQuestionId(), MAX_QUESTION_ID_CHARS);
+        String decisionReason = cleanText(dto.decisionReason(), MAX_DECISION_REASON_CHARS);
+        String transitionMessage = cleanText(dto.transitionMessage(), MAX_TRANSITION_CHARS);
+        return new TurnEvaluation(score, coverage, covered, missing, state, focus, true, false,
+            recommendedAction, recommendedQuestionId, decisionReason, transitionMessage);
+    }
+
+    private static RecommendedAction parseAction(String action) {
+        if (action == null || action.isBlank()) {
+            return null;
         }
-        return new TurnEvaluation(score, coverage, covered, missing, state, focus, true);
+        try {
+            return RecommendedAction.valueOf(action.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    private static String cleanText(String value, int maxChars) {
+        if (value == null || value.isBlank()) {
+            return "";
+        }
+        String cleaned = value.strip();
+        return cleaned.length() <= maxChars ? cleaned : cleaned.substring(0, maxChars);
     }
 
     private static AnswerState parseState(String answerState) {

@@ -72,7 +72,7 @@ public enum AgentToolName {
       AgentToolRequests.ListSkills.class),
   CREATE_INTERVIEW(
       "create_interview",
-      "创建模拟面试会话（mode/direction/difficulty/focus，需用户确认后执行）",
+      "创建模拟面试会话（方向/难度/预计时长/重点/必要覆盖，需用户确认后执行）",
       AgentToolPermission.CONFIRM_WRITE,
       AgentToolRequests.CreateInterview.class),
   APPLY_RESUME_PATCHES(

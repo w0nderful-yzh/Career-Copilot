@@ -66,8 +66,8 @@ class Settings(BaseSettings):
     # 0 = 关闭（一期默认最小）；>0 时在提案落库前做至多 N 轮「只淘汰不新增」的评审。
     resume_self_review_rounds: int = 0
 
-    # 面试发起（P1-4）：Agent 推荐的默认题目数量（与前端创建面试默认一致）
-    interview_default_question_count: int = 8
+    # 面试发起（P4-8a）：Agent 推荐的默认预计时长；题数由 Java 按时长与逐轮决策产生
+    interview_default_duration_minutes: int = 20
 
     # 新上传简历的异步分析就绪窗口：分析未完成时有限次轮询
     # 总等待 ≈ attempts × delay（默认约 15s），期间通过 tool_progress 事件向前端反馈；

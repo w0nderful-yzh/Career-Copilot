@@ -8,6 +8,7 @@ import interview.guide.modules.interview.model.InterviewQuestionDTO;
 import interview.guide.modules.interview.model.TurnEvaluation;
 import interview.guide.modules.interview.model.TurnEvaluationRequest;
 import interview.guide.modules.interview.model.TurnEvaluation.AnswerState;
+import interview.guide.modules.interview.model.TurnEvaluation.RecommendedAction;
 import interview.guide.modules.interview.service.TurnEvaluationService.TurnEvalDTO;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -89,6 +90,19 @@ class TurnEvaluationServiceTest {
     assertThat(evaluation.missingPoints()).containsExactly("发生区域", "STW");
     assertThat(evaluation.recommendedFocus()).isEqualTo("GC 触发细节");
     assertThat(evaluation.evaluatedByLlm()).isTrue();
+  }
+
+  @Test
+  @DisplayName("节奏建议归一：动作、候选标识、理由与承接语进入决策输入")
+  void normalizesSemanticDecisionFields() {
+    TurnEvaluation evaluation = TurnEvaluationService.normalize(new TurnEvalDTO(
+        75, "GOOD", List.of("触发条件"), List.of("STW"), "继续确认 STW",
+        false, "follow_up", " q-follow-up-1 ", " 存在关键缺口 ", " 好，我们继续看这个点。 "));
+
+    assertThat(evaluation.recommendedAction()).isEqualTo(RecommendedAction.FOLLOW_UP);
+    assertThat(evaluation.recommendedQuestionId()).isEqualTo("q-follow-up-1");
+    assertThat(evaluation.decisionReason()).isEqualTo("存在关键缺口");
+    assertThat(evaluation.transitionMessage()).isEqualTo("好，我们继续看这个点。");
   }
 
   @Test

@@ -53,6 +53,18 @@ public class InterviewAnswerEntity {
     @Column(name = "decided_action", length = 32)
     private String decidedAction;
 
+    /** Java 最终接纳的下一题标识；收束时为空 */
+    @Column(name = "decided_next_question_id", length = 64)
+    private String decidedNextQuestionId;
+
+    /** Java 最终决定依据；不保存被硬边界否决的模型建议 */
+    @Column(name = "decision_reason", length = 200)
+    private String decisionReason;
+
+    /** 实际展示的简短承接语；只有模型建议被原样接纳时才保留 */
+    @Column(name = "transition_message", length = 120)
+    private String transitionMessage;
+
     // 问题索引（候选池内顺序；展示与旧数据兼容用，不再作身份）
     @Column(name = "question_index")
     private Integer questionIndex;
@@ -162,6 +174,30 @@ public class InterviewAnswerEntity {
 
     public void setDecidedAction(String decidedAction) {
         this.decidedAction = decidedAction;
+    }
+
+    public String getDecidedNextQuestionId() {
+        return decidedNextQuestionId;
+    }
+
+    public void setDecidedNextQuestionId(String decidedNextQuestionId) {
+        this.decidedNextQuestionId = decidedNextQuestionId;
+    }
+
+    public String getDecisionReason() {
+        return decisionReason;
+    }
+
+    public void setDecisionReason(String decisionReason) {
+        this.decisionReason = decisionReason;
+    }
+
+    public String getTransitionMessage() {
+        return transitionMessage;
+    }
+
+    public void setTransitionMessage(String transitionMessage) {
+        this.transitionMessage = transitionMessage;
     }
 
     public Integer getQuestionIndex() {

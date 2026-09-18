@@ -115,7 +115,8 @@ async def _create_interview_action(
     """按用户确认后的配置创建面试（CONFIRM_WRITE）。
 
     payload 由前端从 InterviewProposalBlock 原样回传（direction/difficulty/focus/
-    questionCount/resumeId），先校验必填，再调用 Java create_interview Tool。
+    plannedDurationMinutes/requiredTopics/resumeId），先校验必填，再调用 Java
+    create_interview Tool。
     创建成功后产出 InterviewSessionBlock 原地内嵌（P4-0：不再跳转面试页，
     答题在块内直连 Java Interview API）。
     """
@@ -130,6 +131,10 @@ async def _create_interview_action(
 
     # focus 必须真正传给 Java：否则用户看到「重点考察 JVM」却仍被问 MySQL（P3 待收口）
     focus_categories = [f for f in (payload.get("focus") or []) if isinstance(f, str)]
+    required_topics = [
+        topic for topic in (payload.get("requiredTopics") or [])
+        if isinstance(topic, str)
+    ]
 
     # 幂等键：由前端在同一次确认流程中生成并原样回传（重发/重试复用同一值）。
     # 缺失时为 None——那等于没有幂等保护，重复提交会重复建会话（ARCH-1 的契约行为测试盯这条）。
@@ -141,7 +146,8 @@ async def _create_interview_action(
         session = await deps.backend.create_interview(
             skill_id=direction,
             difficulty=difficulty,
-            question_count=_as_int(payload.get("questionCount")),
+            planned_duration_minutes=_as_int(payload.get("plannedDurationMinutes")),
+            required_topics=required_topics,
             resume_id=_as_int(payload.get("resumeId")) or state.get("active_resume_id"),
             resume_text=None,
             force_create=True,
@@ -167,6 +173,17 @@ async def _create_interview_action(
             )
         }
 
+    planned_minutes = (
+        session.get("plannedDurationMinutes")
+        or payload.get("plannedDurationMinutes")
+        or 20
+    )
+    persisted_required_topics = session.get("requiredTopics")
+    session_required_topics = (
+        [topic for topic in persisted_required_topics if isinstance(topic, str)]
+        if isinstance(persisted_required_topics, list)
+        else required_topics
+    )
     emit_run_status(RunStatus.COMPLETED.value)
     return {
         "plan": StreamPlan(
@@ -176,12 +193,13 @@ async def _create_interview_action(
                     skill_id=direction if isinstance(direction, str) else None,
                     difficulty=difficulty if isinstance(difficulty, str) else None,
                     focus=focus_categories,
-                    question_count=_as_int(payload.get("questionCount")),
+                    planned_duration_minutes=_as_int(planned_minutes),
+                    required_topics=session_required_topics,
                     direction_name=None,
                 )
             ],
             text=static_text(
-                f"面试已创建（{session.get('totalQuestions') or '?'} 题）。"
+                f"面试已创建（预计 {planned_minutes} 分钟）。"
                 "面试已在你面前展开，直接在卡片内回答即可。"
             ),
         )

@@ -1058,6 +1058,8 @@ async def test_graph_interview_create_produces_proposal():
     assert proposal.difficulty == "mid"
     assert proposal.difficulty_name == "中级"
     assert set(proposal.focus) == {"JVM", "PROJECT"}
+    assert proposal.planned_duration_minutes == 20
+    assert proposal.required_topics == ["JVM", "PROJECT"]
 
     # Interview Mode 重构：不再下发「重新推荐」Choice（手动调整由前端内联面板完成）
     assert next((b for b in plan.blocks if b.type == "choice"), None) is None
@@ -1122,7 +1124,8 @@ async def test_graph_create_interview_action_embeds_session_block():
                 "direction": "java-backend",
                 "difficulty": "mid",
                 "focus": ["JVM"],
-                "questionCount": 8,
+                "plannedDurationMinutes": 30,
+                "requiredTopics": ["JVM"],
                 "resumeId": 1,
             },
         },
@@ -1136,6 +1139,8 @@ async def test_graph_create_interview_action_embeds_session_block():
     assert block.skill_id == "java-backend"
     assert block.difficulty == "mid"
     assert block.focus == ["JVM"]
+    assert block.planned_duration_minutes == 30
+    assert block.required_topics == ["JVM"]
     # P4-0 内嵌后不应再产出跳转面试页的 NavigationBlock
     assert next((b for b in plan.blocks if b.type == "navigation"), None) is None
 

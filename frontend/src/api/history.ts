@@ -65,6 +65,12 @@ export interface AnswerItem {
   feedback: string | null;
   referenceAnswer?: string;
   keyPoints?: string[];
+  /** 本轮实际采用的下一题；用于历史回放与决策审计 */
+  decidedNextQuestionId?: string | null;
+  /** Java 边界校验后的实际决策理由 */
+  decisionReason?: string | null;
+  /** 模型建议被原样接纳时保存的简短承接语 */
+  transitionMessage?: string | null;
   answeredAt: string | null;
 }
 

@@ -158,7 +158,8 @@ def interview_proposal_block(
     difficulty: str,
     difficulty_name: str,
     focus: list[str],
-    question_count: int = 8,
+    planned_duration_minutes: int = 20,
+    required_topics: list[str] | None = None,
     resume_id: int | None = None,
     summary: str = "",
 ) -> InterviewProposalBlock:
@@ -174,7 +175,8 @@ def interview_proposal_block(
         difficulty_name=difficulty_name,
         mode="TEXT",
         focus=focus,
-        question_count=question_count,
+        planned_duration_minutes=planned_duration_minutes,
+        required_topics=required_topics or [],
         resume_id=resume_id,
         summary=summary,
     )
@@ -186,7 +188,8 @@ def interview_session_block(
     skill_id: str | None = None,
     difficulty: str | None = None,
     focus: list[str] | None = None,
-    question_count: int | None = None,
+    planned_duration_minutes: int | None = None,
+    required_topics: list[str] | None = None,
     direction_name: str | None = None,
 ) -> InterviewSessionBlock:
     """内嵌面试会话块（P4-0）：面试创建成功后原地内嵌。
@@ -199,6 +202,7 @@ def interview_session_block(
         difficulty=difficulty,
         mode="TEXT",
         focus=focus or [],
-        question_count=question_count,
+        planned_duration_minutes=planned_duration_minutes,
+        required_topics=required_topics or [],
         direction_name=direction_name,
     )

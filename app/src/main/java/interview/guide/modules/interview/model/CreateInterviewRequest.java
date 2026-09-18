@@ -26,8 +26,8 @@ public record CreateInterviewRequest(
     /**
      * 必要覆盖（P4Q-2）：这些话题必须问到才算覆盖完成。
      *
-     * <p>按话题 label/key 匹配主问题；空/缺省 = 池内全部主问题话题都必要。
-     * 候选池里不存在的话题不会生成题目——「无实习经历不强行问实习」由这一点保证。
+     * <p>按话题 label/key 匹配主问题；空/缺省 = 未声明必要覆盖，不按覆盖完成提前收束。
+     * 候选池里不存在的话题在创建后会被剔除——「无实习经历不强行问实习」由这一点保证。
      */
     List<String> requiredTopics,
 
@@ -81,4 +81,3 @@ public record CreateInterviewRequest(
             difficulty, customCategories, jdText, requestId, adaptive, focusCategories);
     }
 }
-

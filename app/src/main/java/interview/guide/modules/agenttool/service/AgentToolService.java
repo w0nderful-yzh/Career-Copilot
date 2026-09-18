@@ -56,9 +56,6 @@ import tools.jackson.databind.ObjectMapper;
 @RequiredArgsConstructor
 public class AgentToolService {
 
-  /** 默认题目数量（Agent 未指定时使用，与前端创建面试默认一致） */
-  private static final int DEFAULT_QUESTION_COUNT = 8;
-
   private final ResumeHistoryService resumeHistoryService;
   private final ResumePersistenceService resumePersistenceService;
   private final InterviewPersistenceService interviewPersistenceService;
@@ -248,7 +245,9 @@ public class AgentToolService {
   private ToolResponse executeCreateInterview(AgentToolRequests.CreateInterview request) {
     CreateInterviewRequest createRequest = new CreateInterviewRequest(
         request.resumeText(),
-        request.questionCount() != null ? request.questionCount() : DEFAULT_QUESTION_COUNT,
+        request.plannedDurationMinutes(),
+        normalizeFocus(request.requiredTopics()),
+        null,
         request.resumeId(),
         Boolean.TRUE.equals(request.forceCreate()),
         null,

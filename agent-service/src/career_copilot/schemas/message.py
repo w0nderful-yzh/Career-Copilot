@@ -212,7 +212,8 @@ class InterviewProposalBlock(BaseModel):
     """面试提案确认块：Agent 推荐的面试配置 + [按推荐开始] / [调整配置]。
 
     direction 使用 Java 面试方向 skillId（如 java-backend），difficulty 使用
-    Java 难度枚举（junior/mid/senior）。focus 为候选重点分类 key（如 JVM/Redis）。
+    Java 难度枚举（junior/mid/senior）。focus 为候选重点分类 key（如 JVM/Redis），
+    required_topics 表达本场至少要触及的范围；不再向用户承诺固定题数。
     """
 
     type: Literal["interview_proposal"] = "interview_proposal"
@@ -222,7 +223,8 @@ class InterviewProposalBlock(BaseModel):
     difficulty_name: str = Field(description="难度展示名（如 校招）")
     mode: Literal["TEXT", "VOICE"] = Field(default="TEXT", description="面试模式（一期仅文字）")
     focus: list[str] = Field(default_factory=list, description="重点考察方向（分类 key）")
-    question_count: int = Field(default=8, description="题目数量")
+    planned_duration_minutes: int = Field(default=20, description="预计时长（分钟）")
+    required_topics: list[str] = Field(default_factory=list, description="必要覆盖话题（分类 key）")
     resume_id: int | None = Field(default=None, description="基于的简历（可选）")
     summary: str = Field(default="", description="推荐理由（一句话）")
 
@@ -241,7 +243,8 @@ class InterviewSessionBlock(BaseModel):
     difficulty: str | None = Field(default=None, description="难度枚举（junior/mid/senior）")
     mode: Literal["TEXT", "VOICE"] = Field(default="TEXT", description="面试模式")
     focus: list[str] = Field(default_factory=list, description="重点考察方向")
-    question_count: int | None = Field(default=None, description="题目数量")
+    planned_duration_minutes: int | None = Field(default=None, description="预计时长（分钟）")
+    required_topics: list[str] = Field(default_factory=list, description="必要覆盖话题")
     direction_name: str | None = Field(default=None, description="方向展示名（如 Java 后端）")
 
 

@@ -9,6 +9,8 @@ import type { InterviewQuestion, InterviewSession, InterviewTurn as Turn } from 
 
 export interface InterviewTurn {
   role: 'interviewer' | 'user';
+  /** 面试官对上一轮的简短承接语，不是新问题 */
+  transition?: boolean;
   /** 题目稳定标识（P4-1）：轨迹里的身份 */
   questionId?: string | null;
   questionIndex?: number | null;
@@ -44,6 +46,13 @@ export interface InterviewProgress {
   mainOrdinal: number;
   /** 主题总数 */
   mainCount: number;
+}
+
+export interface InterviewPlanProgress {
+  answeredCount: number;
+  currentTopic: string | null;
+  requiredTopics: string[];
+  coveredRequiredTopics: string[];
 }
 
 /** 候选素材 → 面试官气泡 */
@@ -117,8 +126,58 @@ export function buildAnsweredTurns(session: InterviewSession): InterviewTurn[] {
       answer: nonAnswerLabel(turn.answerState) ?? turn.userAnswer ?? '',
       answerState: turn.answerState ?? null,
     });
+    if (turn.transitionMessage?.trim()) {
+      turns.push({
+        role: 'interviewer',
+        transition: true,
+        question: turn.transitionMessage.trim(),
+      });
+    }
   }
   return turns;
+}
+
+/**
+ * 顶栏只展示真实话题、必要覆盖与实际轮次数，不再用预生成候选数伪装进度。
+ */
+export function interviewPlanProgress(session: InterviewSession): InterviewPlanProgress {
+  const candidates = session.candidates ?? [];
+  const candidateById = new Map(candidates.map((candidate) => [candidate.questionId, candidate]));
+  const askedMain = new Set(
+    (session.turns ?? [])
+      .map((turn) => (turn.questionId ? candidateById.get(turn.questionId) : undefined))
+      .filter((question): question is InterviewQuestion => Boolean(question && !question.isFollowUp))
+      .map((question) => question.questionId),
+  );
+  const requiredTopics = session.requiredTopics ?? [];
+  const coveredRequiredTopics = requiredTopics.filter((required) =>
+    candidates.some(
+      (question) =>
+        !question.isFollowUp &&
+        askedMain.has(question.questionId) &&
+        questionMatchesTopic(question, required),
+    ),
+  );
+  const current = currentQuestionOf(session);
+  return {
+    answeredCount: (session.turns ?? []).length,
+    currentTopic: current ? topicOf(current) : null,
+    requiredTopics,
+    coveredRequiredTopics,
+  };
+}
+
+export function questionMatchesTopic(question: InterviewQuestion, required: string): boolean {
+  if (!required) return false;
+  const expected = required.toLocaleLowerCase();
+  return [question.topic, question.category, question.type].some((candidate) => {
+    const value = candidate?.trim().toLocaleLowerCase();
+    return Boolean(value && (value === expected || value.includes(expected)));
+  });
+}
+
+function topicOf(question: InterviewQuestion): string | null {
+  return question.topic?.trim() || question.category?.trim() || null;
 }
 
 /**

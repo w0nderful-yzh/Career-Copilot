@@ -25,7 +25,15 @@ public record TurnEvaluation(
      * skipRequested 是「我不想答这题」（一等动作）。判定必须走语义，不能做关键词包含匹配——
      * 否则「不会发生死锁」这类技术回答会被误判成跳过。
      */
-    boolean skipRequested
+    boolean skipRequested,
+    /** 模型建议的下一步动作；Java 仍会校验覆盖、预算、题目归属与去重边界 */
+    RecommendedAction recommendedAction,
+    /** 模型建议的下一题稳定标识；FOLLOW_UP / NEXT_MAIN 时必须来自本轮合法候选 */
+    String recommendedQuestionId,
+    /** 模型给出的简短依据；落库的是 Java 接纳后的最终依据 */
+    String decisionReason,
+    /** 可选承接语；只有建议被 Java 原样接纳时才展示和持久化 */
+    String transitionMessage
 ) {
 
     /** 兼容构造：未识别到跳过指令 */
@@ -33,11 +41,27 @@ public record TurnEvaluation(
                           List<String> missingPoints, AnswerState answerState,
                           String recommendedFocus, boolean evaluatedByLlm) {
         this(score, coverage, coveredPoints, missingPoints, answerState, recommendedFocus,
-            evaluatedByLlm, false);
+            evaluatedByLlm, false, null, null, "", "");
+    }
+
+    /** 兼容既有构造点：未识别到节奏建议 */
+    public TurnEvaluation(Integer score, Double coverage, List<String> coveredPoints,
+                          List<String> missingPoints, AnswerState answerState,
+                          String recommendedFocus, boolean evaluatedByLlm,
+                          boolean skipRequested) {
+        this(score, coverage, coveredPoints, missingPoints, answerState, recommendedFocus,
+            evaluatedByLlm, skipRequested, null, null, "", "");
     }
 
     public enum AnswerState {
         EXCELLENT, GOOD, PARTIAL, WEAK, WRONG, NO_ANSWER, UNKNOWN
+    }
+
+    /** 一次逐轮语义调用对下一步的建议；是否执行由 Java 硬边界决定 */
+    public enum RecommendedAction {
+        FOLLOW_UP,
+        NEXT_MAIN,
+        FINISH
     }
 
     /** 回答状态 → 默认分数（模型未给分时按状态映射，保证状态与分数自洽） */
@@ -72,16 +96,19 @@ public record TurnEvaluation(
 
     /** NO_ANSWER 短路结果（不调 LLM）：用户答不上来 / 明确不会 */
     public static TurnEvaluation noAnswer() {
-        return new TurnEvaluation(0, 0.0, List.of(), List.of(), AnswerState.NO_ANSWER, "", false);
+        return new TurnEvaluation(0, 0.0, List.of(), List.of(), AnswerState.NO_ANSWER, "", false,
+            false, null, null, "", "");
     }
 
     /** 用户明确要求跳过本题（P4Q-5）：不调模型、不追问、不计分 */
     public static TurnEvaluation skipped() {
-        return new TurnEvaluation(0, 0.0, List.of(), List.of(), AnswerState.NO_ANSWER, "", false, true);
+        return new TurnEvaluation(0, 0.0, List.of(), List.of(), AnswerState.NO_ANSWER, "", false,
+            true, null, null, "", "");
     }
 
     /** 无可用评估时保留未知质量，不用虚构的分数或覆盖率驱动追问与画像 */
     public static TurnEvaluation unknownFallback() {
-        return new TurnEvaluation(null, null, List.of(), List.of(), AnswerState.UNKNOWN, "", false);
+        return new TurnEvaluation(null, null, List.of(), List.of(), AnswerState.UNKNOWN, "", false,
+            false, null, null, "", "");
     }
 }

@@ -72,6 +72,12 @@ export interface InterviewTurn {
   feedback?: string | null;
   /** 本轮最终决定：FOLLOW_UP / NEXT_MAIN / FINISH_EXHAUSTED / FINISH_USER */
   decidedAction?: string | null;
+  /** Java 最终选择的下一题；收束时为空 */
+  decidedNextQuestionId?: string | null;
+  /** Java 最终决定依据 */
+  decisionReason?: string | null;
+  /** 实际展示的简短承接语 */
+  transitionMessage?: string | null;
   referenceAnswer?: string | null;
   keyPoints?: string[] | null;
   occurredAt?: string | null;
@@ -139,7 +145,10 @@ export interface ProfileImpact {
 
 export interface CreateInterviewRequest {
   resumeText: string;
-  questionCount: number;
+  plannedDurationMinutes?: number;
+  requiredTopics?: string[];
+  /** 旧入口兼容；新 Copilot 配置不再传固定题数 */
+  questionCount?: number;
   resumeId?: number;
   forceCreate?: boolean;
   llmProvider?: string;
@@ -177,6 +186,8 @@ export interface SubmitAnswerResponse {
   consumedSeconds?: number;
   /** 剩余预算（秒，P4Q-2）；null = 无计划 */
   remainingSeconds?: number | null;
+  /** 模型建议被 Java 接纳后实际展示的承接语 */
+  transitionMessage?: string | null;
 }
 
 export interface CurrentQuestionResponse {

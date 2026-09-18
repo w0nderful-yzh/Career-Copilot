@@ -154,7 +154,7 @@
       "properties" : { }
     },
     "create_interview" : {
-      "description" : "创建模拟面试会话（mode/direction/difficulty/focus，需用户确认后执行）",
+      "description" : "创建模拟面试会话（方向/难度/预计时长/重点/必要覆盖，需用户确认后执行）",
       "permission" : "CONFIRM_WRITE",
       "type" : "object",
       "additionalProperties" : false,
@@ -169,12 +169,19 @@
           "type" : "string",
           "description" : "难度：junior / mid / senior；缺省 mid"
         },
-        "questionCount" : {
+        "plannedDurationMinutes" : {
           "type" : "integer",
           "format" : "int32",
-          "minimum" : 3,
-          "maximum" : 20,
-          "description" : "题目数量上限（3-20）；缺省 8。P4Q-2 起由时间预算取代"
+          "minimum" : 5,
+          "maximum" : 120,
+          "description" : "预计时长（分钟，5-120）；缺省 20"
+        },
+        "requiredTopics" : {
+          "type" : "array",
+          "items" : {
+            "type" : "string"
+          },
+          "description" : "必要覆盖的话题 key；只保留本场候选池真实存在的主问题话题"
         },
         "resumeId" : {
           "type" : "integer",

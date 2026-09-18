@@ -178,7 +178,7 @@ async def test_json_gives_up_after_parse_retries():
     assert not result.ok
     assert result.error is LlmErrorKind.PARSE_FAILED
     assert result.attempts == 2
-    assert metrics_snapshot()["interview_proposal@v1"]["failures"] >= 1
+    assert metrics_snapshot()["interview_proposal@v2"]["failures"] >= 1
 
 
 async def test_no_retry_on_upstream_failure():

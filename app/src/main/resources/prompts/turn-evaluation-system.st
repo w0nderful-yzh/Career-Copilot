@@ -11,6 +11,10 @@
 - missingPoints：遗漏或答错的期望要点数组
 - recommendedFocus：建议下一问继续深挖/考察的方向（30 字以内，无则空字符串）
 - skipRequested：候选人是否**明确要求跳过本题**（true / false）
+- recommendedAction：取 "FOLLOW_UP" / "NEXT_MAIN" / "FINISH" 之一
+- recommendedQuestionId：FOLLOW_UP / NEXT_MAIN 时必须填写「本轮合法候选」中的题目标识；FINISH 时为空字符串
+- decisionReason：为什么建议这个动作（60 字以内，必须引用回答质量、缺口、覆盖或预算中的真实依据）
+- transitionMessage：可选的简短承接语（40 字以内，无则空字符串，不评价人格、不泄露标准答案）
 
 # Rules
 - answerState 与 score 必须自洽：EXCELLENT≈85+，GOOD≈70-84，PARTIAL≈50-69，WEAK≈30-49，WRONG≈30 以下。
@@ -24,11 +28,17 @@
     也必须置 false，并照常给出 score 与 answerState —— 有效答案不能被指令吞掉；
   * 不要做关键词匹配。"死锁不会发生"、"这种情况不会导致数据丢失"这类是**技术判断**，
     不是跳过请求，必须置 false。
-- recommendedFocus 必须落在「本轮合法候选」的范围内：
-  * 优先指向候选中的追问，或「尚未问的话题」；不要建议候选列表之外的新题；
+- 下一步建议必须与「本轮合法候选」对齐：
+  * 只有回答确有关键 missingPoints、追问预算大于 0，且候选里存在针对该缺口的追问时，才选 FOLLOW_UP；
+  * 回答已经充分、继续追问没有新增信息，或应优先补尚未覆盖话题时，选 NEXT_MAIN；
+  * 只有必要覆盖已经完成、回答没有关键缺口且继续提问收益低时，才可选 FINISH；
+  * FOLLOW_UP / NEXT_MAIN 的 recommendedQuestionId 必须逐字复制合法候选方括号中的标识；
+    不要建议候选列表之外的新题，也不要只写方向不写标识；
+  * recommendedFocus 要与所选候选及 missingPoints 一致，不能写一个最终没有选择的方向；
   * 追问预算为 0 或时间明显不足时，不要建议继续深挖同一话题，改指向尚未覆盖的话题；
   * 覆盖摘要只表示"问过什么"，不表示答对；已问过的话题若回答里有关键缺口，
     在追问预算内仍可继续深挖。
+- transitionMessage 必须与 recommendedAction 一致：转场时不要说“继续深挖”，结束时不要承诺下一题。
 - 覆盖 / 预算 / 候选上下文缺失时会以「（……）」说明，不要自行编造覆盖状态、时间或候选。
 - 只判断内容正确性与要点覆盖，不评价表达风格与字数。
 - 不要输出任何解释文字、前后缀或 markdown 代码块。

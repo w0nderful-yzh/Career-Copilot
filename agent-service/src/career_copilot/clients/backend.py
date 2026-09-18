@@ -216,7 +216,8 @@ class BackendClient:
         self,
         skill_id: str,
         difficulty: str,
-        question_count: int | None = None,
+        planned_duration_minutes: int | None = None,
+        required_topics: list[str] | None = None,
         resume_id: int | None = None,
         resume_text: str | None = None,
         force_create: bool = False,
@@ -238,8 +239,10 @@ class BackendClient:
             "skillId": skill_id,
             "difficulty": difficulty,
         }
-        if question_count is not None:
-            arguments["questionCount"] = question_count
+        if planned_duration_minutes is not None:
+            arguments["plannedDurationMinutes"] = planned_duration_minutes
+        if required_topics:
+            arguments["requiredTopics"] = list(required_topics)
         if resume_id is not None:
             arguments["resumeId"] = resume_id
         if resume_text is not None:

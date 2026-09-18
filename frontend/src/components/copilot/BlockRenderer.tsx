@@ -112,6 +112,9 @@ function InterviewProposalBlockView({
   onConfirm: (option: ChoiceOption) => void;
 }) {
   const focusNames = block.focus.length > 0 ? block.focus.join(' / ') : '综合考察';
+  const requiredNames = (block.required_topics ?? []).length > 0
+    ? block.required_topics.join(' / ')
+    : '未指定';
   // 手动调整后的配置（null = 使用 Agent 推荐）；与 Agent 推荐收敛到同一 InterviewConfig → CREATE_INTERVIEW
   const [customConfig, setCustomConfig] = useState<InterviewConfig | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
@@ -121,7 +124,8 @@ function InterviewProposalBlockView({
   const activeConfig: InterviewConfig = customConfig ?? {
     direction: block.direction,
     difficulty: block.difficulty,
-    question_count: block.question_count,
+    planned_duration_minutes: block.planned_duration_minutes ?? 20,
+    required_topics: block.required_topics ?? [],
     focus: block.focus,
   };
 
@@ -132,7 +136,8 @@ function InterviewProposalBlockView({
       direction: activeConfig.direction,
       difficulty: activeConfig.difficulty,
       focus: activeConfig.focus,
-      questionCount: activeConfig.question_count,
+      plannedDurationMinutes: activeConfig.planned_duration_minutes,
+      requiredTopics: activeConfig.required_topics,
       resumeId: block.resume_id ?? null,
       requestId: createRequestId,
     },
@@ -152,7 +157,8 @@ function InterviewProposalBlockView({
         direction: config.direction,
         difficulty: config.difficulty,
         focus: config.focus,
-        questionCount: config.question_count,
+        plannedDurationMinutes: config.planned_duration_minutes,
+        requiredTopics: config.required_topics,
         resumeId: block.resume_id ?? null,
         requestId: nextRequestId,
       },
@@ -174,8 +180,12 @@ function InterviewProposalBlockView({
           {focusNames}
         </span>
         <span className="inline-flex items-center gap-1.5">
-          <span className="font-semibold">题量：</span>
-          {block.question_count} 题
+          <span className="font-semibold">时长：</span>
+          约 {block.planned_duration_minutes ?? 20} 分钟
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="font-semibold">必要覆盖：</span>
+          {requiredNames}
         </span>
       </div>
       {block.summary && (
@@ -210,7 +220,8 @@ function InterviewProposalBlockView({
           initial={{
             direction: block.direction,
             difficulty: block.difficulty,
-            question_count: block.question_count,
+            planned_duration_minutes: block.planned_duration_minutes ?? 20,
+            required_topics: block.required_topics ?? [],
             focus: block.focus,
           }}
           disabled={actionDisabled}

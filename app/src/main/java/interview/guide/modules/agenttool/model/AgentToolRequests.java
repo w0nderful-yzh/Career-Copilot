@@ -80,8 +80,10 @@ public final class AgentToolRequests {
   public record CreateInterview(
       @NotBlank @ToolParam("面试方向 skillId（来自 list_skills）") String skillId,
       @ToolParam("难度：junior / mid / senior；缺省 mid") String difficulty,
-      @Min(3) @Max(20) @ToolParam("题目数量上限（3-20）；缺省 8。P4Q-2 起由时间预算取代")
-          Integer questionCount,
+      @Min(5) @Max(120) @ToolParam("预计时长（分钟，5-120）；缺省 20")
+          Integer plannedDurationMinutes,
+      @ToolParam("必要覆盖的话题 key；只保留本场候选池真实存在的主问题话题")
+          List<String> requiredTopics,
       @Positive @ToolParam("目标简历 ID。与 resumeText 二选一：传了 ID 由 Java 解析简历来源与版本，"
           + "调用方不必也不应传原文") Long resumeId,
       @ToolParam("显式简历原文（仅手动面试 / 知识库面试等无 ID 场景使用）。传了 resumeId 时忽略本字段")

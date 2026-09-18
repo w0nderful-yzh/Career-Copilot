@@ -51,6 +51,8 @@ class _ProposalDraft(BaseModel):
     direction: str | None = None
     difficulty: str | None = None
     focus: list[Any] = Field(default_factory=list)
+    planned_duration_minutes: int | None = None
+    required_topics: list[Any] = Field(default_factory=list)
     summary: str | None = None
 
 
@@ -65,6 +67,9 @@ MAX_FOCUS = 4
 
 # 画像参考注入 Prompt 的技能条数上限（Token 纪律）
 PROFILE_SKILL_LIMIT = 6
+
+MIN_DURATION_MINUTES = 5
+MAX_DURATION_MINUTES = 120
 
 
 async def interview_proposal(
@@ -133,7 +138,8 @@ async def interview_proposal(
         difficulty=proposal["difficulty"],
         difficulty_name=DIFFICULTY_NAMES_ZH.get(proposal["difficulty"], proposal["difficulty"]),
         focus=proposal["focus"],
-        question_count=settings.interview_default_question_count,
+        planned_duration_minutes=proposal["planned_duration_minutes"],
+        required_topics=proposal["required_topics"],
         resume_id=resume_id,
         summary=proposal["summary"],
     )
@@ -141,8 +147,9 @@ async def interview_proposal(
         "plan": StreamPlan(
             blocks=[block],
             text=static_text(
-                f"根据你的情况，我推荐一场 {block.direction_name} · {block.difficulty_name} "
-                f"模拟面试。{block.summary} 你可以按推荐直接开始，或点「调整配置」手动修改，"
+                f"根据你的情况，我推荐一场约 {block.planned_duration_minutes} 分钟的 "
+                f"{block.direction_name} · {block.difficulty_name} 模拟面试。{block.summary} "
+                "你可以按推荐直接开始，或点「调整配置」手动修改，"
                 "也可以直接告诉我想要的调整（如「难度高一点，多问 JVM」）。"
             ),
         )
@@ -198,24 +205,45 @@ async def _derive_proposal(
         if not focus:
             # 模型没给出可用分类（或全被白名单拦掉）时，用画像的确定性候选兜底
             focus = _profile_focus_hints(profile, categories)
+        required_topics = _sanitize_focus(
+            [str(item) for item in draft.required_topics if isinstance(item, str)],
+            categories,
+        )
+        if not required_topics:
+            # 提案说是重点，就至少触及其中前两个；Java 创建后还会剔除候选池不存在的话题。
+            required_topics = focus[:2]
         summary = (draft.summary or "")[:80]
         return {
             "direction": direction,
             "difficulty": difficulty,
             "focus": focus,
+            "planned_duration_minutes": _normalize_duration(
+                draft.planned_duration_minutes
+            ),
+            "required_topics": required_topics,
             "summary": summary,
         }
     except Exception:
         # 模型异常不应阻断面试发起：回落确定性默认推荐（focus 仍尽量取画像候选）
         logger.exception("面试推荐配置推导失败，回落默认值")
+        fallback_focus = _profile_focus_hints(
+            profile, _direction_categories(skills, DEFAULT_DIRECTION)
+        )
         return {
             "direction": DEFAULT_DIRECTION,
             "difficulty": DEFAULT_DIFFICULTY,
-            "focus": _profile_focus_hints(
-                profile, _direction_categories(skills, DEFAULT_DIRECTION)
-            ),
+            "focus": fallback_focus,
+            "planned_duration_minutes": settings.interview_default_duration_minutes,
+            "required_topics": fallback_focus[:2],
             "summary": "按 Java 后端 · 中级难度推荐",
         }
+
+
+def _normalize_duration(value: int | None) -> int:
+    """预计时长由用户意图决定，但服务端边界固定为 5-120 分钟。"""
+    if value is None:
+        return settings.interview_default_duration_minutes
+    return max(MIN_DURATION_MINUTES, min(MAX_DURATION_MINUTES, value))
 
 
 def _direction_categories(skills: list[dict[str, Any]], direction: str) -> list[dict[str, str]]:

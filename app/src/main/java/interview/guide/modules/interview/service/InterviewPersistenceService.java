@@ -414,7 +414,8 @@ public class InterviewPersistenceService {
             upsertAnswer(session, new TurnAnswerWrite(
                 commit.questionId(), commit.questionIndex(), writtenOrdinal, commit.decidedAction(),
                 commit.question(), commit.category(), commit.answer(), null, null,
-                commit.answerState()));
+                commit.answerState(), commit.newQuestionId(), commit.decisionReason(),
+                commit.transitionMessage()));
         }
 
         if (commit.requestId() != null) {
@@ -453,8 +454,20 @@ public class InterviewPersistenceService {
         String userAnswer,
         Integer score,
         String feedback,
-        InterviewAnswerEntity.AnswerState answerState
-    ) {}
+        InterviewAnswerEntity.AnswerState answerState,
+        String decidedNextQuestionId,
+        String decisionReason,
+        String transitionMessage
+    ) {
+        /** 兼容报告回填、草稿等不参与逐轮决策的写入 */
+        TurnAnswerWrite(String questionId, Integer questionIndex, Integer turnOrdinal,
+                        String decidedAction, String question, String category,
+                        String userAnswer, Integer score, String feedback,
+                        InterviewAnswerEntity.AnswerState answerState) {
+            this(questionId, questionIndex, turnOrdinal, decidedAction, question, category,
+                userAnswer, score, feedback, answerState, null, null, null);
+        }
+    }
 
     /**
      * 重新请求评估（P4-9a）：把评估状态置回 PENDING 并把代次 +1。
@@ -550,6 +563,15 @@ public class InterviewPersistenceService {
         }
         if (write.decidedAction() != null) {
             answer.setDecidedAction(write.decidedAction());
+        }
+        if (write.decidedNextQuestionId() != null) {
+            answer.setDecidedNextQuestionId(write.decidedNextQuestionId());
+        }
+        if (write.decisionReason() != null) {
+            answer.setDecisionReason(write.decisionReason());
+        }
+        if (write.transitionMessage() != null) {
+            answer.setTransitionMessage(write.transitionMessage());
         }
         answer.setQuestion(write.question());
         answer.setCategory(write.category());

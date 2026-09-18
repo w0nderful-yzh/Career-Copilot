@@ -4,6 +4,7 @@ import interview.guide.modules.interview.model.InterviewQuestionDTO;
 import interview.guide.modules.interview.model.InterviewQuestionIdentity;
 import interview.guide.modules.interview.model.TurnEvaluation;
 import interview.guide.modules.interview.model.TurnEvaluation.AnswerState;
+import interview.guide.modules.interview.model.TurnEvaluation.RecommendedAction;
 
 import java.util.HashSet;
 import java.util.List;
@@ -23,7 +24,8 @@ import java.util.Set;
  * <ul>
  *   <li>NO_ANSWER / WRONG / WEAK：中断追问组，切到下一主问题（不对答不上来的人继续施压）；</li>
  *   <li>评估缺失 / 失败：同样中断追问组，不把未知质量当成「部分正确」继续深挖；</li>
- *   <li>PARTIAL / GOOD / EXCELLENT：进入该主问题的追问组消费下一条；</li>
+ *   <li>PARTIAL / GOOD / EXCELLENT：只有评估给出明确缺口与追问方向时才继续深挖；</li>
+ *   <li>模型给出的动作、候选标识与承接语必须通过 Java 边界校验；非法建议退回确定性选择；</li>
  *   <li>追问预算 = 池内剩余追问数（每组天然 ≤ followUpCount 条，出题阶段已限）；</li>
  *   <li>同一题只问一次：已问过的标识不会再次被选中；</li>
  *   <li>没有可问的候选 → 返回 null。**这不等于「考察完成」**，调用方据此记录
@@ -34,6 +36,23 @@ public final class AdaptiveInterviewPolicy {
 
     private AdaptiveInterviewPolicy() {
     }
+
+    /**
+     * Java 校验后的逐轮决定。
+     *
+     * @param nextQuestion          实际要展示的下一题；null 表示收束
+     * @param reason                实际决定依据（会持久化，不保存未接纳的模型说法）
+     * @param transitionMessage     可展示承接语；只有模型建议被原样接纳时才保留
+     * @param recommendationAccepted 模型建议的动作与题目标识是否都通过硬边界校验
+     * @param finishRecommended     模型是否建议结束且 Java 已允许按覆盖收束
+     */
+    public record Decision(
+        InterviewQuestionDTO nextQuestion,
+        String reason,
+        String transitionMessage,
+        boolean recommendationAccepted,
+        boolean finishRecommended
+    ) {}
 
     /**
      * 选择下一题。
@@ -48,36 +67,142 @@ public final class AdaptiveInterviewPolicy {
                                                   Set<String> askedIds,
                                                   InterviewQuestionDTO answered,
                                                   TurnEvaluation evaluation) {
+        return decideNext(candidates, askedIds, answered, evaluation, false).nextQuestion();
+    }
+
+    /**
+     * 一次语义调用的建议进入 Java 决策边界（P4Q-3b）。
+     *
+     * <p>模型负责判断「还有没有关键缺口、该追问还是转场」并给出候选标识；代码负责确认：
+     * 候选确实合法、追问属于当前问题组、题目没问过、弱回答不继续施压、覆盖未完成时不能结束。
+     */
+    public static Decision decideNext(List<InterviewQuestionDTO> candidates,
+                                      Set<String> askedIds,
+                                      InterviewQuestionDTO answered,
+                                      TurnEvaluation evaluation,
+                                      boolean mayFinishForCoverage) {
         List<InterviewQuestionDTO> pool = InterviewQuestionIdentity.withDerivedIds(candidates);
         Set<String> asked = askedIds == null ? Set.of() : new HashSet<>(askedIds);
 
         if (answered == null) {
-            return firstUnasked(pool, asked).orElse(null);
+            return new Decision(firstUnasked(pool, asked).orElse(null), "开始首个候选问题", "",
+                false, false);
         }
 
-        boolean stopFollowUp = shouldStopFollowUp(evaluation);
+        if (shouldStopFollowUp(evaluation)) {
+            return moveToNextMain(pool, asked, answered, stopReason(evaluation));
+        }
 
-        if (answered.isFollowUp()) {
-            // 刚答完追问：答得好且组内还有未问的追问 → 继续深挖；否则切下一主问题
-            if (!stopFollowUp) {
-                Optional<InterviewQuestionDTO> next =
-                    firstUnaskedInGroup(pool, asked, answered.parentQuestionId());
-                if (next.isPresent()) {
-                    return next.get();
-                }
+        RecommendedAction recommendation = evaluation.recommendedAction();
+        if (recommendation == RecommendedAction.FINISH) {
+            if (mayFinishForCoverage && evaluation.missingPoints().isEmpty()) {
+                return new Decision(null, recommendationReason(evaluation, "必要覆盖已完成且没有关键缺口"),
+                    evaluation.transitionMessage(), true, true);
             }
-            return nextMainAfter(pool, asked, answered).orElse(null);
+            return fallbackDecision(pool, asked, answered, evaluation,
+                "结束建议未满足覆盖边界，继续选择合法候选");
         }
 
-        // 刚答完主问题：答得够好 → 进入其追问组首条；答不上 → 跳过深挖直接下一主问题
-        if (!stopFollowUp) {
-            Optional<InterviewQuestionDTO> first =
-                firstUnaskedInGroup(pool, asked, answered.questionId());
-            if (first.isPresent()) {
-                return first.get();
+        if (recommendation == RecommendedAction.NEXT_MAIN) {
+            InterviewQuestionDTO recommended = recommendedCandidate(pool, asked, evaluation);
+            if (recommended != null && recommended.isMain()) {
+                return accepted(recommended, evaluation);
+            }
+            return moveToNextMain(pool, asked, answered,
+                "模型建议的主问题不可用，按未问主问题顺序转场");
+        }
+
+        if (recommendation == RecommendedAction.FOLLOW_UP) {
+            InterviewQuestionDTO recommended = recommendedCandidate(pool, asked, evaluation);
+            if (hasKeyGap(evaluation) && isFollowUpInAnsweredGroup(recommended, answered)) {
+                return accepted(recommended, evaluation);
+            }
+            return fallbackDecision(pool, asked, answered, evaluation,
+                "追问建议缺少关键缺口或候选不属于当前话题，按代码边界推进");
+        }
+
+        return fallbackDecision(pool, asked, answered, evaluation,
+            "模型未给出可执行的动作与候选标识，按评估缺口保守推进");
+    }
+
+    private static Decision fallbackDecision(List<InterviewQuestionDTO> pool, Set<String> asked,
+                                             InterviewQuestionDTO answered,
+                                             TurnEvaluation evaluation, String fallbackReason) {
+        if (hasKeyGap(evaluation)) {
+            Optional<InterviewQuestionDTO> followUp = firstUnaskedInGroup(
+                pool, asked, groupId(answered));
+            if (followUp.isPresent()) {
+                return new Decision(followUp.get(), fallbackReason, "", false, false);
             }
         }
-        return nextMainAfter(pool, asked, answered).orElse(null);
+        return moveToNextMain(pool, asked, answered, fallbackReason);
+    }
+
+    private static Decision moveToNextMain(List<InterviewQuestionDTO> pool, Set<String> asked,
+                                           InterviewQuestionDTO answered, String reason) {
+        return new Decision(nextMainAfter(pool, asked, answered).orElse(null), reason, "",
+            false, false);
+    }
+
+    private static Decision accepted(InterviewQuestionDTO recommended, TurnEvaluation evaluation) {
+        return new Decision(recommended, recommendationReason(evaluation, "模型建议已通过 Java 边界校验"),
+            evaluation.transitionMessage(), true, false);
+    }
+
+    private static String recommendationReason(TurnEvaluation evaluation, String fallback) {
+        if (evaluation.decisionReason() != null && !evaluation.decisionReason().isBlank()) {
+            return evaluation.decisionReason();
+        }
+        String focus = evaluation.recommendedFocus();
+        if (focus != null && !focus.isBlank()) {
+            return fallback + "：" + focus;
+        }
+        return fallback;
+    }
+
+    private static InterviewQuestionDTO recommendedCandidate(List<InterviewQuestionDTO> pool,
+                                                             Set<String> asked,
+                                                             TurnEvaluation evaluation) {
+        String id = evaluation.recommendedQuestionId();
+        if (id == null || id.isBlank() || asked.contains(id)) {
+            return null;
+        }
+        return InterviewQuestionIdentity.byId(pool, id).orElse(null);
+    }
+
+    /** 追问必须有明确缺口与对应方向；只凭分数中等不能机械消费追问池 */
+    private static boolean hasKeyGap(TurnEvaluation evaluation) {
+        return evaluation != null
+            && evaluation.missingPoints() != null
+            && !evaluation.missingPoints().isEmpty()
+            && evaluation.recommendedFocus() != null
+            && !evaluation.recommendedFocus().isBlank();
+    }
+
+    private static boolean isFollowUpInAnsweredGroup(InterviewQuestionDTO candidate,
+                                                      InterviewQuestionDTO answered) {
+        return candidate != null && candidate.isFollowUp()
+            && groupId(answered) != null
+            && groupId(answered).equals(candidate.parentQuestionId());
+    }
+
+    private static String groupId(InterviewQuestionDTO answered) {
+        return answered.isFollowUp() ? answered.parentQuestionId() : answered.questionId();
+    }
+
+    private static String stopReason(TurnEvaluation evaluation) {
+        if (evaluation == null || !evaluation.evaluatedByLlm()
+            || evaluation.answerState() == AnswerState.UNKNOWN) {
+            return "本轮评估不可用，保守转入下一主问题";
+        }
+        if (evaluation.skipRequested()) {
+            return "用户跳过当前问题，转入下一主问题";
+        }
+        return switch (evaluation.answerState()) {
+            case NO_ANSWER -> "用户明确不会，停止当前话题深挖";
+            case WRONG, WEAK -> "当前回答基础不足，停止追问并转场";
+            default -> "当前话题不适合继续追问";
+        };
     }
 
     /** 只有有效评估明确支持深挖时才追问，缺失与失败均保守换主问题 */

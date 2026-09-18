@@ -3,6 +3,7 @@ package interview.guide.modules.interview.policy;
 import interview.guide.modules.interview.model.InterviewQuestionDTO;
 import interview.guide.modules.interview.model.TurnEvaluation;
 import interview.guide.modules.interview.model.TurnEvaluation.AnswerState;
+import interview.guide.modules.interview.model.TurnEvaluation.RecommendedAction;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -55,7 +56,7 @@ class AdaptiveInterviewPolicyTest {
 
   private static TurnEvaluation eval(AnswerState state) {
     return new TurnEvaluation(TurnEvaluation.defaultScoreFor(state), 0.5,
-        List.of(), List.of(), state, "", true);
+        List.of(), List.of("关键缺口"), state, "继续验证关键缺口", true);
   }
 
   @Test
@@ -151,5 +152,86 @@ class AdaptiveInterviewPolicyTest {
       assertThat(selectNext(questions, 0, evaluation).questionIndex())
           .isEqualTo(3);
     }
+  }
+
+  @Test
+  @DisplayName("模型建议只有候选归属与缺口都合法时才接纳，并保留承接语")
+  void acceptsOnlyValidSemanticRecommendation() {
+    List<InterviewQuestionDTO> questions = twoTopicSession();
+    InterviewQuestionDTO main = questions.getFirst();
+    InterviewQuestionDTO recommended = questions.get(2);
+    TurnEvaluation evaluation = new TurnEvaluation(
+        75, 0.5, List.of("堆"), List.of("STW"), AnswerState.GOOD, "确认 STW",
+        true, false, RecommendedAction.FOLLOW_UP, recommended.questionId(),
+        "回答仍缺少 STW 边界", "这个点还差一步，我们继续。"
+    );
+
+    AdaptiveInterviewPolicy.Decision decision = AdaptiveInterviewPolicy.decideNext(
+        questions, Set.of(main.questionId()), main, evaluation, false);
+
+    assertThat(decision.nextQuestion().questionId()).isEqualTo(recommended.questionId());
+    assertThat(decision.reason()).isEqualTo("回答仍缺少 STW 边界");
+    assertThat(decision.transitionMessage()).isEqualTo("这个点还差一步，我们继续。");
+    assertThat(decision.recommendationAccepted()).isTrue();
+  }
+
+  @Test
+  @DisplayName("非法追问候选回退到当前组首个未问题，且丢弃模型承接语")
+  void rejectsIllegalRecommendation() {
+    List<InterviewQuestionDTO> questions = twoTopicSession();
+    InterviewQuestionDTO main = questions.getFirst();
+    TurnEvaluation evaluation = new TurnEvaluation(
+        75, 0.5, List.of("堆"), List.of("STW"), AnswerState.GOOD, "确认 STW",
+        true, false, RecommendedAction.FOLLOW_UP, questions.get(3).questionId(),
+        "继续问 Redis", "现在切到 Redis。"
+    );
+
+    AdaptiveInterviewPolicy.Decision decision = AdaptiveInterviewPolicy.decideNext(
+        questions, Set.of(main.questionId()), main, evaluation, false);
+
+    assertThat(decision.nextQuestion().question()).isEqualTo("F1a: 堆区如何分代？");
+    assertThat(decision.transitionMessage()).isEmpty();
+    assertThat(decision.recommendationAccepted()).isFalse();
+  }
+
+  @Test
+  @DisplayName("充分回答可按模型建议直接转到指定的未问主问题")
+  void sufficientAnswerMovesToRecommendedMain() {
+    List<InterviewQuestionDTO> questions = twoTopicSession();
+    InterviewQuestionDTO main = questions.getFirst();
+    TurnEvaluation evaluation = new TurnEvaluation(
+        88, 1.0, List.of("堆", "栈"), List.of(), AnswerState.EXCELLENT, "",
+        true, false, RecommendedAction.NEXT_MAIN, questions.get(3).questionId(),
+        "当前问题已充分回答", "基础已经清楚，下面转到 Redis。"
+    );
+
+    AdaptiveInterviewPolicy.Decision decision = AdaptiveInterviewPolicy.decideNext(
+        questions, Set.of(main.questionId()), main, evaluation, false);
+
+    assertThat(decision.nextQuestion().question()).isEqualTo("Q2: Redis 持久化？");
+    assertThat(decision.recommendationAccepted()).isTrue();
+    assertThat(decision.transitionMessage()).isEqualTo("基础已经清楚，下面转到 Redis。");
+  }
+
+  @Test
+  @DisplayName("模型结束建议必须通过必要覆盖边界")
+  void finishRecommendationHonorsCoverageBoundary() {
+    List<InterviewQuestionDTO> questions = twoTopicSession();
+    InterviewQuestionDTO main = questions.getFirst();
+    TurnEvaluation evaluation = new TurnEvaluation(
+        90, 1.0, List.of("堆", "栈"), List.of(), AnswerState.EXCELLENT, "",
+        true, false, RecommendedAction.FINISH, null, "目标已验证", "这场面试到这里。"
+    );
+
+    AdaptiveInterviewPolicy.Decision blocked = AdaptiveInterviewPolicy.decideNext(
+        questions, Set.of(main.questionId()), main, evaluation, false);
+    assertThat(blocked.nextQuestion()).isNotNull();
+    assertThat(blocked.finishRecommended()).isFalse();
+
+    AdaptiveInterviewPolicy.Decision accepted = AdaptiveInterviewPolicy.decideNext(
+        questions, Set.of(main.questionId()), main, evaluation, true);
+    assertThat(accepted.nextQuestion()).isNull();
+    assertThat(accepted.finishRecommended()).isTrue();
+    assertThat(accepted.transitionMessage()).isEqualTo("这场面试到这里。");
   }
 }

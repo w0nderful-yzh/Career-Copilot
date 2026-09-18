@@ -5,7 +5,7 @@ import type { InterviewConfig } from '../../types/copilot';
 
 // 内联面试配置面板（Interview Mode 重构）：
 // 点「调整配置」在当前提案卡内展开，不触发 Agent、不发聊天消息。
-// 手动修改方向/难度/题量/focus → [应用并开始面试] → 本地合成 CREATE_INTERVIEW action。
+// 手动修改方向/难度/时长/重点/必要覆盖 → [应用并开始面试] → 本地合成 CREATE_INTERVIEW action。
 
 const DIFFICULTY_OPTIONS = [
   { value: 'junior', label: '校招', desc: '0-1 年' },
@@ -13,7 +13,7 @@ const DIFFICULTY_OPTIONS = [
   { value: 'senior', label: '高级', desc: '3 年+' },
 ];
 
-const QUESTION_COUNT_OPTIONS = [6, 8, 10];
+const DURATION_OPTIONS = [15, 20, 30, 45];
 
 export interface InterviewConfigPanelProps {
   /** 当前推荐配置（作为面板初值） */
@@ -33,8 +33,11 @@ export default function InterviewConfigPanel({
   const [loadingSkills, setLoadingSkills] = useState(false);
   const [direction, setDirection] = useState(initial.direction);
   const [difficulty, setDifficulty] = useState(initial.difficulty);
-  const [questionCount, setQuestionCount] = useState(initial.question_count);
+  const [plannedDurationMinutes, setPlannedDurationMinutes] = useState(
+    initial.planned_duration_minutes,
+  );
   const [focus, setFocus] = useState<string[]>(initial.focus);
+  const [requiredTopics, setRequiredTopics] = useState<string[]>(initial.required_topics);
 
   useEffect(() => {
     let cancelled = false;
@@ -45,7 +48,7 @@ export default function InterviewConfigPanel({
         if (!cancelled) setSkills(list);
       })
       .catch(() => {
-        // 方向列表加载失败：保留初值，面板仍可手动改难度/题量
+        // 方向列表加载失败：保留初值，面板仍可手动改难度/时长
       })
       .finally(() => {
         if (!cancelled) setLoadingSkills(false);
@@ -71,6 +74,9 @@ export default function InterviewConfigPanel({
     if (focus.some((f) => !validKeys.has(f))) {
       setFocus([]);
     }
+    if (requiredTopics.some((topic) => !validKeys.has(topic))) {
+      setRequiredTopics([]);
+    }
   };
 
   const toggleFocus = (key: string) => {
@@ -78,7 +84,13 @@ export default function InterviewConfigPanel({
   };
 
   const apply = () => {
-    onApply({ direction, difficulty, question_count: questionCount, focus });
+    onApply({
+      direction,
+      difficulty,
+      planned_duration_minutes: plannedDurationMinutes,
+      required_topics: requiredTopics,
+      focus,
+    });
   };
 
   return (
@@ -127,22 +139,22 @@ export default function InterviewConfigPanel({
         ))}
       </div>
 
-      {/* 题量 */}
-      <label className="mb-1 block text-xs text-slate-400">题目数量</label>
+      {/* 预计时长：题数由覆盖、回答质量与预算动态产生 */}
+      <label className="mb-1 block text-xs text-slate-400">预计时长</label>
       <div className="mb-3 flex flex-wrap gap-1.5">
-        {QUESTION_COUNT_OPTIONS.map((count) => (
+        {DURATION_OPTIONS.map((minutes) => (
           <button
-            key={count}
+            key={minutes}
             type="button"
             disabled={disabled}
-            onClick={() => setQuestionCount(count)}
+            onClick={() => setPlannedDurationMinutes(minutes)}
             className={`rounded-lg px-3 py-1 text-xs font-medium transition ${
-              questionCount === count
+              plannedDurationMinutes === minutes
                 ? 'bg-primary-600 text-white'
                 : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600'
             }`}
           >
-            {count} 题
+            {minutes} 分钟
           </button>
         ))}
       </div>
@@ -165,6 +177,37 @@ export default function InterviewConfigPanel({
                   className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium transition ${
                     active
                       ? 'bg-indigo-600 text-white'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600'
+                  }`}
+                >
+                  {active && <Check className="h-3 w-3" />}
+                  {cat.label}
+                </button>
+              );
+            })}
+          </div>
+
+          <label className="mb-1 mt-3 block text-xs text-slate-400">
+            必要覆盖 <span className="text-slate-300">（至少触及，可留空）</span>
+          </label>
+          <div className="flex flex-wrap gap-1.5">
+            {categoryOptions.map((cat) => {
+              const active = requiredTopics.includes(cat.key);
+              return (
+                <button
+                  key={cat.key}
+                  type="button"
+                  disabled={disabled}
+                  onClick={() =>
+                    setRequiredTopics((prev) =>
+                      prev.includes(cat.key)
+                        ? prev.filter((topic) => topic !== cat.key)
+                        : [...prev, cat.key],
+                    )
+                  }
+                  className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium transition ${
+                    active
+                      ? 'bg-emerald-600 text-white'
                       : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600'
                   }`}
                 >

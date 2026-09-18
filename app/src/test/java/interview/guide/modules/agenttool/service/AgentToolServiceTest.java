@@ -417,13 +417,17 @@ class AgentToolServiceTest {
 
       ToolResponse response = agentToolService.execute(
           "create_interview",
-          Map.of("skillId", "java-backend", "difficulty", "mid", "questionCount", 8));
+          Map.of(
+              "skillId", "java-backend",
+              "difficulty", "mid",
+              "plannedDurationMinutes", 30,
+              "requiredTopics", List.of("JVM")));
 
       assertThat(response.data()).isSameAs(expected);
       verify(interviewSessionService).createSession(
           new CreateInterviewRequest(
-              null, 8, null, false, null, "java-backend", "mid", null, null, null, true,
-              List.of()));
+              null, 30, List.of("JVM"), null, null, false, null, "java-backend", "mid",
+              null, null, null, true, List.of()));
     }
 
     @Test

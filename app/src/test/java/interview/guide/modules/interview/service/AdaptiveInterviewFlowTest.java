@@ -212,7 +212,7 @@ class AdaptiveInterviewFlowTest {
 
   private static TurnEvaluation eval(AnswerState state) {
     return new TurnEvaluation(TurnEvaluation.defaultScoreFor(state), 0.5,
-        List.of(), List.of(), state, "", true);
+        List.of(), List.of("关键缺口"), state, "继续验证关键缺口", true);
   }
 
   // ===== 1. 题目合并 =====

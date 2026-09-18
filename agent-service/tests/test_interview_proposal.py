@@ -114,7 +114,7 @@ def _deps(payload: dict[str, Any]) -> GraphDeps:
         intent_router=None,  # _derive_proposal 不用路由
         answerer=Answerer(llm),
         backend=BackendClient(base_url="http://test", transport=httpx.MockTransport(_noop)),
-            llm=make_fake_executor()
+        llm=llm,
     )
 
 
@@ -128,6 +128,8 @@ async def test_derive_proposal_whitelists_invented_categories_with_profile_fallb
         "direction": "java-backend",
         "difficulty": "mid",
         "focus": ["JVM", "Elasticsearch"],  # JVM 不是 java-backend 的分类
+        "planned_duration_minutes": 30,
+        "required_topics": ["PROJECT", "不存在的分类"],
         "summary": "推荐",
     }
     profile = {"skills": [{"skill": "MySQL", "score": 40}], "declaredSkills": []}
@@ -145,6 +147,8 @@ async def test_derive_proposal_whitelists_invented_categories_with_profile_fallb
     # JVM / Elasticsearch 均不在分类里 → 落到画像候选（低分 MySQL）
     assert proposal["focus"] == ["MYSQL"]
     assert proposal["direction"] == "java-backend"
+    assert proposal["planned_duration_minutes"] == 30
+    assert proposal["required_topics"] == ["PROJECT"]
 
 
 async def test_derive_proposal_falls_back_to_default_on_model_error():

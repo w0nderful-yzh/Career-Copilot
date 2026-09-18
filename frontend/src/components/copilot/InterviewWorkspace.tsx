@@ -6,7 +6,8 @@ import type { InterviewModeState } from '../../types/copilot';
 import type { InterviewQuestion, ProfileImpact } from '../../types/interview';
 import {
   deriveInterviewView,
-  interviewProgress,
+  interviewPlanProgress,
+  questionMatchesTopic,
   toInterviewerTurn,
   type InterviewTurn as Turn,
 } from '../../utils/interviewTurns';
@@ -25,7 +26,7 @@ import {
 import ProfileImpactCard from './ProfileImpactCard';
 
 // Interview Mode 主工作区（Interview Mode 重构）：
-// - 顶部轻量状态栏：方向 · 题号进度 · 计时 · [结束面试]
+// - 顶部轻量状态栏：当前话题 · 必要覆盖 · 已用时间 · [换话题/调整时间/结束]
 // - 中部消息流直接渲染「面试官题 / 用户答」——复用普通消息气泡视觉（非 Card）
 // - Java InterviewSession 为权威状态；本题答完由 Java 决策引擎返回下一题
 // - 切走/刷新不销毁：本组件只拉取 Java 会话渲染，重新进入由 CopilotPage 恢复 mode
@@ -71,11 +72,11 @@ export default function InterviewWorkspace({
 }) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [current, setCurrent] = useState<InterviewQuestion | null>(null);
-  // 主题（主问题）的**标识**列表；自适应进度分母用它，绝不用 totalQuestions（含候选择问，会虚高）
-  const [mainQuestionIds, setMainQuestionIds] = useState<string[]>([]);
-  // 候选素材总数：非自适应会话按线性顺序全问时才是真实题数
-  const [candidateTotal, setCandidateTotal] = useState(0);
-  const [adaptive, setAdaptive] = useState(false);
+  const [coverage, setCoverage] = useState<{ required: string[]; covered: string[] }>({
+    required: [],
+    covered: [],
+  });
+  const [coverageOpen, setCoverageOpen] = useState(false);
   const [answer, setAnswer] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [elapsed, setElapsed] = useState(0);
@@ -118,11 +119,13 @@ export default function InterviewWorkspace({
       const s = await interviewApi.getSession(mode.sessionId);
       // 恢复规则（只重放已作答轮次 + 定位当前题 + 进度分母）统一在 deriveInterviewView 里，可单测
       const view = deriveInterviewView(s);
+      const progress = interviewPlanProgress(s);
       setTurns(view.turns);
       setCurrent(view.current);
-      setMainQuestionIds(view.mainQuestionIds);
-      setCandidateTotal(view.candidateTotal);
-      setAdaptive(view.adaptive);
+      setCoverage({
+        required: progress.requiredTopics,
+        covered: progress.coveredRequiredTopics,
+      });
       setBudget({
         planned: s.plannedDurationMinutes ?? null,
         consumed: s.consumedSeconds ?? 0,
@@ -148,6 +151,19 @@ export default function InterviewWorkspace({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode.sessionId]);
+
+  const markCurrentTopicCovered = useCallback(() => {
+    if (!current || current.isFollowUp) return;
+    setCoverage((previous) => ({
+      ...previous,
+      covered: previous.required.reduce<string[]>((covered, topic) => {
+        if ((covered.includes(topic) || questionMatchesTopic(current, topic))) {
+          if (!covered.includes(topic)) covered.push(topic);
+        }
+        return covered;
+      }, [...previous.covered]),
+    }));
+  }, [current]);
 
   /** 提交一致性冲突：给出来自服务端的可见说明，并回源同步权威进度（P4-9a） */
   const resyncAfterTurnConflict = useCallback(
@@ -192,7 +208,14 @@ export default function InterviewWorkspace({
           : prev,
       );
       setElapsed(0);
+      markCurrentTopicCovered();
       const next = res.hasNextQuestion ? res.nextQuestion : null;
+      if (res.transitionMessage) {
+        setTurns((prev) => [
+          ...prev,
+          { role: 'interviewer', transition: true, question: res.transitionMessage ?? undefined },
+        ]);
+      }
       if (next) {
         setCurrent(next);
         setTurns((prev) => [...prev, toInterviewerTurn(next)]);
@@ -217,7 +240,7 @@ export default function InterviewWorkspace({
     } finally {
       setSubmitting(false);
     }
-  }, [current, answer, submitting, mode, onChangeStatus, resyncAfterTurnConflict]);
+  }, [current, answer, submitting, mode, onChangeStatus, resyncAfterTurnConflict, markCurrentTopicCovered]);
 
   const pollEvaluation = useCallback(async () => {
     try {
@@ -289,6 +312,13 @@ export default function InterviewWorkspace({
         turnSyncRef.current.turnVersion ?? undefined,
       );
       turnSyncRef.current = applyTurnResult(turnSyncRef.current, res.turnVersion);
+      setBudget((prev) =>
+        prev
+          ? { ...prev, consumed: res.consumedSeconds ?? prev.consumed, remaining: res.remainingSeconds ?? null }
+          : prev,
+      );
+      setElapsed(0);
+      markCurrentTopicCovered();
       const next = res.hasNextQuestion ? res.nextQuestion : null;
       if (next) {
         setCurrent(next);
@@ -311,7 +341,7 @@ export default function InterviewWorkspace({
     } finally {
       setSubmitting(false);
     }
-  }, [current, submitting, mode, onChangeStatus, pollEvaluation, resyncAfterTurnConflict]);
+  }, [current, submitting, mode, onChangeStatus, pollEvaluation, resyncAfterTurnConflict, markCurrentTopicCovered]);
 
   /** 重试生成报告：重置轮询计数后重新入队并继续轮询 */
   const retryEvaluation = useCallback(async () => {
@@ -375,12 +405,9 @@ export default function InterviewWorkspace({
 
   const isEvaluating = mode.status === 'evaluating';
   const isDone = mode.status === 'completed';
-  // 进度从「已发生的 turns + 当前题」推导，不用 totalQuestions（含候选择问，会虚高）
-  const { answeredCount, mainOrdinal, mainCount } = interviewProgress(
-    mainQuestionIds,
-    current,
-    turns.filter((turn) => turn.role === 'user').length,
-  );
+  const answeredCount = turns.filter((turn) => turn.role === 'user').length;
+  const currentTopic = current?.topic || current?.category || '未标注话题';
+  const usedSeconds = (budget?.consumed ?? 0) + elapsed;
 
   return (
     <div className="flex h-full min-w-0 flex-col overflow-hidden">
@@ -397,15 +424,46 @@ export default function InterviewWorkspace({
         </div>
         <div className="flex shrink-0 items-center gap-3 text-xs text-slate-400">
           {!isDone && !isEvaluating && current && (
-            adaptive ? (
-              // 自适应：题数会随作答质量浮动（追问按需、也可能提前结束），
-              // 显示「已答 N 题 + 主题进度」才是真实进度
-              <span className="tabular-nums">
-                已答 {answeredCount} 题 · 主题 {mainOrdinal}/{mainCount}
-              </span>
-            ) : (
-              <span className="tabular-nums">第 {current.questionIndex + 1} / {candidateTotal} 题</span>
-            )
+            <span className="max-w-36 truncate" title={currentTopic}>话题：{currentTopic}</span>
+          )}
+          {!isDone && !isEvaluating && (
+            <span className="tabular-nums">已答 {answeredCount} 轮</span>
+          )}
+          {!isDone && !isEvaluating && coverage.required.length > 0 && (
+            <div className="relative">
+              <button
+                type="button"
+                aria-expanded={coverageOpen}
+                onClick={() => setCoverageOpen((open) => !open)}
+                className="rounded-md px-1.5 py-0.5 tabular-nums text-emerald-600 transition hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-950/40"
+                title="查看必要覆盖明细"
+              >
+                覆盖 {coverage.covered.length}/{coverage.required.length}
+              </button>
+              {coverageOpen && (
+                <div
+                  data-testid="interview-coverage-detail"
+                  className="absolute right-0 top-full z-20 mt-2 w-48 rounded-xl border border-slate-200 bg-white p-2.5 shadow-lg dark:border-slate-700 dark:bg-slate-800"
+                >
+                  <p className="mb-2 text-[11px] font-semibold text-slate-500 dark:text-slate-300">
+                    必要覆盖
+                  </p>
+                  <div className="space-y-1.5">
+                    {coverage.required.map((topic) => {
+                      const covered = coverage.covered.includes(topic);
+                      return (
+                        <div key={topic} className="flex items-center justify-between gap-2 text-xs">
+                          <span className="truncate text-slate-600 dark:text-slate-200">{topic}</span>
+                          <span className={covered ? 'text-emerald-600' : 'text-slate-400'}>
+                            {covered ? '已覆盖' : '待覆盖'}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
           )}
           {!isDone && !isEvaluating && budget?.remaining != null && (
             <span
@@ -413,11 +471,11 @@ export default function InterviewWorkspace({
               title="只统计答题时间，模型思考与等待不扣时"
             >
               <Clock className="h-3.5 w-3.5" />
-              剩余 {Math.max(0, Math.round((budget.remaining - elapsed) / 60))} 分钟
+              已用 {formatSeconds(usedSeconds)} · 剩余 {Math.max(0, Math.ceil((budget.remaining - elapsed) / 60))} 分钟
             </span>
           )}
           {!isDone && !isEvaluating && budget?.remaining == null && (
-            <span className="inline-flex items-center gap-1 tabular-nums"><Clock className="h-3.5 w-3.5" />{formatSeconds(elapsed)}</span>
+            <span className="inline-flex items-center gap-1 tabular-nums"><Clock className="h-3.5 w-3.5" />已用 {formatSeconds(usedSeconds)}</span>
           )}
           {!isDone && !isEvaluating && budget?.planned != null && budgetDraft != null && (
             <input
@@ -444,13 +502,23 @@ export default function InterviewWorkspace({
               className="rounded-md px-1.5 py-0.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800"
               title="告诉面试官你还剩多少时间（当轮生效）"
             >
-              调整
+              调整时间
             </button>
           )}
           {isEvaluating && (
             <span className="inline-flex items-center gap-1 text-amber-500">
               <Loader2 className="h-3.5 w-3.5 animate-spin" /> 评估中…
             </span>
+          )}
+          {!isDone && !isEvaluating && (
+            <button
+              onClick={() => void skip()}
+              disabled={submitting}
+              className="rounded-md px-2 py-1 font-medium text-slate-400 transition hover:bg-slate-100 hover:text-slate-600 disabled:opacity-40 dark:hover:bg-slate-800"
+              title="跳过当前问题并切换到下一个主话题"
+            >
+              换话题
+            </button>
           )}
           {!isDone && !isEvaluating && (
             <button
@@ -494,7 +562,7 @@ export default function InterviewWorkspace({
                 </div>
                 <div className="max-w-[80%] rounded-2xl rounded-tl-sm bg-white px-4 py-3 shadow-sm ring-1 ring-slate-100 dark:bg-slate-800 dark:ring-slate-700">
                   <p className="flex items-center gap-2 text-[11px] font-semibold text-slate-400">
-                    {turn.category || '面试官'}
+                    {turn.transition ? '面试官' : (turn.category || '面试官')}
                     {turn.isFollowUp && (
                       <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600 dark:bg-amber-900/40 dark:text-amber-300">
                         追问{turn.followUpIndex ? ` ${turn.followUpIndex}` : ''}

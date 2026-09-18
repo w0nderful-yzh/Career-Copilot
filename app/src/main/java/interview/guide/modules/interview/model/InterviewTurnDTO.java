@@ -30,6 +30,9 @@ import java.util.List;
  * @param referenceAnswer 参考答案（报告回填）
  * @param keyPoints      关键点（报告回填）
  * @param occurredAt     发生时间
+ * @param decidedNextQuestionId Java 最终选择的下一题标识；收束时为空
+ * @param decisionReason Java 最终决定依据
+ * @param transitionMessage 实际展示的简短承接语
  */
 public record InterviewTurnDTO(
     String questionId,
@@ -45,8 +48,22 @@ public record InterviewTurnDTO(
     String decidedAction,
     String referenceAnswer,
     List<String> keyPoints,
-    LocalDateTime occurredAt
+    LocalDateTime occurredAt,
+    String decidedNextQuestionId,
+    String decisionReason,
+    String transitionMessage
 ) {
+
+    /** 兼容既有构造点：P4Q-3b 之前没有持久化决策依据与承接语 */
+    public InterviewTurnDTO(String questionId, Integer ordinal, int questionIndex,
+                            String question, String category, String topic,
+                            String userAnswer, AnswerState answerState, Integer score,
+                            String feedback, String decidedAction, String referenceAnswer,
+                            List<String> keyPoints, LocalDateTime occurredAt) {
+        this(questionId, ordinal, questionIndex, question, category, topic, userAnswer,
+            answerState, score, feedback, decidedAction, referenceAnswer, keyPoints, occurredAt,
+            null, null, null);
+    }
 
     /** 决定：继续深挖当前主问题的追问 */
     public static final String ACTION_FOLLOW_UP = "FOLLOW_UP";
@@ -81,7 +98,10 @@ public record InterviewTurnDTO(
             answer.getDecidedAction(),
             answer.getReferenceAnswer(),
             keyPoints,
-            answer.getAnsweredAt());
+            answer.getAnsweredAt(),
+            answer.getDecidedNextQuestionId(),
+            answer.getDecisionReason(),
+            answer.getTransitionMessage());
     }
 
     /** 是否为「用户答过/跳过的真实轮次」（报告补写的未考察项不算） */

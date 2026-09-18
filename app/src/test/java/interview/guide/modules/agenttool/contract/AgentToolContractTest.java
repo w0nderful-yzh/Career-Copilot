@@ -94,7 +94,7 @@ class AgentToolContractTest {
     assertThat(requiredOf("get_interview_report")).containsExactly("sessionId");
     assertThat(requiredOf("apply_resume_patches")).containsExactly("proposalId");
     assertThat(requiredOf("search_knowledge")).containsExactly("knowledgeBaseIds", "question");
-    // 创建面试：只有方向是必填；难度/题数/resumeId 等都可缺省（有服务端默认值）
+    // 创建面试：只有方向是必填；难度/时长/覆盖/resumeId 等都可缺省（有服务端默认值）
     assertThat(requiredOf("create_interview")).containsExactly("skillId");
     // 无参数 Tool：空 required、空 properties
     assertThat(requiredOf("get_resume_list")).isEmpty();
@@ -104,11 +104,12 @@ class AgentToolContractTest {
   @Test
   @DisplayName("jakarta validation 约束映射进 Schema（范围与正数）")
   void constraintsMappedFromValidationAnnotations() {
-    Map<?, ?> questionCount = (Map<?, ?>) propertiesOf("create_interview").get("questionCount");
-    assertThat(questionCount.get("type")).isEqualTo("integer");
+    Map<?, ?> duration =
+        (Map<?, ?>) propertiesOf("create_interview").get("plannedDurationMinutes");
+    assertThat(duration.get("type")).isEqualTo("integer");
     // @Min/@Max 的 value 是 long，导出结果同为长整型（JSON 表示都是数字）
-    assertThat(questionCount.get("minimum")).isEqualTo(3L);
-    assertThat(questionCount.get("maximum")).isEqualTo(20L);
+    assertThat(duration.get("minimum")).isEqualTo(5L);
+    assertThat(duration.get("maximum")).isEqualTo(120L);
 
     Map<?, ?> resumeId = (Map<?, ?>) propertiesOf("create_interview").get("resumeId");
     assertThat(resumeId.get("exclusiveMinimum")).isEqualTo(0);

@@ -181,6 +181,9 @@ class InterviewPersistenceServiceTest {
     assertThat(answerCaptor.getValue().getAnswerState())
         .isEqualTo(InterviewAnswerEntity.AnswerState.ANSWERED);
     assertThat(answerCaptor.getValue().getUserAnswer()).isEqualTo("堆和栈……");
+    assertThat(answerCaptor.getValue().getDecidedNextQuestionId()).isEqualTo("q-turn-2");
+    assertThat(answerCaptor.getValue().getDecisionReason()).isEqualTo("验证 Redis 持久化");
+    assertThat(answerCaptor.getValue().getTransitionMessage()).isEqualTo("下面转到 Redis。");
 
     ArgumentCaptor<InterviewTurnRequestEntity> recordCaptor =
         ArgumentCaptor.forClass(InterviewTurnRequestEntity.class);
@@ -212,8 +215,8 @@ class InterviewPersistenceServiceTest {
   /** 一轮作答的提交命令（版本 2 → 3；P4-1：闸门与答案都用题目标识） */
   private static InterviewTurnCommit answerCommit() {
     return InterviewTurnCommit.ofTurn("sid-turn", "turn-req-0001", "ANSWER", "hash", 2,
-        "q-turn-1", 2, "q-turn-2", "q-turn-1", 120, InterviewTurnDTO.ACTION_NEXT_MAIN, false,
-        1, "Q2", "Redis", "堆和栈……",
+        "q-turn-1", 2, "q-turn-2", "q-turn-1", 120, InterviewTurnDTO.ACTION_NEXT_MAIN,
+        "验证 Redis 持久化", "下面转到 Redis。", false, 1, "Q2", "Redis", "堆和栈……",
         InterviewAnswerEntity.AnswerState.ANSWERED, "{}");
   }
 

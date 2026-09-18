@@ -26,7 +26,8 @@ Java = System of Record；Python 只做编排，禁止直连业务库，业务�
 - 退出会话登记 `closedInterviewSessionsRef`，否则旧 interview_session 信号块会拉回 Interview Mode。
 - 技能名恒定：追问序号走 `followUpIndex`，绝不拼进 category（会变画像伪技能）。
 - 逐轮参照物（TurnEvaluationRequest）= 当前题+回答 + 简历片段（`resumeSnippetFor`）+ 最近相关问答
-  （`recentTurnsFor`）+ 画像基线（`profileBaselineFor`）；覆盖摘要与剩余预算尚未接入（属 P4Q-2）。
+  （`recentTurnsFor`）+ 画像基线（`profileBaselineFor`）+ 覆盖摘要/预算/合法候选（P4Q-2 批 2b，
+  全部 Java 实时推导，与硬边界同源；缺失有可读占位）。
 - 简历取数唯一入口 = `InterviewResumeContextResolver`；指定却读不到必须报可见原因。
 
 ## 逐轮提交一致性（P4-9a，V20260919）
@@ -45,7 +46,8 @@ Java = System of Record；Python 只做编排，禁止直连业务库，业务�
 - 计划单位 = **时长**（`planned_duration_minutes`，缺省 20）+ `required_topics`；
   规模 = 时长/4（夹 3-12）；questionCount 是兼容字段（×4 分钟折算），不再决定规模。
 - **覆盖状态不落库**：由候选池 × 实际轨迹推导（落快照必漂移）；未声明必要覆盖时
-  「覆盖完成」不作收束条件。
+  「覆盖完成」不作收束条件。逐轮上下文里的覆盖摘要 / 预算 / 合法候选同样实时推导，
+  与 `AdaptiveInterviewPolicy` 及收束硬边界同口径（话题匹配统一走 `InterviewQuestionDTO.matchesTopic`）。
 - 时间权威在服务端：`question_presented_at` → 提交时在同一次条件更新里累计
   `consumed_seconds`（扣本轮模型评估耗时）；预算随推进响应带回；调整 = planned = 已用 + 声明剩余。
 - 收束优先级：必要覆盖完成 > 预算用尽 > 候选耗尽；`end_reason` 四值各自真实

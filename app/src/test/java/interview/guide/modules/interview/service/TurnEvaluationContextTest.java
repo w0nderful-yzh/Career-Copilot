@@ -8,10 +8,12 @@ import static org.mockito.Mockito.when;
 import interview.guide.common.ai.StructuredOutputInvoker;
 import interview.guide.common.ai.StructuredOutputProperties;
 import interview.guide.modules.interview.model.InterviewAnswerEntity;
+import interview.guide.modules.interview.model.InterviewPlan;
 import interview.guide.modules.interview.model.InterviewQuestionDTO;
 import interview.guide.modules.interview.model.InterviewTurnDTO;
 import interview.guide.modules.interview.model.TurnEvaluationRequest;
 import interview.guide.modules.interview.service.TurnEvaluationService.TurnEvalDTO;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import org.junit.jupiter.api.BeforeEach;
@@ -162,7 +164,7 @@ class TurnEvaluationContextTest {
   class PromptVariables {
 
     @Test
-    @DisplayName("三类参照物都进入 user prompt")
+    @DisplayName("三类参照物与覆盖 / 预算 / 合法候选都进入 user prompt")
     void contextReachesPrompt() throws Exception {
       stubEvaluation();
 
@@ -170,12 +172,18 @@ class TurnEvaluationContextTest {
           question(), "回答内容……",
           "## 项目经历\n- 订单系统 · Kafka 重平衡排查",
           List.of("- 问：Q1 内存模型\n  答：堆分新生代"),
-          "订单系统 44 分（2 条证据）"));
+          "订单系统 44 分（2 条证据）",
+          "- 必要覆盖：JVM=本轮正在考察",
+          "- 时间预算：剩余约 11 分钟\n- 追问预算：当前话题组最多还可追问 1 条",
+          List.of("[q-f1] 追问｜JVM｜难度3：堆为什么分代？")));
 
       assertThat(capturedUserPrompt())
           .contains("Kafka 重平衡排查")
           .contains("堆分新生代")
-          .contains("订单系统 44 分");
+          .contains("订单系统 44 分")
+          .contains("必要覆盖：JVM=本轮正在考察")
+          .contains("剩余约 11 分钟")
+          .contains("[q-f1] 追问｜JVM");
     }
 
     @Test
@@ -188,7 +196,10 @@ class TurnEvaluationContextTest {
       assertThat(capturedUserPrompt())
           .contains("没有简历依据")
           .contains("没有已回答的轮次")
-          .contains("暂无画像数据");
+          .contains("暂无画像数据")
+          .contains("没有提供覆盖上下文")
+          .contains("没有提供时间与追问预算")
+          .contains("没有可继续问的候选");
     }
 
     /** 用 mock invoker 返回 DTO，不触发真实 LLM */
@@ -205,6 +216,214 @@ class TurnEvaluationContextTest {
     }
   }
 
+  @Nested
+  @DisplayName("覆盖摘要")
+  class CoverageSummary {
+
+    private final InterviewQuestionDTO jvm = InterviewQuestionDTO.createMain(0,
+        "JVM 内存模型？", "JVM", "JVM", "运行时数据区", 3, List.of()).withQuestionId("q-jvm");
+    private final InterviewQuestionDTO project = InterviewQuestionDTO.createMain(1,
+        "介绍你的项目", "PROJECT", "项目经历", "项目深挖", 3, List.of()).withQuestionId("q-proj");
+    private final InterviewQuestionDTO redis = InterviewQuestionDTO.createMain(2,
+        "Redis 持久化？", "REDIS", "Redis", "RDB/AOF", 3, List.of()).withQuestionId("q-redis");
+    private final List<InterviewQuestionDTO> pool = List.of(jvm, project, redis);
+
+    @Test
+    @DisplayName("必要覆盖按实际轨迹判定：问过才算已覆盖，当前题记正在考察")
+    void requiredTopicsFromTrajectory() {
+      String summary = TurnEvaluationService.coverageSummaryFor(pool,
+          List.of(answered("q-jvm", "JVM")), project,
+          new InterviewPlan(20, List.of("JVM", "项目经历", "Redis")));
+
+      assertThat(summary)
+          .contains("JVM=已覆盖")
+          .contains("项目经历=本轮正在考察")
+          .contains("Redis=未覆盖");
+    }
+
+    @Test
+    @DisplayName("覆盖状态变化会改变摘要：同一候选池问过 JVM 后它从「尚未问」移到「已问」")
+    void coverageChangesWithTrajectory() {
+      String before = TurnEvaluationService.coverageSummaryFor(pool, List.of(), project, null);
+      String after = TurnEvaluationService.coverageSummaryFor(pool,
+          List.of(answered("q-jvm", "JVM")), redis, null);
+
+      assertThat(before).contains("尚未问的话题：JVM");
+      assertThat(after).contains("已问话题：JVM 1 轮");
+      assertThat(after).doesNotContain("尚未问的话题：JVM");
+    }
+
+    @Test
+    @DisplayName("跳过与未作答的轮次单独标注（问过与答了是两件事）")
+    void unansweredTurnsAreMarked() {
+      List<InterviewTurnDTO> turns = List.of(
+          answered("q-jvm", "JVM"),
+          skipped("q-proj", "项目经历"));
+
+      String summary = TurnEvaluationService.coverageSummaryFor(pool, turns, redis, null);
+
+      assertThat(summary)
+          .contains("JVM 1 轮")
+          .contains("项目经历 1 轮（1 轮未作答）")
+          .doesNotContain("尚未问的话题：JVM")
+          .doesNotContain("尚未问的话题：项目经历");
+    }
+
+    @Test
+    @DisplayName("未声明必要覆盖或旧会话无计划时明确标注，不暗示会按覆盖收束")
+    void noRequiredTopicsIsMarked() {
+      assertThat(TurnEvaluationService.coverageSummaryFor(pool, List.of(), jvm,
+          new InterviewPlan(20, List.of())))
+          .contains("本场未声明必要覆盖");
+      assertThat(TurnEvaluationService.coverageSummaryFor(pool, List.of(), jvm, null))
+          .contains("旧会话未记录计划");
+    }
+
+    @Test
+    @DisplayName("没有候选素材时返回 null（由提示词给可读占位，不编造覆盖状态）")
+    void noCandidatesReturnsNull() {
+      assertThat(TurnEvaluationService.coverageSummaryFor(List.of(), List.of(), jvm,
+          new InterviewPlan(20, List.of()))).isNull();
+    }
+  }
+
+  @Nested
+  @DisplayName("时间与追问预算")
+  class BudgetSummary {
+
+    @Test
+    @DisplayName("剩余时间与追问额度都进入摘要（只计答题时间）")
+    void remainingTimeAndFollowUpBudget() {
+      String summary = TurnEvaluationService.budgetSummaryFor(
+          new InterviewPlan(20, List.of()), 660, 2);
+
+      assertThat(summary)
+          .contains("剩余约 11 分钟")
+          .contains("预计 20 分钟")
+          .contains("已用约 9 分钟")
+          .contains("最多还可追问 2 条");
+    }
+
+    @Test
+    @DisplayName("预算变化会改变摘要：时间紧、追问额度用尽时明确要求转向")
+    void budgetChangeChangesSummary() {
+      String rich = TurnEvaluationService.budgetSummaryFor(
+          new InterviewPlan(20, List.of()), 900, 1);
+      String tight = TurnEvaluationService.budgetSummaryFor(
+          new InterviewPlan(20, List.of()), 90, 0);
+
+      assertThat(rich).contains("剩余约 15 分钟").contains("最多还可追问 1 条");
+      assertThat(tight).contains("剩余约 2 分钟").contains("没有剩余追问");
+    }
+
+    @Test
+    @DisplayName("旧会话没有计划时明确标注不按时间收束，不编造默认预算")
+    void legacySessionHasNoFakeBudget() {
+      String summary = TurnEvaluationService.budgetSummaryFor(null, null, 1);
+
+      assertThat(summary)
+          .contains("旧会话未记录预计时长")
+          .contains("不按时间收束")
+          .contains("最多还可追问 1 条");
+    }
+
+    @Test
+    @DisplayName("没有任何预算数据时返回 null，由提示词给占位")
+    void noDataReturnsNull() {
+      assertThat(TurnEvaluationService.budgetSummaryFor(null, null, null)).isNull();
+    }
+  }
+
+  @Nested
+  @DisplayName("本轮合法候选")
+  class LegalCandidates {
+
+    private final InterviewQuestionDTO jvmMain = InterviewQuestionDTO.createMain(0,
+        "JVM 内存模型？", "JVM", "JVM", "运行时数据区", 3, List.of()).withQuestionId("q-jvm");
+    private final InterviewQuestionDTO jvmFollowUp = InterviewQuestionDTO.createFollowUp(1,
+        "堆为什么分代？", "JVM", "JVM", "q-jvm", 1,
+        InterviewQuestionDTO.FOLLOW_UP_WHY, List.of()).withQuestionId("q-jvm-f1");
+    private final InterviewQuestionDTO jvmFollowUp2 = InterviewQuestionDTO.createFollowUp(2,
+        "TLAB 是什么？", "JVM", "JVM", "q-jvm", 2,
+        InterviewQuestionDTO.FOLLOW_UP_DEPTH, List.of()).withQuestionId("q-jvm-f2");
+    private final InterviewQuestionDTO otherFollowUp = InterviewQuestionDTO.createFollowUp(3,
+        "项目里你负责哪块？", "PROJECT", "项目经历", "q-proj", 1,
+        InterviewQuestionDTO.FOLLOW_UP_DEPTH, List.of()).withQuestionId("q-proj-f1");
+    private final InterviewQuestionDTO redisMain = InterviewQuestionDTO.createMain(4,
+        "Redis 持久化？", "REDIS", "Redis", "RDB/AOF", 3, List.of()).withQuestionId("q-redis");
+
+    private final List<InterviewQuestionDTO> pool =
+        List.of(jvmMain, jvmFollowUp, jvmFollowUp2, otherFollowUp, redisMain);
+
+    @Test
+    @DisplayName("排除已问与当前题，包含本组剩余追问与尚未问过的主问题")
+    void excludesAskedAndCurrent() {
+      List<String> candidates = TurnEvaluationService.legalCandidatesFor(
+          pool, List.of(), jvmMain);
+
+      assertThat(candidates)
+          .anyMatch(line -> line.startsWith("[q-jvm-f1]") && line.contains("追问"))
+          .anyMatch(line -> line.startsWith("[q-redis]"))
+          .noneMatch(line -> line.contains("[q-jvm]"))
+          .noneMatch(line -> line.contains("q-proj-f1"));
+    }
+
+    @Test
+    @DisplayName("其他追问组的预置追问不在合法候选里（策略到不了）")
+    void otherGroupsFollowUpsAreNotLegal() {
+      List<String> candidates = TurnEvaluationService.legalCandidatesFor(
+          pool, List.of(), jvmMain);
+
+      assertThat(candidates).noneMatch(line -> line.contains("q-proj-f1"));
+    }
+
+    @Test
+    @DisplayName("答完追问后仍以同一组计算剩余追问与主问题去处")
+    void followUpAnsweredStillUsesItsGroup() {
+      List<String> candidates = TurnEvaluationService.legalCandidatesFor(
+          pool, List.of(answered("q-jvm", "JVM")), jvmFollowUp);
+
+      assertThat(candidates)
+          .noneMatch(line -> line.contains("q-jvm-f1"))
+          .anyMatch(line -> line.contains("q-jvm-f2"))
+          .anyMatch(line -> line.contains("q-redis"));
+    }
+
+    @Test
+    @DisplayName("追问额度用尽后只剩主问题候选")
+    void followUpBudgetExhaustedLeavesMains() {
+      List<String> candidates = TurnEvaluationService.legalCandidatesFor(
+          pool, List.of(), jvmFollowUp);
+
+      assertThat(candidates).noneMatch(line -> line.contains("[q-jvm-f1]"));
+      assertThat(candidates).anyMatch(line -> line.contains("[q-redis]"));
+    }
+
+    @Test
+    @DisplayName("超出上限时截断为前若干条并说明剩余数量")
+    void cappedWithExplicitRemainder() {
+      List<InterviewQuestionDTO> many = new ArrayList<>();
+      for (int index = 0; index < 9; index++) {
+        many.add(InterviewQuestionDTO.createMain(index, "Q" + index, "JVM", "JVM",
+            null, 3, List.of()).withQuestionId("q-" + index));
+      }
+
+      List<String> candidates = TurnEvaluationService.legalCandidatesFor(
+          many, List.of(), many.get(0));
+
+      assertThat(candidates).hasSize(TurnEvaluationService.MAX_LEGAL_CANDIDATES + 1);
+      assertThat(candidates.get(TurnEvaluationService.MAX_LEGAL_CANDIDATES))
+          .contains("还有 2 条候选未列出");
+    }
+
+    @Test
+    @DisplayName("没有候选时为空（由提示词给可读占位）")
+    void noCandidatesIsEmpty() {
+      assertThat(TurnEvaluationService.legalCandidatesFor(List.of(), List.of(), jvmMain))
+          .isEmpty();
+    }
+  }
+
   private static InterviewQuestionDTO question() {
     return InterviewQuestionDTO.createMain(0,
         "Minor GC 与 Full GC 有什么区别？", "JVM", "JVM", "GC 对比", 3,
@@ -216,6 +435,20 @@ class TurnEvaluationContextTest {
       int ordinal, String question, String category, String answer) {
     return new InterviewTurnDTO("q" + ordinal, ordinal, ordinal - 1, question,
         category, null, answer, InterviewAnswerEntity.AnswerState.ANSWERED, null, null,
+        InterviewTurnDTO.ACTION_NEXT_MAIN, null, List.of(), null);
+  }
+
+  /** 已问过的真实轮次（按题目标识引用；category 同时充当话题兜底） */
+  private static InterviewTurnDTO answered(String questionId, String category) {
+    return new InterviewTurnDTO(questionId, 1, 0, "问题", category, null, "回答",
+        InterviewAnswerEntity.AnswerState.ANSWERED, null, null,
+        InterviewTurnDTO.ACTION_NEXT_MAIN, null, List.of(), null);
+  }
+
+  /** 问过但跳过的轮次：覆盖摘要要把它与「答了」区分开 */
+  private static InterviewTurnDTO skipped(String questionId, String category) {
+    return new InterviewTurnDTO(questionId, 2, 1, "问题", category, null, null,
+        InterviewAnswerEntity.AnswerState.SKIPPED, null, null,
         InterviewTurnDTO.ACTION_NEXT_MAIN, null, List.of(), null);
   }
 }

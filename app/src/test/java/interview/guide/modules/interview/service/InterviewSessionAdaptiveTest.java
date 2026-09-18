@@ -16,17 +16,20 @@ import interview.guide.modules.interview.model.SubmitAnswerRequest;
 import interview.guide.modules.interview.model.SubmitAnswerResponse;
 import interview.guide.modules.interview.model.TurnEvaluation;
 import interview.guide.modules.interview.model.TurnEvaluation.AnswerState;
+import interview.guide.modules.interview.model.TurnEvaluationRequest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -203,6 +206,38 @@ class InterviewSessionAdaptiveTest {
 
     assertThat(response.hasNextQuestion()).isTrue();
     assertThat(response.nextQuestion().question()).isEqualTo("F1a: 堆区分代？");
+  }
+
+  @Test
+  @DisplayName("逐轮决策上下文接入覆盖摘要、剩余预算与合法候选（P4Q-2 批 2b）")
+  void turnContextCarriesCoverageBudgetAndLegalCandidates() {
+    List<InterviewQuestionDTO> questions = linearSession();
+    when(sessionCache.getSession(SESSION)).thenReturn(Optional.of(cached(questions, 0, true)));
+    // 计划与时间记账放在数据库权威实体上：覆盖与预算都应由真实数据推导
+    InterviewSessionEntity entity = authoritative(questions, 0);
+    entity.setPlannedDurationMinutes(20);
+    entity.setConsumedSeconds(300);
+    entity.setQuestionPresentedAt(LocalDateTime.now().minusSeconds(60));
+    entity.setRequiredTopicsJson("[\"JVM\"]");
+    when(persistenceService.findBySessionId(SESSION)).thenReturn(Optional.of(entity));
+    when(turnEvaluationService.evaluateTurn(any(), any())).thenReturn(eval(AnswerState.GOOD));
+
+    service.submitAnswer(new SubmitAnswerRequest(SESSION, 0, "堆/栈……"));
+
+    ArgumentCaptor<TurnEvaluationRequest> request =
+        ArgumentCaptor.forClass(TurnEvaluationRequest.class);
+    verify(turnEvaluationService).evaluateTurn(any(), request.capture());
+    TurnEvaluationRequest context = request.getValue();
+    assertThat(context.coverageSummary())
+        .contains("JVM=本轮正在考察")
+        .contains("尚未问的话题：Redis");
+    assertThat(context.budgetSummary()).contains("剩余约");
+    assertThat(context.legalCandidates())
+        // 本组剩余追问与未问主问题可问；当前题与其他组的预置追问不在合法候选里
+        .anyMatch(line -> line.startsWith("[q-a3]"))
+        .anyMatch(line -> line.startsWith("[q-a2]"))
+        .noneMatch(line -> line.contains("[q-a1]"))
+        .noneMatch(line -> line.contains("[q-a4]"));
   }
 
   @Test

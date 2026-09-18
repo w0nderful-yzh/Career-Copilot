@@ -44,7 +44,6 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
-import java.util.Locale;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -702,6 +701,9 @@ public class InterviewSessionService {
             .collect(Collectors.toCollection(LinkedHashSet::new));
         askedIds.add(resolvedId);
 
+        // P4Q-2：计划在评估前就要确定——逐轮上下文的覆盖摘要、剩余时间与追问预算都由它推导
+        InterviewPlan plan = planOf(entity);
+
         // P4Q-2：模型评估耗时单独计时——它是「系统等待」，不扣用户答题预算
         long evaluationStarted = System.nanoTime();
         long evaluationMillis = 0;
@@ -709,7 +711,7 @@ public class InterviewSessionService {
         if (adaptive) {
             TurnEvaluation evaluation;
             if (answerState == InterviewAnswerEntity.AnswerState.ANSWERED) {
-                evaluation = evaluateTurn(entity, session, candidates, turns, question, answer);
+                evaluation = evaluateTurn(entity, session, candidates, turns, question, answer, plan);
                 evaluationMillis = (System.nanoTime() - evaluationStarted) / 1_000_000;
                 // 语义判定优先：模型识别出「要求跳过」时改判，本轮不计分也不追问
                 answerState = answerStateOf(evaluation);
@@ -726,7 +728,6 @@ public class InterviewSessionService {
         // P4Q-2：预算与覆盖的**硬边界**（Java 判定，不依赖模型自觉）。
         // 收束优先级：必要覆盖完成 > 预算用尽 > 候选耗尽；前两者会掐断尚未展示的下一题，
         // 并且当前题不越过刚答完的这道（没有展示过就没有「当前题」）。
-        InterviewPlan plan = planOf(entity);
         int consumedSeconds = baseConsumedSeconds(entity) + answerSecondsOf(entity, evaluationMillis);
         String finishReason = null;
         if (requiredCoverageSatisfied(candidates, askedIds, plan)) {
@@ -894,22 +895,12 @@ public class InterviewSessionService {
             boolean satisfied = candidates.stream()
                 .filter(InterviewQuestionDTO::isMain)
                 .filter(question -> askedIds.contains(question.questionId()))
-                .anyMatch(question -> topicMatches(question, topic));
+                .anyMatch(question -> question.matchesTopic(topic));
             if (!satisfied) {
                 return false;
             }
         }
         return true;
-    }
-
-    /** 话题匹配：topic 优先（P4-1 的字段），旧数据没有 topic 时退回 category */
-    private static boolean topicMatches(InterviewQuestionDTO question, String topic) {
-        String value = question.topic() != null && !question.topic().isBlank()
-            ? question.topic()
-            : question.category();
-        return value != null
-            && (value.equalsIgnoreCase(topic) || value.toLowerCase(Locale.ROOT)
-                .contains(topic.toLowerCase(Locale.ROOT)));
     }
 
     /**
@@ -1082,17 +1073,42 @@ public class InterviewSessionService {
     private TurnEvaluation evaluateTurn(InterviewSessionEntity entity, CachedSession session,
                                         List<InterviewQuestionDTO> candidates,
                                         List<InterviewTurnDTO> turns,
-                                        InterviewQuestionDTO question, String answer) {
+                                        InterviewQuestionDTO question, String answer,
+                                        InterviewPlan plan) {
         ChatClient chatClient = llmProviderRegistry.getChatClientOrDefault(entity.getLlmProvider());
         // P4Q-1：喂进三类参照物——只看一道孤立的题，模型无法判断「他说的是不是自己简历里的事」
         // 「这轮有没有新信息」「这次表现是否超出长期水平」
         // P4-1：历史问答取自**实际轨迹**（turns 已排除当前轮），未问过的候选不会被当成历史
+        // P4Q-2 批 2b：覆盖摘要 / 剩余时间与追问预算 / 本轮合法候选都从计划与实际轨迹推导，
+        // 与 Java 的硬边界同源；没有计划或候选时留空，由提示词给可读说明而不是编造数据
         return turnEvaluationService.evaluateTurn(chatClient, new TurnEvaluationRequest(
             question,
             answer,
             TurnEvaluationService.resumeSnippetFor(session.getResumeText(), question.category()),
             TurnEvaluationService.recentTurnsFor(turns, question.category()),
-            profileBaselineFor(question.category())));
+            profileBaselineFor(question.category()),
+            TurnEvaluationService.coverageSummaryFor(candidates, turns, question, plan),
+            TurnEvaluationService.budgetSummaryFor(plan, evaluationRemainingSeconds(entity, plan),
+                TurnEvaluationService.remainingFollowUpsFor(candidates, turns, question)),
+            TurnEvaluationService.legalCandidatesFor(candidates, turns, question)));
+    }
+
+    /**
+     * 评估时刻的剩余预算（P4Q-2 批 2b）：计划 − 已提交用时 − 当前题已展示的墙钟。
+     *
+     * <p>此刻本轮模型评估尚未结束，无法预知还要多久；模型等待不扣预算，因此这里**不**把评估耗时
+     * 预估进去——喂给模型的剩余时间只会略保守，不会虚高。旧会话没有计划时返回 null，
+     * 不编造一个默认预算去影响模型判断。
+     */
+    private static Integer evaluationRemainingSeconds(InterviewSessionEntity entity, InterviewPlan plan) {
+        if (plan == null) {
+            return null;
+        }
+        long elapsedMillis = entity.getQuestionPresentedAt() != null
+            ? Duration.between(entity.getQuestionPresentedAt(), LocalDateTime.now()).toMillis()
+            : 0;
+        long remaining = plan.budgetSeconds() - baseConsumedSeconds(entity) - elapsedMillis / 1000;
+        return (int) Math.max(0, remaining);
     }
 
     /**

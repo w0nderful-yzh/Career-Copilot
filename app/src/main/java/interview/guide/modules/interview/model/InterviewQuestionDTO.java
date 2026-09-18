@@ -3,6 +3,7 @@ package interview.guide.modules.interview.model;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 
 /**
@@ -179,5 +180,20 @@ public record InterviewQuestionDTO(
     /** 该题是否属于追问组（供决策与展示分组） */
     public boolean isMain() {
         return !isFollowUp;
+    }
+
+    /**
+     * 该题是否属于某话题（P4Q-2）：topic 优先（P4-1），旧数据退回 category。
+     *
+     * <p>话题匹配是「必要覆盖是否完成」与「覆盖摘要」共用的判据：抽到 DTO 上避免两处各写一份，
+     * 否则硬边界与喂给模型的覆盖状态会悄悄分叉。
+     */
+    public boolean matchesTopic(String topic) {
+        if (topic == null || topic.isBlank()) {
+            return false;
+        }
+        String value = this.topic != null && !this.topic.isBlank() ? this.topic : this.category;
+        return value != null && (value.equalsIgnoreCase(topic)
+            || value.toLowerCase(Locale.ROOT).contains(topic.toLowerCase(Locale.ROOT)));
     }
 }

@@ -13,9 +13,31 @@ import java.util.List;
 public record CreateInterviewRequest(
     String resumeText,      // 简历文本内容（可选，无简历时为通用面试）
 
+    /**
+     * 预计时长（分钟，P4Q-2）：面试计划的真实单位。
+     *
+     * <p>规模（主问题数）与收束判据都由它推导，不再由题数决定；
+     * 缺省按 {@link interview.guide.modules.interview.InterviewDefaults} 的默认时长。
+     */
+    @Min(value = 5, message = "预计时长最少5分钟")
+    @Max(value = 120, message = "预计时长最多120分钟")
+    Integer plannedDurationMinutes,
+
+    /**
+     * 必要覆盖（P4Q-2）：这些话题必须问到才算覆盖完成。
+     *
+     * <p>按话题 label/key 匹配主问题；空/缺省 = 池内全部主问题话题都必要。
+     * 候选池里不存在的话题不会生成题目——「无实习经历不强行问实习」由这一点保证。
+     */
+    List<String> requiredTopics,
+
+    /**
+     * 仅旧调用方兼容：P4Q-2 起规模由 {@link #plannedDurationMinutes} 推导，
+     * 该字段不再影响出题规模；新调用方不要传。
+     */
     @Min(value = 3, message = "题目数量最少3题")
     @Max(value = 20, message = "题目数量最多20题")
-    int questionCount,      // 面试题目数量 (3-20)
+    Integer questionCount,
 
     Long resumeId,          // 简历ID（可选，无简历时不传）
 
@@ -44,4 +66,19 @@ public record CreateInterviewRequest(
      * 仅对预设方向生效；JD 自定义方向本身就是 focus，不叠加。
      */
     List<String> focusCategories
-) {}
+) {
+
+    /**
+     * 旧契约兼容构造器：题数会被折算成时长（每主问题 4 分钟），
+     * 让 Agent 等旧调用方在 P4-8a 改造契约前保持可用。
+     */
+    public CreateInterviewRequest(String resumeText, int questionCount, Long resumeId,
+                                  Boolean forceCreate, String llmProvider, String skillId,
+                                  String difficulty, List<CategoryDTO> customCategories,
+                                  String jdText, String requestId, Boolean adaptive,
+                                  List<String> focusCategories) {
+        this(resumeText, null, null, questionCount, resumeId, forceCreate, llmProvider, skillId,
+            difficulty, customCategories, jdText, requestId, adaptive, focusCategories);
+    }
+}
+

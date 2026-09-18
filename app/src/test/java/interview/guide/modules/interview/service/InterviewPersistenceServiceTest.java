@@ -142,7 +142,7 @@ class InterviewPersistenceServiceTest {
   @Test
   @DisplayName("逐轮提交：条件更新没命中就整体不落任何写入（P4-9a）")
   void applyTurnRejectsWhenConditionalUpdateMisses() {
-    when(sessionRepository.applyTurn(anyString(), anyInt(), any(), any(), anyInt(), any(), any(), anyList()))
+    when(sessionRepository.applyTurn(anyString(), anyInt(), any(), any(), anyInt(), any(), anyInt(), any(), any(), anyList()))
         .thenReturn(0);
 
     assertThatThrownBy(() -> newService().applyTurn(answerCommit()))
@@ -157,7 +157,7 @@ class InterviewPersistenceServiceTest {
   @Test
   @DisplayName("逐轮提交：答案事实与幂等记录跟着同一次条件更新落地（P4-9a）")
   void applyTurnWritesAnswerAndIdempotencyRecord() {
-    when(sessionRepository.applyTurn(anyString(), anyInt(), any(), any(), anyInt(), any(), any(), anyList()))
+    when(sessionRepository.applyTurn(anyString(), anyInt(), any(), any(), anyInt(), any(), anyInt(), any(), any(), anyList()))
         .thenReturn(1);
     InterviewSessionEntity session = new InterviewSessionEntity();
     session.setSessionId("sid-turn");
@@ -193,7 +193,7 @@ class InterviewPersistenceServiceTest {
   @Test
   @DisplayName("提前交卷走「不推进索引」的条件更新（P4-9a）")
   void finishCommitUsesFinishUpdate() {
-    when(sessionRepository.applyFinish(anyString(), anyInt(), any(), any(), any(), any(), anyList()))
+    when(sessionRepository.applyFinish(anyString(), anyInt(), any(), any(), any(), anyInt(), any(), anyList()))
         .thenReturn(1);
     InterviewSessionEntity session = new InterviewSessionEntity();
     session.setSessionId("sid-turn");
@@ -204,15 +204,15 @@ class InterviewPersistenceServiceTest {
     newService().applyTurn(InterviewTurnCommit.ofFinish(
         "sid-turn", "req-finish-1", "hash", 4, "q-current", 1, "{}"));
 
-    verify(sessionRepository).applyFinish(anyString(), anyInt(), any(), any(), any(), any(), anyList());
+    verify(sessionRepository).applyFinish(anyString(), anyInt(), any(), any(), any(), anyInt(), any(), anyList());
     verify(sessionRepository, never())
-        .applyTurn(anyString(), anyInt(), any(), any(), anyInt(), any(), any(), anyList());
+        .applyTurn(anyString(), anyInt(), any(), any(), anyInt(), any(), anyInt(), any(), any(), anyList());
   }
 
   /** 一轮作答的提交命令（版本 2 → 3；P4-1：闸门与答案都用题目标识） */
   private static InterviewTurnCommit answerCommit() {
     return InterviewTurnCommit.ofTurn("sid-turn", "turn-req-0001", "ANSWER", "hash", 2,
-        "q-turn-1", 2, "q-turn-2", "q-turn-1", InterviewTurnDTO.ACTION_NEXT_MAIN, false,
+        "q-turn-1", 2, "q-turn-2", "q-turn-1", 120, InterviewTurnDTO.ACTION_NEXT_MAIN, false,
         1, "Q2", "Redis", "堆和栈……",
         InterviewAnswerEntity.AnswerState.ANSWERED, "{}");
   }

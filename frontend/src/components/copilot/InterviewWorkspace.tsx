@@ -79,6 +79,17 @@ export default function InterviewWorkspace({
   const [answer, setAnswer] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  /**
+   * 时间预算（P4Q-2）：服务端权威（只统计用户答题时间，模型等待不算）。
+   * 剩余 = 服务端 remaining − 本地自同步以来流逝的秒数；无计划的旧会话为 null。
+   */
+  const [budget, setBudget] = useState<{
+    planned: number | null;
+    consumed: number;
+    remaining: number | null;
+  } | null>(null);
+  /** 预算调整输入（P4Q-2）：用户说「只剩五分钟」时当轮生效 */
+  const [budgetDraft, setBudgetDraft] = useState<number | null>(null);
   const [summary, setSummary] = useState<{ overallScore: number; categoryScores: Array<{ category: string; score: number }> } | null>(null);
   // 本场带来的画像变化（P3 待收口）；拉取失败静默降级（结果卡本身不依赖它）
   const [impact, setImpact] = useState<ProfileImpact | null>(null);
@@ -112,6 +123,13 @@ export default function InterviewWorkspace({
       setMainQuestionIds(view.mainQuestionIds);
       setCandidateTotal(view.candidateTotal);
       setAdaptive(view.adaptive);
+      setBudget({
+        planned: s.plannedDurationMinutes ?? null,
+        consumed: s.consumedSeconds ?? 0,
+        remaining: s.remainingSeconds ?? null,
+      });
+      // 顶栏计时与会话状态同步：本地流逝秒数从零重新累计
+      setElapsed(0);
       // 会话推进版本跟随权威会话（P4-9a）：提交时原样回传，服务端据此拒绝过期请求
       turnSyncRef.current = syncVersionFromSession(turnSyncRef.current, s.turnVersion);
       if (s.status === 'COMPLETED' || s.status === 'EVALUATED') {
@@ -167,6 +185,13 @@ export default function InterviewWorkspace({
       });
       // 版本跟随服务端提交结果：下一次提交必须基于它，否则会被判成过期请求
       turnSyncRef.current = applyTurnResult(turnSyncRef.current, res.turnVersion);
+      // 预算随载荷刷新（P4Q-2）：本地计时清零，剩余从服务端权威值重新起算
+      setBudget((prev) =>
+        prev
+          ? { ...prev, consumed: res.consumedSeconds ?? prev.consumed, remaining: res.remainingSeconds ?? null }
+          : prev,
+      );
+      setElapsed(0);
       const next = res.hasNextQuestion ? res.nextQuestion : null;
       if (next) {
         setCurrent(next);
@@ -382,8 +407,45 @@ export default function InterviewWorkspace({
               <span className="tabular-nums">第 {current.questionIndex + 1} / {candidateTotal} 题</span>
             )
           )}
-          {!isDone && !isEvaluating && (
+          {!isDone && !isEvaluating && budget?.remaining != null && (
+            <span
+              className="inline-flex items-center gap-1 tabular-nums text-slate-500 dark:text-slate-400"
+              title="只统计答题时间，模型思考与等待不扣时"
+            >
+              <Clock className="h-3.5 w-3.5" />
+              剩余 {Math.max(0, Math.round((budget.remaining - elapsed) / 60))} 分钟
+            </span>
+          )}
+          {!isDone && !isEvaluating && budget?.remaining == null && (
             <span className="inline-flex items-center gap-1 tabular-nums"><Clock className="h-3.5 w-3.5" />{formatSeconds(elapsed)}</span>
+          )}
+          {!isDone && !isEvaluating && budget?.planned != null && budgetDraft != null && (
+            <input
+              type="number"
+              min={1}
+              max={120}
+              value={budgetDraft}
+              onChange={(event) => setBudgetDraft(Number(event.target.value))}
+              onBlur={() => {
+                if (budgetDraft && budgetDraft >= 1) {
+                  void interviewApi
+                    .updateBudget(mode.sessionId, budgetDraft)
+                    .then(() => void load());
+                }
+                setBudgetDraft(null);
+              }}
+              className="w-14 rounded-md border border-slate-200 px-1.5 py-0.5 text-xs tabular-nums dark:border-slate-700"
+              title="输入剩余分钟数后回车/失焦生效"
+            />
+          )}
+          {!isDone && !isEvaluating && budget?.planned != null && budgetDraft == null && (
+            <button
+              onClick={() => setBudgetDraft(Math.max(1, Math.round((budget.remaining ?? 0) / 60)))}
+              className="rounded-md px-1.5 py-0.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800"
+              title="告诉面试官你还剩多少时间（当轮生效）"
+            >
+              调整
+            </button>
           )}
           {isEvaluating && (
             <span className="inline-flex items-center gap-1 text-amber-500">

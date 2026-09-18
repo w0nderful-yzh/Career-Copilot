@@ -1,6 +1,8 @@
 package interview.guide.modules.interview.model;
 
+import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotNull;
 
 /**
  * 逐轮提交的 HTTP 入参（P4-9a）。
@@ -50,5 +52,13 @@ public final class InterviewTurnRequests {
         String requestId,
         @Min(value = 0, message = "会话版本无效")
         Integer expectedVersion
+    ) {}
+
+
+    /** 用户调整剩余时间的请求体（P4Q-2） */
+    public record BudgetBody(
+        @Min(value = 1, message = "剩余时间最少1分钟")
+        @Max(value = 120, message = "剩余时间最多120分钟")
+        int remainingMinutes
     ) {}
 }

@@ -104,6 +104,13 @@ export const interviewApi = {
    *
    * Java 侧不调模型、不追问、不计分、不产生画像证据——与「答错」严格区分。
    */
+  /** 用户调整剩余时间预算（P4Q-2）：当轮生效 */
+  async updateBudget(sessionId: string, remainingMinutes: number): Promise<void> {
+    await request.post<void>(`/api/interview/sessions/${sessionId}/budget`, {
+      remainingMinutes,
+    });
+  },
+
   async skipQuestion(
     sessionId: string,
     questionId: string,

@@ -42,8 +42,16 @@ export interface InterviewSession {
    * 提交下一轮时把它作为 expectedVersion 回传；服务端据此拒绝过期请求。
    */
   turnVersion?: number | null;
-  /** 结束原因（P4-1）：CANDIDATES_EXHAUSTED / USER_FINISHED；null = 未结束或历史场次 */
+  /** 结束原因（P4-1/P4Q-2）：CANDIDATES_EXHAUSTED / USER_FINISHED / COVERAGE_SATISFIED / BUDGET_EXHAUSTED */
   endReason?: string | null;
+  /** 预计时长（分钟，P4Q-2）；null = 旧会话未记录计划（不显示假预算） */
+  plannedDurationMinutes?: number | null;
+  /** 用户答题累计耗时（秒，P4Q-2）：不含模型等待与暂停 */
+  consumedSeconds?: number;
+  /** 剩余预算（秒，P4Q-2）；null = 无计划 */
+  remainingSeconds?: number | null;
+  /** 必要覆盖话题（P4Q-2）；空 = 未声明 */
+  requiredTopics?: string[];
 }
 
 /** 实际发生的一轮（P4-1）：候选素材之外唯一可信的面试轨迹 */
@@ -165,6 +173,10 @@ export interface SubmitAnswerResponse {
   totalQuestions: number;
   /** 推进后的会话版本（P4-9a）：下一次提交要原样回传 */
   turnVersion?: number;
+  /** 用户答题累计耗时（秒，P4Q-2）：随载荷带回，顶栏不必再发一次会话请求 */
+  consumedSeconds?: number;
+  /** 剩余预算（秒，P4Q-2）；null = 无计划 */
+  remainingSeconds?: number | null;
 }
 
 export interface CurrentQuestionResponse {

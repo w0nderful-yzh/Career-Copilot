@@ -150,7 +150,7 @@ class AdaptiveInterviewFlowTest {
       }
       return null;
     }).when(sessionCache).applyTurnState(
-        anyString(), anyList(), anyList(), anyInt(), any(), any(), any());
+        anyString(), anyList(), anyList(), anyInt(), any(), any(), any(), anyInt());
   }
 
   /** 进行中的会话实体（数据库权威那份） */

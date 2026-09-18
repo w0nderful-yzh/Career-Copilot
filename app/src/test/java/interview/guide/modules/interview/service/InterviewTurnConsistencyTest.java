@@ -162,7 +162,7 @@ class InterviewTurnConsistencyTest {
   @DisplayName("同标识重放：返回原结果，不再次落库也不再花模型调用")
   void replayReturnsStoredResultWithoutAdvancing() throws Exception {
     givenSession(0, 1);
-    SubmitAnswerResponse original = new SubmitAnswerResponse(true, null, 1, 2, 1);
+    SubmitAnswerResponse original = new SubmitAnswerResponse(true, null, 1, 2, 1, 60, 1140);
     when(persistenceService.findTurnRequest(SESSION, REQUEST_ID)).thenReturn(Optional.of(
         storedRecord("ANSWER", Q1, "堆和方法区……", objectMapper.writeValueAsString(original))));
 
@@ -181,7 +181,7 @@ class InterviewTurnConsistencyTest {
     givenSession(0, 1);
     when(persistenceService.findTurnRequest(SESSION, REQUEST_ID)).thenReturn(Optional.of(
         storedRecord("ANSWER", Q1, "原始答案", objectMapper.writeValueAsString(
-            new SubmitAnswerResponse(true, null, 1, 2, 1)))));
+            new SubmitAnswerResponse(true, null, 1, 2, 1, 60, 1140)))));
 
     assertThatThrownBy(() -> service.submitAnswer(
         new SubmitAnswerRequest(SESSION, Q1, 0, "换一个答案试试", REQUEST_ID, 0)))
@@ -233,7 +233,7 @@ class InterviewTurnConsistencyTest {
     when(persistenceService.findTurnRequest(SESSION, REQUEST_ID))
         .thenReturn(Optional.empty())
         .thenReturn(Optional.of(storedRecord("ANSWER", Q1, "堆和方法区……",
-            objectMapper.writeValueAsString(new SubmitAnswerResponse(false, null, 2, 2, 1)))));
+            objectMapper.writeValueAsString(new SubmitAnswerResponse(false, null, 2, 2, 1, 120, 1080)))));
 
     SubmitAnswerResponse response = service.submitAnswer(
         new SubmitAnswerRequest(SESSION, Q1, 0, "堆和方法区……", REQUEST_ID, 0));

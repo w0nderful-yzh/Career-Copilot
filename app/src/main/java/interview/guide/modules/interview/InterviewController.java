@@ -138,6 +138,18 @@ public class InterviewController {
     }
 
     /**
+     * 调整剩余时间预算（P4Q-2）：当轮生效。
+     */
+    @PostMapping("/api/interview/sessions/{sessionId}/budget")
+    public Result<Void> updateBudget(
+            @PathVariable String sessionId,
+            @Valid @RequestBody InterviewTurnRequests.BudgetBody body) {
+        log.info("调整面试预算: 会话{}, 剩余 {} 分钟", sessionId, body.remainingMinutes());
+        sessionService.updateBudget(sessionId, body.remainingMinutes());
+        return Result.success(null);
+    }
+
+    /**
      * 暂存答案（不进入下一题）
      */
     @PutMapping("/api/interview/sessions/{sessionId}/answers")

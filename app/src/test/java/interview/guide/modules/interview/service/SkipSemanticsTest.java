@@ -314,7 +314,7 @@ class SkipSemanticsTest {
     org.mockito.ArgumentCaptor<List<InterviewTurnDTO>> captor =
         org.mockito.ArgumentCaptor.forClass(List.class);
     verify(sessionCache).applyTurnState(eq("s10"), anyList(), captor.capture(), anyInt(),
-        any(), any(), any());
+        any(), any(), any(), anyInt());
     assertThat(captor.getValue().get(0).answerState())
         .as("缓存是进行中会话的读取来源，状态漏写会让跳过的轮次在刷新后消失")
         .isEqualTo(AnswerState.SKIPPED);
@@ -332,7 +332,7 @@ class SkipSemanticsTest {
 
     // 候选 + 轨迹 + 当前题 + 状态 + 版本一次写齐（P4-1 起不再分四次写）
     verify(sessionCache).applyTurnState(eq("s11"), anyList(), anyList(), anyInt(), any(),
-        any(), eq(1));
+        any(), eq(1), anyInt());
   }
 
   @Test

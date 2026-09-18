@@ -41,6 +41,16 @@ Java = System of Record；Python 只做编排，禁止直连业务库，业务�
 - DB 集成测试共用门控 `interview.guide.support.LocalDatabaseGate`。排查提示：
   `questions_json` 反序列化失败会被吞成 3001「会话不存在」。
 
+## 面试计划与预算（P4Q-2）
+- 计划单位 = **时长**（`planned_duration_minutes`，缺省 20）+ `required_topics`；
+  规模 = 时长/4（夹 3-12）；questionCount 是兼容字段（×4 分钟折算），不再决定规模。
+- **覆盖状态不落库**：由候选池 × 实际轨迹推导（落快照必漂移）；未声明必要覆盖时
+  「覆盖完成」不作收束条件。
+- 时间权威在服务端：`question_presented_at` → 提交时在同一次条件更新里累计
+  `consumed_seconds`（扣本轮模型评估耗时）；预算随推进响应带回；调整 = planned = 已用 + 声明剩余。
+- 收束优先级：必要覆盖完成 > 预算用尽 > 候选耗尽；`end_reason` 四值各自真实
+  （COVERAGE_SATISFIED / BUDGET_EXHAUSTED / CANDIDATES_EXHAUSTED / USER_FINISHED）。
+
 ## Tool 契约（ARCH-1）
 事实源 = Java `AgentToolRequests`；新增 Tool = 枚举 + record + dispatch 三处同改。改模型后按
 `docs/TodoList.md` 7.7 的命令重导出，并把 `docs/contracts/agent-tools.json` 复制进 Python 包内副本。

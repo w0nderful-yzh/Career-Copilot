@@ -2,6 +2,7 @@ package interview.guide.infrastructure.redis;
 
 import interview.guide.common.exception.BusinessException;
 import interview.guide.common.exception.ErrorCode;
+import interview.guide.modules.interview.model.InterviewPlan;
 import interview.guide.modules.interview.model.InterviewQuestionDTO;
 import interview.guide.modules.interview.model.InterviewTurnDTO;
 import interview.guide.modules.interview.model.InterviewSessionDTO.SessionStatus;
@@ -65,6 +66,12 @@ public class InterviewSessionCache {
         private int currentIndex;
         /** 当前待答题的稳定标识（P4-1）：定位与提交校验都基于它 */
         private String currentQuestionId;
+        /** 预计时长（分钟，P4Q-2）：计划未记录时为 null（旧会话） */
+        private Integer plannedDurationMinutes;
+        /** 必要覆盖话题（JSON 数组，P4Q-2） */
+        private String requiredTopicsJson;
+        /** 用户答题累计耗时（秒，P4Q-2）：不含模型等待 */
+        private Integer consumedSeconds = 0;
         private SessionStatus status;
         private Boolean adaptive = false;  // P4-3 是否自适应（逐题评估+决策选题）
         // P4Q-1 简历上下文的来源与版本（出题实际依据；供 DTO 展示与追溯，null = 未记录）
@@ -248,6 +255,36 @@ public class InterviewSessionCache {
     }
 
     /**
+     * 写入面试计划（P4Q-2）：创建链路在 saveSession 之后调用一次。
+     *
+     * <p>计划属于会话状态的一部分：顶栏展示与决策收束都要读它，
+     * 不放进缓存的话每次读取都得回源数据库。
+     */
+    public void applyPlan(String sessionId, InterviewPlan plan) {
+        getSession(sessionId).ifPresent(session -> {
+            session.setPlannedDurationMinutes(plan.plannedDurationMinutes());
+            try {
+                session.setRequiredTopicsJson(
+                    objectMapper.writeValueAsString(plan.requiredTopics()));
+            } catch (JacksonException e) {
+                log.warn("序列化必要覆盖失败，计划按无覆盖处理: sessionId={}", sessionId, e);
+            }
+            String key = buildSessionKey(sessionId);
+            redisService.set(key, session, SESSION_TTL);
+        });
+    }
+
+    /** 更新用户调整后的时间预算（P4Q-2）：planned = 已用 + 用户声明的剩余 */
+    public void applyBudgetOverride(String sessionId, int plannedMinutes, int consumedSeconds) {
+        getSession(sessionId).ifPresent(session -> {
+            session.setPlannedDurationMinutes(plannedMinutes);
+            session.setConsumedSeconds(consumedSeconds);
+            String key = buildSessionKey(sessionId);
+            redisService.set(key, session, SESSION_TTL);
+        });
+    }
+
+    /**
      * 一次性写回「本轮之后」的会话视图（P4-1）。
      *
      * <p>候选素材、实际轨迹、当前题标识 / 序号、状态、版本本来分五次写会各打一次 Redis，
@@ -255,7 +292,8 @@ public class InterviewSessionCache {
      */
     public void applyTurnState(String sessionId, List<InterviewQuestionDTO> candidates,
                                List<InterviewTurnDTO> turns, int currentIndex,
-                               String currentQuestionId, SessionStatus status, Integer turnVersion) {
+                               String currentQuestionId, SessionStatus status, Integer turnVersion,
+                               Integer consumedSeconds) {
         getSession(sessionId).ifPresent(session -> {
             try {
                 session.setQuestionsJson(objectMapper.writeValueAsString(candidates));
@@ -264,6 +302,9 @@ public class InterviewSessionCache {
                 session.setCurrentQuestionId(currentQuestionId);
                 session.setStatus(status);
                 session.setTurnVersion(turnVersion != null ? turnVersion : 0);
+                if (consumedSeconds != null) {
+                    session.setConsumedSeconds(consumedSeconds);
+                }
                 String key = buildSessionKey(sessionId);
                 redisService.set(key, session, SESSION_TTL);
                 if (!isUnfinishedStatus(status) && session.getResumeId() != null) {

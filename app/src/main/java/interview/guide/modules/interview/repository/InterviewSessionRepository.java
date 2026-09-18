@@ -80,6 +80,21 @@ public interface InterviewSessionRepository extends JpaRepository<InterviewSessi
     List<InterviewSessionEntity> findTop10ByResumeIdAndSkillIdOrderByCreatedAtDesc(Long resumeId, String skillId);
 
     /**
+     * 用户调整剩余时间预算（P4Q-2）：planned = 已用 + 用户声明的剩余，
+     * 因此「剩余五分钟」不是覆盖一个独立字段，而是收紧原计划——口径始终只有一条。
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+        UPDATE InterviewSessionEntity s
+           SET s.plannedDurationMinutes = :plannedMinutes
+         WHERE s.sessionId = :sessionId
+           AND s.status IN :activeStatuses
+        """)
+    int updateBudget(@Param("sessionId") String sessionId,
+                     @Param("plannedMinutes") int plannedMinutes,
+                     @Param("activeStatuses") List<SessionStatus> activeStatuses);
+
+    /**
      * 推进一轮（作答 / 跳过）的条件更新（P4-9a）。
      *
      * <p>这是逐轮提交的**唯一并发闸门**：只有「版本 = 提交方看到的版本」且「待答题 = 提交的那一题」
@@ -96,6 +111,8 @@ public interface InterviewSessionRepository extends JpaRepository<InterviewSessi
                s.currentQuestionId = :newQuestionId,
                s.currentQuestionIndex = :newIndex,
                s.status = :newStatus,
+               s.consumedSeconds = s.consumedSeconds + :answerSeconds,
+               s.questionPresentedAt = :presentedAt,
                s.completedAt = :completedAt
          WHERE s.sessionId = :sessionId
            AND s.turnVersion = :expectedVersion
@@ -108,6 +125,8 @@ public interface InterviewSessionRepository extends JpaRepository<InterviewSessi
                   @Param("newQuestionId") String newQuestionId,
                   @Param("newIndex") int newIndex,
                   @Param("newStatus") SessionStatus newStatus,
+                  @Param("answerSeconds") int answerSeconds,
+                  @Param("presentedAt") LocalDateTime presentedAt,
                   @Param("completedAt") LocalDateTime completedAt,
                   @Param("activeStatuses") List<SessionStatus> activeStatuses);
 
@@ -125,6 +144,8 @@ public interface InterviewSessionRepository extends JpaRepository<InterviewSessi
                s.currentQuestionId = :newQuestionId,
                s.currentQuestionIndex = :newIndex,
                s.status = :completedStatus,
+               s.consumedSeconds = s.consumedSeconds + :answerSeconds,
+               s.questionPresentedAt = NULL,
                s.completedAt = :completedAt,
                s.endReason = :endReason,
                s.evaluateStatus = :pending,
@@ -143,6 +164,7 @@ public interface InterviewSessionRepository extends JpaRepository<InterviewSessi
                                       @Param("completedStatus") SessionStatus completedStatus,
                                       @Param("pending") AsyncTaskStatus pending,
                                       @Param("endReason") String endReason,
+                                      @Param("answerSeconds") int answerSeconds,
                                       @Param("completedAt") LocalDateTime completedAt,
                                       @Param("activeStatuses") List<SessionStatus> activeStatuses);
 
@@ -155,6 +177,8 @@ public interface InterviewSessionRepository extends JpaRepository<InterviewSessi
         UPDATE InterviewSessionEntity s
            SET s.turnVersion = s.turnVersion + 1,
                s.status = :completedStatus,
+               s.consumedSeconds = s.consumedSeconds + :answerSeconds,
+               s.questionPresentedAt = NULL,
                s.completedAt = :completedAt,
                s.endReason = :endReason,
                s.evaluateStatus = :pending,
@@ -169,6 +193,7 @@ public interface InterviewSessionRepository extends JpaRepository<InterviewSessi
                     @Param("completedStatus") SessionStatus completedStatus,
                     @Param("pending") AsyncTaskStatus pending,
                     @Param("endReason") String endReason,
+                    @Param("answerSeconds") int answerSeconds,
                     @Param("completedAt") LocalDateTime completedAt,
                     @Param("activeStatuses") List<SessionStatus> activeStatuses);
 

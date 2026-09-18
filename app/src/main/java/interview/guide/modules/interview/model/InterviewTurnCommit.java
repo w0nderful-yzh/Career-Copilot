@@ -32,6 +32,8 @@ public record InterviewTurnCommit(
     String newQuestionId,
     String questionId,
     Integer turnOrdinal,
+    /** 本轮用户答题耗时（秒，P4Q-2）：展示→提交的墙钟扣除模型评估耗时；模型等待不扣 */
+    int answerSeconds,
     String decidedAction,
     boolean completing,
     Integer questionIndex,
@@ -50,14 +52,16 @@ public record InterviewTurnCommit(
                                              String payloadHash, int expectedVersion,
                                              String expectedQuestionId, int newIndex,
                                              String newQuestionId, String questionId,
-                                             String decidedAction, boolean completing,
+                                             int answerSeconds, String decidedAction,
+                                             boolean completing,
                                              int questionIndex, String question, String category,
                                              String answer,
                                              InterviewAnswerEntity.AnswerState answerState,
                                              String responseJson) {
         return new InterviewTurnCommit(sessionId, requestId, action, payloadHash, expectedVersion,
-            expectedQuestionId, newIndex, newQuestionId, questionId, null, decidedAction, completing,
-            questionIndex, question, category, answer, answerState, responseJson);
+            expectedQuestionId, newIndex, newQuestionId, questionId, null, answerSeconds,
+            decidedAction, completing, questionIndex, question, category, answer, answerState,
+            responseJson);
     }
 
     /**
@@ -71,13 +75,34 @@ public record InterviewTurnCommit(
                                                int expectedVersion, String expectedQuestionId,
                                                int currentIndex, String responseJson) {
         return new InterviewTurnCommit(sessionId, requestId, ACTION_COMPLETE, payloadHash,
-            expectedVersion, expectedQuestionId, currentIndex, expectedQuestionId, null, null,
+            expectedVersion, expectedQuestionId, currentIndex, expectedQuestionId, null, null, 0,
             InterviewTurnDTO.ACTION_FINISH_USER, true, null, null, null, null, null, responseJson);
     }
 
     /** 是否为「提前交卷」（不动当前题，只收束会话） */
     public boolean finishing() {
         return ACTION_COMPLETE.equals(action);
+    }
+
+    /**
+     * 本轮收束对应的结束原因（P4Q-2）：由决定反推，写入会话行。
+     *
+     * <p>未收束（还有下一题）返回 null；映射不到的收束动作按「候选耗尽」兜底——
+     * 这是唯一不依赖外部输入的原因，不会把一次异常渲染成「覆盖完成」。
+     */
+    public String decidedEndReason() {
+        if (!completing) {
+            return null;
+        }
+        return switch (decidedAction == null ? "" : decidedAction) {
+            case InterviewTurnDTO.ACTION_FINISH_COVERAGE ->
+                InterviewSessionEntity.END_COVERAGE_SATISFIED;
+            case InterviewTurnDTO.ACTION_FINISH_BUDGET ->
+                InterviewSessionEntity.END_BUDGET_EXHAUSTED;
+            case InterviewTurnDTO.ACTION_FINISH_USER ->
+                InterviewSessionEntity.END_USER_FINISHED;
+            default -> InterviewSessionEntity.END_CANDIDATES_EXHAUSTED;
+        };
     }
 
     /** 本轮是否要写入答案事实（结束动作只改会话状态） */

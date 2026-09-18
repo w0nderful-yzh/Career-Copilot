@@ -54,6 +54,10 @@ public record InterviewTurnDTO(
     public static final String ACTION_NEXT_MAIN = "NEXT_MAIN";
     /** 决定：候选素材已耗尽，面试结束 */
     public static final String ACTION_FINISH_EXHAUSTED = "FINISH_EXHAUSTED";
+    /** 决定：必要覆盖已完成（P4Q-2） */
+    public static final String ACTION_FINISH_COVERAGE = "FINISH_COVERAGE";
+    /** 决定：时间预算用尽（P4Q-2），只统计用户答题时间 */
+    public static final String ACTION_FINISH_BUDGET = "FINISH_BUDGET";
     /** 决定：用户主动结束 */
     public static final String ACTION_FINISH_USER = "FINISH_USER";
 

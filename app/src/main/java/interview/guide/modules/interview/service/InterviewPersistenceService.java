@@ -8,6 +8,7 @@ import interview.guide.infrastructure.redis.InterviewSessionCache;
 import interview.guide.modules.interview.model.HistoricalQuestion;
 import interview.guide.modules.interview.model.InterviewAnswerEntity;
 import interview.guide.modules.interview.model.InterviewQuestionDTO;
+import interview.guide.modules.interview.model.InterviewPlan;
 import interview.guide.modules.interview.model.InterviewQuestionIdentity;
 import interview.guide.modules.interview.model.InterviewReportDTO;
 import interview.guide.modules.interview.model.InterviewResumeContext;
@@ -146,8 +147,44 @@ public class InterviewPersistenceService {
                                                         String requestId,
                                                         boolean adaptive,
                                                         InterviewResumeContext resumeContext) {
+        return saveIdempotentSession(sessionId, resumeId, totalQuestions, questions, llmProvider,
+            skillId, difficulty, requestId, adaptive, resumeContext, null);
+    }
+
+    /**
+     * P4Q-2：带面试计划的幂等保存——创建链路的标准入口。
+     *
+     * <p>计划（时长 + 必要覆盖）与首题展示时刻在这里一起写入：时间记账的起点是
+     * 「第一题摆到用户面前」的那一刻，不是会话创建那一刻。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public InterviewSessionEntity saveIdempotentSession(String sessionId, Long resumeId,
+                                                        int totalQuestions,
+                                                        List<InterviewQuestionDTO> questions,
+                                                        String llmProvider,
+                                                        String skillId,
+                                                        String difficulty,
+                                                        String requestId,
+                                                        boolean adaptive,
+                                                        InterviewResumeContext resumeContext,
+                                                        InterviewPlan plan) {
         return saveSessionInternal(sessionId, resumeId, totalQuestions, questions, llmProvider,
-            skillId, difficulty, "NORMAL", null, null, requestId, adaptive, resumeContext);
+            skillId, difficulty, "NORMAL", null, null, requestId, adaptive, resumeContext, plan);
+    }
+
+    /** P4Q-2：带面试计划的保存（非幂等链路，如知识库面试） */
+    @Transactional(rollbackFor = Exception.class)
+    public InterviewSessionEntity saveSession(String sessionId, Long resumeId,
+                                              int totalQuestions,
+                                              List<InterviewQuestionDTO> questions,
+                                              String llmProvider,
+                                              String skillId,
+                                              String difficulty,
+                                              boolean adaptive,
+                                              InterviewResumeContext resumeContext,
+                                              InterviewPlan plan) {
+        return saveSessionInternal(sessionId, resumeId, totalQuestions, questions, llmProvider,
+            skillId, difficulty, "NORMAL", null, null, null, adaptive, resumeContext, plan);
     }
 
     private InterviewSessionEntity saveSessionInternal(String sessionId, Long resumeId,
@@ -162,6 +199,24 @@ public class InterviewPersistenceService {
                                                        String requestId,
                                                        boolean adaptive,
                                                        InterviewResumeContext resumeContext) {
+        return saveSessionInternal(sessionId, resumeId, totalQuestions, questions, llmProvider,
+            skillId, difficulty, sourceType, knowledgeBaseId, interviewCategory, requestId,
+            adaptive, resumeContext, null);
+    }
+
+    private InterviewSessionEntity saveSessionInternal(String sessionId, Long resumeId,
+                                                       int totalQuestions,
+                                                       List<InterviewQuestionDTO> questions,
+                                                       String llmProvider,
+                                                       String skillId,
+                                                       String difficulty,
+                                                       String sourceType,
+                                                       Long knowledgeBaseId,
+                                                       String interviewCategory,
+                                                       String requestId,
+                                                       boolean adaptive,
+                                                       InterviewResumeContext resumeContext,
+                                                       InterviewPlan plan) {
         try {
             InterviewSessionEntity session = new InterviewSessionEntity();
             session.setSessionId(sessionId);
@@ -173,6 +228,15 @@ public class InterviewPersistenceService {
             // P4-1：新会话的当前题标识 = 首个候选；没有候选的会话无从推进（保持 null）
             if (questions != null && !questions.isEmpty()) {
                 session.setCurrentQuestionId(questions.get(0).questionId());
+            }
+            // P4Q-2：计划（时长 + 必要覆盖）与首题展示时刻一起写入——
+            // 时间记账的起点是「第一题摆到用户面前」，不是会话创建那一刻
+            if (plan != null) {
+                session.setPlannedDurationMinutes(plan.plannedDurationMinutes());
+                session.setRequiredTopicsJson(objectMapper.writeValueAsString(plan.requiredTopics()));
+            }
+            if (questions != null && !questions.isEmpty()) {
+                session.setQuestionPresentedAt(LocalDateTime.now());
             }
             session.setLlmProvider(llmProvider != null ? llmProvider : "default");
             session.setSkillId(skillId != null ? skillId : InterviewDefaults.SKILL_ID);
@@ -307,22 +371,26 @@ public class InterviewPersistenceService {
         // 三种推进方式同一套闸门（版本 + 当前题标识 + 进行中状态），区别只在「是否换当前题」：
         // 提前交卷不动当前题，作答/跳过要移到下一题（最后一轮同时请求评估）
         int updated;
+        // P4Q-2：时间记账与推进同一次条件更新落地（否则「版本推进了但耗时没记」）；
+        // 有下一题才刷新展示时刻，收束后不再有「当前题」
+        LocalDateTime presentedAt = commit.newQuestionId() != null ? LocalDateTime.now() : null;
         if (commit.finishing()) {
             updated = sessionRepository.applyFinish(
                 sessionId, commit.expectedVersion(),
                 InterviewSessionEntity.SessionStatus.COMPLETED, AsyncTaskStatus.PENDING,
-                InterviewSessionEntity.END_USER_FINISHED, completedAt, ACTIVE_STATUSES);
+                InterviewSessionEntity.END_USER_FINISHED, commit.answerSeconds(),
+                completedAt, ACTIVE_STATUSES);
         } else if (commit.completing()) {
             updated = sessionRepository.applyTurnRequestingEvaluation(
                 sessionId, commit.expectedVersion(), commit.expectedQuestionId(), commit.newQuestionId(),
                 commit.newIndex(), InterviewSessionEntity.SessionStatus.COMPLETED,
-                AsyncTaskStatus.PENDING, InterviewSessionEntity.END_CANDIDATES_EXHAUSTED,
+                AsyncTaskStatus.PENDING, commit.decidedEndReason(), commit.answerSeconds(),
                 completedAt, ACTIVE_STATUSES);
         } else {
             updated = sessionRepository.applyTurn(
                 sessionId, commit.expectedVersion(), commit.expectedQuestionId(), commit.newQuestionId(),
                 commit.newIndex(), InterviewSessionEntity.SessionStatus.IN_PROGRESS,
-                completedAt, ACTIVE_STATUSES);
+                commit.answerSeconds(), presentedAt, completedAt, ACTIVE_STATUSES);
         }
 
         if (updated == 0) {
@@ -515,6 +583,24 @@ public class InterviewPersistenceService {
             question.questionId(), question.questionIndex(), null, null, question.question(),
             question.category(), answer, null, null,
             InterviewAnswerEntity.AnswerState.UNANSWERED));
+    }
+
+    /**
+     * 调整时间预算（P4Q-2）：planned = 已用 + 用户声明的剩余。
+     *
+     * @return 调整后的计划时长；会话不存在或已结束返回 empty
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public Optional<Integer> updateBudget(String sessionId, int remainingMinutes) {
+        List<InterviewSessionEntity.SessionStatus> active =
+            List.of(InterviewSessionEntity.SessionStatus.CREATED,
+                InterviewSessionEntity.SessionStatus.IN_PROGRESS);
+        int consumed = sessionRepository.findBySessionId(sessionId)
+            .map(entity -> entity.getConsumedSeconds() != null ? entity.getConsumedSeconds() : 0)
+            .orElse(0);
+        int plannedMinutes = (int) Math.round(consumed / 60.0) + Math.max(1, remainingMinutes);
+        int updated = sessionRepository.updateBudget(sessionId, plannedMinutes, active);
+        return updated > 0 ? Optional.of(plannedMinutes) : Optional.empty();
     }
 
     /**

@@ -91,7 +91,7 @@ class InterviewTurnConsistencyIntegrationTest {
                                                   boolean completing, String newQuestionId,
                                                   int newIndex, int expectedVersion) {
     return InterviewTurnCommit.ofTurn(sessionId, requestId, "ANSWER", "hash", expectedVersion,
-        expectedQuestionId, newIndex, newQuestionId, expectedQuestionId,
+        expectedQuestionId, newIndex, newQuestionId, expectedQuestionId, 120,
         completing ? InterviewTurnDTO.ACTION_FINISH_EXHAUSTED : InterviewTurnDTO.ACTION_NEXT_MAIN,
         completing, questionIndex, "E2E Q" + (questionIndex + 1), "Java", "作答内容",
         InterviewAnswerEntity.AnswerState.ANSWERED, "{}");

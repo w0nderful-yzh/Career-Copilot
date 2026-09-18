@@ -156,6 +156,40 @@ public class InterviewSessionEntity {
     public static final String END_CANDIDATES_EXHAUSTED = "CANDIDATES_EXHAUSTED";
     /** 用户主动结束（提前交卷 / 自然语言要求结束） */
     public static final String END_USER_FINISHED = "USER_FINISHED";
+    /** 必要覆盖已完成（P4Q-2）：与「候选耗尽」分开——前者是目标达成，后者是素材用完 */
+    public static final String END_COVERAGE_SATISFIED = "COVERAGE_SATISFIED";
+    /** 时间预算用尽（P4Q-2）：只统计用户答题时间，模型等待不算 */
+    public static final String END_BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED";
+
+    /**
+     * 预计时长（分钟，P4Q-2）：规模与收束判据都由它推导；NULL 表示旧会话未记录计划。
+     */
+    @Column(name = "planned_duration_minutes")
+    private Integer plannedDurationMinutes;
+
+    /**
+     * 必要覆盖的话题列表（P4Q-2，JSON 数组）。
+     *
+     * <p>覆盖**状态**不落库：候选池与实际轨迹足以还原「每个话题问没问、怎么答的」，
+     * 再存一份快照只会与轨迹漂移。这里只存「计划要求覆盖哪些话题」。
+     */
+    @Column(name = "required_topics_json", columnDefinition = "TEXT")
+    private String requiredTopicsJson;
+
+    /**
+     * 用户答题累计耗时（秒，P4Q-2）。
+     *
+     * <p>只记「题目展示 → 本轮提交」的墙钟并扣除本轮模型评估耗时——
+     * 模型/网络等待与暂停都不扣用户预算，否则「模型慢」会变成「用户超时」。
+     */
+    @Column(name = "consumed_seconds", nullable = false)
+    private Integer consumedSeconds = 0;
+
+    /**
+     * 当前题展示时刻（P4Q-2）：时间记账起点，提交时结算本轮耗时。
+     */
+    @Column(name = "question_presented_at")
+    private LocalDateTime questionPresentedAt;
 
     /**
      * 当前待答题的稳定标识（P4-1）。
@@ -429,6 +463,38 @@ public class InterviewSessionEntity {
 
     public void setEndReason(String endReason) {
         this.endReason = endReason;
+    }
+
+    public Integer getPlannedDurationMinutes() {
+        return plannedDurationMinutes;
+    }
+
+    public void setPlannedDurationMinutes(Integer plannedDurationMinutes) {
+        this.plannedDurationMinutes = plannedDurationMinutes;
+    }
+
+    public String getRequiredTopicsJson() {
+        return requiredTopicsJson;
+    }
+
+    public void setRequiredTopicsJson(String requiredTopicsJson) {
+        this.requiredTopicsJson = requiredTopicsJson;
+    }
+
+    public Integer getConsumedSeconds() {
+        return consumedSeconds;
+    }
+
+    public void setConsumedSeconds(Integer consumedSeconds) {
+        this.consumedSeconds = consumedSeconds != null ? consumedSeconds : 0;
+    }
+
+    public LocalDateTime getQuestionPresentedAt() {
+        return questionPresentedAt;
+    }
+
+    public void setQuestionPresentedAt(LocalDateTime questionPresentedAt) {
+        this.questionPresentedAt = questionPresentedAt;
     }
 
     public String getCurrentQuestionId() {

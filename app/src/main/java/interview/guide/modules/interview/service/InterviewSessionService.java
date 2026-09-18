@@ -9,6 +9,7 @@ import interview.guide.infrastructure.redis.InterviewSessionCache;
 import interview.guide.infrastructure.redis.InterviewSessionCache.CachedSession;
 import interview.guide.infrastructure.redis.RedisService;
 import interview.guide.modules.interview.listener.EvaluateStreamProducer;
+import interview.guide.modules.interview.listener.CandidateStreamProducer;
 import interview.guide.modules.interview.model.CreateInterviewRequest;
 import interview.guide.modules.interview.model.HistoricalQuestion;
 import interview.guide.modules.interview.model.InterviewAnswerEntity;
@@ -86,6 +87,13 @@ public class InterviewSessionService {
     private final TurnEvaluationService turnEvaluationService;
     private final InterviewResumeContextResolver resumeContextResolver;
     private final interview.guide.modules.profile.service.SkillProfileQueryService skillProfileQueryService;
+
+    /**
+     * 后台候选预备生产者（P4-4b）。可选依赖：用字段注入而不是进构造参数，以免
+     * 扰动逐轮提交一致性相关的现有测试构造点；单测（无 Spring 上下文）下为 null，自动跳过预备。
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private CandidateStreamProducer candidateStreamProducer;
 
     /** 逐轮基线里最多列几个相关技能（逐轮上下文吃 P95 预算，基线只是参照） */
     private static final int MAX_BASELINE_SKILLS = 3;
@@ -704,6 +712,10 @@ public class InterviewSessionService {
         InterviewQuestionDTO nextQuestion;
         AdaptiveInterviewPolicy.Decision decision;
         boolean coverageSatisfied = requiredCoverageSatisfied(candidates, askedIds, plan);
+        // P4-4b：本轮是否向候选池追加了生成题（需与推进同事务写回 questions_json）
+        boolean candidatesChanged = false;
+        String generatedQuestionId = null;
+        Integer newCandidateVersion = null;
         if (adaptive) {
             TurnEvaluation evaluation;
             if (answerState == InterviewAnswerEntity.AnswerState.ANSWERED) {
@@ -716,9 +728,24 @@ public class InterviewSessionService {
                     ? TurnEvaluation.skipped()
                     : TurnEvaluation.noAnswer();
             }
-            decision = AdaptiveInterviewPolicy.decideNext(
-                candidates, askedIds, question, evaluation, coverageSatisfied);
+            decision = AdaptiveInterviewPolicy.decideNext(candidates, askedIds, question, evaluation,
+                coverageSatisfied, questionService.getFollowUpBudget(), entity.getDifficultyPreference());
             nextQuestion = decision.nextQuestion();
+            // P4-4b：无合适候选但接纳了受限生成时，把生成题追加进候选池作为正式下一题；
+            // 它先只在内存，落库由下面的 commit 携带的 newQuestionsJson 完成，未落库前不对外承诺
+            if (decision.generated() != null && nextQuestion == null) {
+                InterviewQuestionDTO generated = buildGeneratedFollowUp(
+                    question, candidates, decision.generated(), entity.getDifficultyPreference(),
+                    entity.getCandidateVersion());
+                if (generated != null) {
+                    candidates = new ArrayList<>(candidates);
+                    candidates.add(generated);
+                    nextQuestion = generated;
+                    generatedQuestionId = generated.questionId();
+                    newCandidateVersion = generated.candidateVersion();
+                    candidatesChanged = true;
+                }
+            }
         } else {
             nextQuestion = nextUnasked(candidates, askedIds);
             decision = new AdaptiveInterviewPolicy.Decision(nextQuestion,
@@ -790,12 +817,18 @@ public class InterviewSessionService {
         SubmitAnswerResponse response = new SubmitAnswerResponse(hasNextQuestion, nextQuestion,
             nextIndex, candidates.size(), baseVersion + 1, consumedSeconds, remainingSeconds,
             transitionMessage);
-        InterviewTurnResult result = commitOrFail(InterviewTurnCommit.ofTurn(
+        InterviewTurnCommit commit = InterviewTurnCommit.ofTurn(
             sessionId, requestId, action, payloadHash, baseVersion,
             resolvedId, nextIndex, nextQuestionId, resolvedId,
             answerSeconds, decidedAction, decisionReason, transitionMessage,
             newStatus == SessionStatus.COMPLETED, question.questionIndex(), question.question(),
-            question.category(), answer, answerState, serializeTurnResponse(response)));
+            question.category(), answer, answerState, serializeTurnResponse(response));
+        // P4-4b：接纳生成题时把追加后的候选池一并写回（与推进同一个短事务）
+        if (candidatesChanged) {
+            commit = commit.withGenerated(serializeCandidates(candidates), generatedQuestionId,
+                newCandidateVersion);
+        }
+        InterviewTurnResult result = commitOrFail(commit);
 
         // 缓存跟随数据库提交：候选保持只读，轨迹追加本轮（序号用落库分配的那个）
         List<InterviewTurnDTO> updatedTurns = new ArrayList<>(turns);
@@ -805,6 +838,10 @@ public class InterviewSessionService {
             nextQuestionId, decisionReason, transitionMessage));
         sessionCache.applyTurnState(sessionId, candidates, updatedTurns, nextIndex, nextQuestionId,
             newStatus, result.turnVersion(), consumedSeconds);
+
+        // P4-4b：进入新的主问题且本组追问素材偏低时，按需投递后台预备（有界、非阻塞、代次闸门保护）
+        maybeEnqueueBackgroundPrep(sessionId, candidates, askedIds, nextQuestion,
+            candidatesChanged ? newCandidateVersion : entity.getCandidateVersion());
 
         log.info("会话 {} 记录轮次: 题目{}, state={}, adaptive={}, 决定={}, 已问候选 {}/{}",
             sessionId, resolvedId, answerState, adaptive, decidedAction,
@@ -1118,6 +1155,76 @@ public class InterviewSessionService {
         }
     }
 
+    /** 序列化追加生成题后的候选池（P4-4b）：与推进同一个短事务写回 questions_json */
+    private String serializeCandidates(List<InterviewQuestionDTO> candidates) {
+        try {
+            return objectMapper.writeValueAsString(candidates);
+        } catch (JacksonException e) {
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "序列化候选池失败");
+        }
+    }
+
+    /**
+     * 按需投递后台预备候选任务（P4-4b）。
+     *
+     * <p>只在「刚进入一个新主问题」且该组未问追问低于阈值时投递；携带当前候选代次，
+     * 供消费端回写前判过期。预备失败/丢失都不影响实时面试（同轮生成兑底）。
+     * 后台预备生产者为可选依赖：未注入（单测）或阈值为 0 时不预备。
+     */
+    private void maybeEnqueueBackgroundPrep(String sessionId, List<InterviewQuestionDTO> candidates,
+                                            Set<String> askedIds, InterviewQuestionDTO nextQuestion,
+                                            Integer currentCandidateVersion) {
+        if (candidateStreamProducer == null || nextQuestion == null || !nextQuestion.isMain()) {
+            return;
+        }
+        int threshold = questionService.getBackgroundPrepThreshold();
+        if (threshold <= 0) {
+            return;
+        }
+        long unaskedFollowUps = candidates.stream()
+            .filter(InterviewQuestionDTO::isFollowUp)
+            .filter(question -> nextQuestion.questionId().equals(question.parentQuestionId()))
+            .filter(question -> !askedIds.contains(question.questionId()))
+            .count();
+        if (unaskedFollowUps < threshold) {
+            long version = currentCandidateVersion == null ? 0L : currentCandidateVersion;
+            candidateStreamProducer.sendPrepTask(sessionId, nextQuestion.questionId(), version);
+        }
+    }
+
+    /**
+     * 把被接纳的受限生成追问构造成正式候选（P4-4b）。
+     *
+     * <p>挂到当前话题组（parentQuestionId = 所属主问题），追问序号 = 本组已有追问数 + 1，
+     * category / topic 继承当前题（不拼「（追问N）」伪技能，P4Q-6），来源标 MODEL_GENERATED
+     * 并盖上新的候选代次，便于后台预备结果据代次判过期。未落库前不对外展示。
+     */
+    private InterviewQuestionDTO buildGeneratedFollowUp(InterviewQuestionDTO answered,
+                                                        List<InterviewQuestionDTO> candidates,
+                                                        AdaptiveInterviewPolicy.GeneratedFollowUp generated,
+                                                        String difficultyPreference,
+                                                        Integer currentVersion) {
+        String groupId = answered.isFollowUp() ? answered.parentQuestionId() : answered.questionId();
+        if (groupId == null || groupId.isBlank()) {
+            return null;
+        }
+        int existingInGroup = (int) candidates.stream()
+            .filter(InterviewQuestionDTO::isFollowUp)
+            .filter(question -> groupId.equals(question.parentQuestionId()))
+            .count();
+        int newVersion = (currentVersion == null ? 0 : currentVersion) + 1;
+        List<String> expectedPoints = generated.expectedPoint() == null
+            || generated.expectedPoint().isBlank()
+            ? List.of() : List.of(generated.expectedPoint());
+        InterviewQuestionDTO built = InterviewQuestionDTO.createFollowUp(
+            candidates.size(), generated.question(), answered.type(), answered.category(),
+            groupId, existingInGroup + 1, InterviewQuestionDTO.FOLLOW_UP_DEPTH, expectedPoints);
+        // 保留当前题的话题归属，使顶栏覆盖与报告按同一话题统计
+        built = built.withFocus(answered.category(), answered.topic());
+        return built.withCandidateSource(InterviewQuestionDTO.CANDIDATE_SOURCE_MODEL_GENERATED,
+            newVersion);
+    }
+
     /** 占位键按「会话 + 请求标识」隔离：挡住的只有同一次提交的重复，不影响同一会话的其他操作 */
     private String turnInflightKey(String sessionId, String requestId) {
         return requestId == null ? null : TURN_INFLIGHT_PREFIX + sessionId + ":" + requestId;
@@ -1193,7 +1300,8 @@ public class InterviewSessionService {
             profileBaselineFor(question.category()),
             TurnEvaluationService.coverageSummaryFor(candidates, turns, question, plan),
             TurnEvaluationService.budgetSummaryFor(plan, evaluationRemainingSeconds(entity, plan),
-                TurnEvaluationService.remainingFollowUpsFor(candidates, turns, question)),
+                TurnEvaluationService.remainingFollowUpsFor(candidates, turns, question,
+                    questionService.getFollowUpBudget())),
             TurnEvaluationService.legalCandidatesFor(candidates, turns, question)));
     }
 
@@ -1264,6 +1372,25 @@ public class InterviewSessionService {
         }
         sessionCache.applyBudgetOverride(sessionId, planned.get(),
             baseConsumedSeconds(persistenceService.findBySessionId(sessionId).orElseThrow()));
+    }
+
+    /** 难度枚举合法值（P4Q-3c）：与会话整体难度口径一致 */
+    private static final Set<String> VALID_DIFFICULTY = Set.of("junior", "mid", "senior");
+
+    /**
+     * 显式难度调整（P4Q-3c）：写本场难度偏好，下一轮选题/生成立即生效，不调模型。
+     *
+     * <p>只影响本场（不写长期画像）；非法难度直接拒绝，不静默忽略用户指令。
+     */
+    public void updatePace(String sessionId, String difficulty) {
+        String normalized = difficulty == null ? "" : difficulty.trim().toLowerCase();
+        if (!VALID_DIFFICULTY.contains(normalized)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "难度只能是 junior/mid/senior");
+        }
+        if (!persistenceService.updateDifficultyPreference(sessionId, normalized)) {
+            throw new BusinessException(ErrorCode.INTERVIEW_SESSION_NOT_FOUND);
+        }
+        log.info("会话 {} 调整本场难度为 {}", sessionId, normalized);
     }
 
     /**

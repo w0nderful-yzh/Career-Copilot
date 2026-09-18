@@ -150,6 +150,18 @@ public class InterviewController {
     }
 
     /**
+     * 显式难度调整（P4Q-3c）：只改本场难度偏好，与跳过/预算同级的确定性节奏动作（不等模型）。
+     */
+    @PostMapping("/api/interview/sessions/{sessionId}/pace")
+    public Result<Void> updatePace(
+            @PathVariable String sessionId,
+            @Valid @RequestBody InterviewTurnRequests.PaceBody body) {
+        log.info("调整面试难度偏好: 会话{}, difficulty={}", sessionId, body.difficulty());
+        sessionService.updatePace(sessionId, body.difficulty());
+        return Result.success(null);
+    }
+
+    /**
      * 暂存答案（不进入下一题）
      */
     @PutMapping("/api/interview/sessions/{sessionId}/answers")

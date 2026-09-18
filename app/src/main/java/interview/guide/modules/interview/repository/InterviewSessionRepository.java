@@ -95,6 +95,20 @@ public interface InterviewSessionRepository extends JpaRepository<InterviewSessi
                      @Param("activeStatuses") List<SessionStatus> activeStatuses);
 
     /**
+     * 显式难度调整（P4Q-3c）：只改本场难度偏好，不推进版本/当前题。
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+        UPDATE InterviewSessionEntity s
+           SET s.difficultyPreference = :difficulty
+         WHERE s.sessionId = :sessionId
+           AND s.status IN :activeStatuses
+        """)
+    int updateDifficultyPreference(@Param("sessionId") String sessionId,
+                                   @Param("difficulty") String difficulty,
+                                   @Param("activeStatuses") List<SessionStatus> activeStatuses);
+
+    /**
      * 推进一轮（作答 / 跳过）的条件更新（P4-9a）。
      *
      * <p>这是逐轮提交的**唯一并发闸门**：只有「版本 = 提交方看到的版本」且「待答题 = 提交的那一题」
@@ -129,6 +143,46 @@ public interface InterviewSessionRepository extends JpaRepository<InterviewSessi
                   @Param("presentedAt") LocalDateTime presentedAt,
                   @Param("completedAt") LocalDateTime completedAt,
                   @Param("activeStatuses") List<SessionStatus> activeStatuses);
+
+    /**
+     * 写回受限生成后的候选池（P4-4b）：与 {@link #applyTurn} 同一个短事务调用。
+     *
+     * <p>只对「版本 = 本轮刚推进到的版本」的会话生效，保证推进与追加候选不分叉；
+     * 代次一并 +1，供后台预备结果据版本判过期失效。
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+        UPDATE InterviewSessionEntity s
+           SET s.questionsJson = :questionsJson,
+               s.candidateVersion = :candidateVersion
+         WHERE s.sessionId = :sessionId
+           AND s.turnVersion = :version
+        """)
+    int persistGeneratedCandidates(@Param("sessionId") String sessionId,
+                                   @Param("version") int version,
+                                   @Param("questionsJson") String questionsJson,
+                                   @Param("candidateVersion") Integer candidateVersion);
+
+    /**
+     * 后台预备候选回写（P4-4b）：**乐观代次闸门**。
+     *
+     * <p>只有「candidate_version = 投递时代次」且「会话仍进行中」才写回，否则说明用户已推进/
+     * 换话题/结束，晚到的后台结果直接失效，不覆盖已推进的会话。
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+        UPDATE InterviewSessionEntity s
+           SET s.questionsJson = :questionsJson,
+               s.candidateVersion = :newVersion
+         WHERE s.sessionId = :sessionId
+           AND s.candidateVersion = :expectedVersion
+           AND s.status IN :activeStatuses
+        """)
+    int appendBackgroundCandidates(@Param("sessionId") String sessionId,
+                                   @Param("expectedVersion") long expectedVersion,
+                                   @Param("questionsJson") String questionsJson,
+                                   @Param("newVersion") long newVersion,
+                                   @Param("activeStatuses") List<SessionStatus> activeStatuses);
 
     /**
      * 推进最后一轮并进入评估的条件更新（P4-9a）。

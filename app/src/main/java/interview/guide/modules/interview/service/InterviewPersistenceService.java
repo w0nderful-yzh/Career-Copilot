@@ -404,6 +404,9 @@ public class InterviewPersistenceService {
         // 条件更新绕过持久化上下文，必须重新加载才能拿到新版本
         InterviewSessionEntity session = sessionRepository.findBySessionId(sessionId)
             .orElseThrow(() -> new BusinessException(ErrorCode.INTERVIEW_SESSION_NOT_FOUND));
+        // 先捕获推进后的版本与代次：后续写可能再次清空持久化上下文（P4-4b 追加候选）
+        int resultVersion = session.getTurnVersion();
+        long resultEpoch = session.getEvaluateEpoch() != null ? session.getEvaluateEpoch() : 0L;
 
         int writtenOrdinal = 0;
         if (commit.writesAnswer()) {
@@ -430,12 +433,17 @@ public class InterviewPersistenceService {
             turnRequestRepository.save(record);
         }
 
+        // P4-4b：本轮接纳了受限生成时，在同一短事务内把新候选池写回（版本已由上面推进，据此命中）
+        if (commit.newQuestionsJson() != null) {
+            sessionRepository.persistGeneratedCandidates(
+                sessionId, resultVersion, commit.newQuestionsJson(), commit.newCandidateVersion());
+        }
+
         log.info("逐轮提交已落库: sessionId={}, action={}, question={}→{}, version={}, requestId={}",
             sessionId, commit.action(), commit.expectedQuestionId(), commit.newQuestionId(),
-            session.getTurnVersion(), commit.requestId());
+            resultVersion, commit.requestId());
 
-        return new InterviewTurnResult(session.getTurnVersion(),
-            session.getEvaluateEpoch() != null ? session.getEvaluateEpoch() : 0L, writtenOrdinal);
+        return new InterviewTurnResult(resultVersion, resultEpoch, writtenOrdinal);
     }
 
     /**
@@ -623,6 +631,28 @@ public class InterviewPersistenceService {
         int plannedMinutes = (int) Math.round(consumed / 60.0) + Math.max(1, remainingMinutes);
         int updated = sessionRepository.updateBudget(sessionId, plannedMinutes, active);
         return updated > 0 ? Optional.of(plannedMinutes) : Optional.empty();
+    }
+
+    /**
+     * 显式难度调整（P4Q-3c）：只写本场难度偏好，不推进版本/当前题。
+     *
+     * @return true = 会话存在且仍在进行中并已更新；false = 会话不存在或已结束
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public boolean updateDifficultyPreference(String sessionId, String difficulty) {
+        return sessionRepository.updateDifficultyPreference(sessionId, difficulty, ACTIVE_STATUSES) > 0;
+    }
+
+    /**
+     * 后台预备候选回写（P4-4b）：乐观代次闸门，版本不符（用户已推进/结束）则不写。
+     *
+     * @return true = 代次一致且会话进行中，已回写；false = 结果过期，丢弃
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public boolean appendBackgroundCandidates(String sessionId, long expectedVersion,
+                                              String questionsJson, long newVersion) {
+        return sessionRepository.appendBackgroundCandidates(
+            sessionId, expectedVersion, questionsJson, newVersion, ACTIVE_STATUSES) > 0;
     }
 
     /**

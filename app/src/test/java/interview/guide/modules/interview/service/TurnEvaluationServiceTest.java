@@ -106,6 +106,49 @@ class TurnEvaluationServiceTest {
   }
 
   @Test
+  @DisplayName("受限生成与节奏信号归一：生成题/考察点/依据与难度、停深挖进入决策输入（P4-4b/P4Q-3c）")
+  void normalizesGeneratedFollowUpAndRhythmSignals() {
+    TurnEvaluation evaluation = TurnEvaluationService.normalize(new TurnEvalDTO(
+        60, "PARTIAL", List.of("堆"), List.of("乱序回填"), "验证乱序回填", false,
+        "follow_up_generated", "", "缺少亲历细节", "",
+        " 你提到回填乱序，当时怎么定位的？ ", " 定位过程 ", " 回填乱序 ", " harder ", true));
+
+    assertThat(evaluation.recommendedAction()).isEqualTo(RecommendedAction.FOLLOW_UP_GENERATED);
+    assertThat(evaluation.generatedFollowUp()).isEqualTo("你提到回填乱序，当时怎么定位的？");
+    assertThat(evaluation.generatedExpectedPoint()).isEqualTo("定位过程");
+    assertThat(evaluation.generatedAnswerBasis()).isEqualTo("回填乱序");
+    assertThat(evaluation.difficultyAdjust()).isEqualTo(TurnEvaluation.DifficultyAdjust.HARDER);
+    assertThat(evaluation.stopDeepDive()).isTrue();
+  }
+
+  @Test
+  @DisplayName("含实质内容的技术判断不会被误判为跳过（P4Q-3c）")
+  void technicalJudgementIsNotSkipped() {
+    // 「不会发生死锁」是技术判断，不是跳过指令：短路词表精确匹配，它不该短路
+    assertThat(TurnEvaluationService.shortCircuit("不会发生死锁")).isNull();
+    assertThat(TurnEvaluationService.isNoAnswerPhrase("不会发生死锁")).isFalse();
+  }
+
+  @Test
+  @DisplayName("追问预算：候选容量大于每组上限时只按剩余预算给出（P4-4b）")
+  void remainingFollowUpsClampedByPerGroupBudget() {
+    InterviewQuestionDTO main = InterviewQuestionDTO.createMain(
+        0, "Q1", "JVM", "JVM", "", 3, List.of()).withQuestionId("q-m");
+    InterviewQuestionDTO f1 = InterviewQuestionDTO.createFollowUp(
+        1, "F1", "JVM", "JVM", "q-m", 1, "DEPTH", List.of()).withQuestionId("q-f1");
+    InterviewQuestionDTO f2 = InterviewQuestionDTO.createFollowUp(
+        2, "F2", "JVM", "JVM", "q-m", 2, "WHY", List.of()).withQuestionId("q-f2");
+    InterviewQuestionDTO f3 = InterviewQuestionDTO.createFollowUp(
+        3, "F3", "JVM", "JVM", "q-m", 3, "SCENARIO", List.of()).withQuestionId("q-f3");
+    List<InterviewQuestionDTO> pool = List.of(main, f1, f2, f3);
+
+    // 未问过：本组 3 条未问，每组上限 2 → 预算 2
+    assertThat(TurnEvaluationService.remainingFollowUpsFor(pool, List.of(), main, 2)).isEqualTo(2);
+    // 上限 0：不限制，按未问候选数
+    assertThat(TurnEvaluationService.remainingFollowUpsFor(pool, List.of(), main, 0)).isEqualTo(3);
+  }
+
+  @Test
   @DisplayName("分数越界时夹取到 0-100，状态缺失时按分数推导")
   void clampsScoreAndDerivesStateWhenStateMissing() throws Exception {
     TurnEvalDTO high = new TurnEvalDTO(120, null, List.of(), List.of(), "", null);

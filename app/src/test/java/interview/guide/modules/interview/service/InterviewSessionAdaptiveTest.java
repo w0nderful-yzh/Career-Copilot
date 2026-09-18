@@ -16,6 +16,7 @@ import interview.guide.modules.interview.model.SubmitAnswerRequest;
 import interview.guide.modules.interview.model.SubmitAnswerResponse;
 import interview.guide.modules.interview.model.TurnEvaluation;
 import interview.guide.modules.interview.model.TurnEvaluation.AnswerState;
+import interview.guide.modules.interview.model.TurnEvaluation.DifficultyAdjust;
 import interview.guide.modules.interview.model.TurnEvaluation.RecommendedAction;
 import interview.guide.modules.interview.model.TurnEvaluationRequest;
 import org.junit.jupiter.api.BeforeEach;
@@ -227,6 +228,35 @@ class InterviewSessionAdaptiveTest {
     assertThat(committed.newQuestionId()).isEqualTo("q-a3");
     assertThat(committed.decisionReason()).isEqualTo("分代机制仍需验证");
     assertThat(committed.transitionMessage()).isEqualTo("我们继续看一下分代机制。");
+  }
+
+  @Test
+  @DisplayName("无合适候选时受限生成：生成题追加进候选池并随提交一并落库（P4-4b）")
+  void restrictedGenerationIsAppendedToCandidatesAndPersisted() {
+    List<InterviewQuestionDTO> questions = linearSession();
+    givenSession(questions, 0, true);
+    when(turnEvaluationService.evaluateTurn(any(), any())).thenReturn(new TurnEvaluation(
+        60, 0.5, List.of("堆"), List.of("乱序回填"), AnswerState.PARTIAL, "验证乱序回填",
+        true, false, RecommendedAction.FOLLOW_UP_GENERATED, "", "缺少亲历细节", "我们顺着你的回答问一句",
+        "你提到回填乱序，当时是怎么定位到这个顺序问题的？", "定位过程", "回填乱序",
+        DifficultyAdjust.NONE, false));
+
+    SubmitAnswerResponse response = service.submitAnswer(
+        new SubmitAnswerRequest(SESSION, 0, "缓存有个回填乱序的问题……"));
+
+    // 生成题成为正式下一题，带来源标记
+    assertThat(response.hasNextQuestion()).isTrue();
+    assertThat(response.nextQuestion().isFollowUp()).isTrue();
+    assertThat(response.nextQuestion().candidateSource())
+        .isEqualTo(InterviewQuestionDTO.CANDIDATE_SOURCE_MODEL_GENERATED);
+    assertThat(response.nextQuestion().question()).contains("定位");
+    // 提交命令携带追加后的候选池与新代次，生成题挂到当前主问题组
+    assertThat(committed.newQuestionsJson()).isNotNull();
+    assertThat(committed.generatedQuestionId())
+        .isEqualTo(response.nextQuestion().questionId());
+    assertThat(committed.newCandidateVersion()).isEqualTo(1);
+    assertThat(committed.newQuestionsJson()).contains("回填乱序");
+    assertThat(committed.decidedAction()).isEqualTo(InterviewTurnDTO.ACTION_FOLLOW_UP);
   }
 
   @Test

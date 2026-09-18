@@ -363,3 +363,28 @@ test('toInterviewerTurn 只搬运展示字段，不带答案', () => {
     followUpIndex: null,
   });
 });
+
+test('受限生成的追问在刷新恢复后出现在实际轨迹（P4-4b/P4-8b）', () => {
+  // 生成题已落进候选池（带来源标记）并发生了一轮作答 → 恢复视图应按题目标识合并出该轮
+  const main = candidate({ questionIndex: 0, questionId: 'q-main', question: '讲讲缓存' });
+  const generated = candidate({
+    questionIndex: 1,
+    questionId: 'q-gen',
+    question: '你提到的回填乱序是怎么定位的？',
+    isFollowUp: true,
+    parentQuestionId: 'q-main',
+    candidateSource: 'MODEL_GENERATED',
+  });
+  const view = deriveInterviewView(
+    session({
+      candidates: [main, generated],
+      turns: [turn({ questionId: 'q-main', userAnswer: '缓存有回填乱序' }),
+        turn({ questionId: 'q-gen', ordinal: 2, userAnswer: '通过日志定位' })],
+      currentQuestionId: null,
+      currentQuestion: null,
+    }),
+  );
+
+  const interviewerTurns = view.turns.filter((item) => item.role === 'interviewer');
+  assert.ok(interviewerTurns.some((item) => item.questionId === 'q-gen' && item.isFollowUp));
+});

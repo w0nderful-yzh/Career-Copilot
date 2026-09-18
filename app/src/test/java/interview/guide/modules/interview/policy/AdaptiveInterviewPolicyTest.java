@@ -3,6 +3,7 @@ package interview.guide.modules.interview.policy;
 import interview.guide.modules.interview.model.InterviewQuestionDTO;
 import interview.guide.modules.interview.model.TurnEvaluation;
 import interview.guide.modules.interview.model.TurnEvaluation.AnswerState;
+import interview.guide.modules.interview.model.TurnEvaluation.DifficultyAdjust;
 import interview.guide.modules.interview.model.TurnEvaluation.RecommendedAction;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -233,5 +234,106 @@ class AdaptiveInterviewPolicyTest {
     assertThat(accepted.nextQuestion()).isNull();
     assertThat(accepted.finishRecommended()).isTrue();
     assertThat(accepted.transitionMessage()).isEqualTo("这场面试到这里。");
+  }
+
+  // ===== P4-4b / P4Q-3c =====
+
+  private static TurnEvaluation generated(String text, String point, String basis) {
+    return new TurnEvaluation(60, 0.5, List.of("堆"), List.of("乱序回填"), AnswerState.PARTIAL,
+        "验证乱序回填", true, false, RecommendedAction.FOLLOW_UP_GENERATED, "", "缺少亲历细节",
+        "", text, point, basis, DifficultyAdjust.NONE, false);
+  }
+
+  @Test
+  @DisplayName("没有合适候选且带考察点/回答依据时接纳受限生成")
+  void acceptsRestrictedGenerationWhenNoCandidateFits() {
+    List<InterviewQuestionDTO> questions = twoTopicSession();
+    InterviewQuestionDTO main = questions.getFirst();
+
+    AdaptiveInterviewPolicy.Decision decision = AdaptiveInterviewPolicy.decideNext(
+        questions, Set.of(main.questionId()), main,
+        generated("你说回填乱序，当时是怎么定位到这个顺序问题的？", "定位过程", "回填乱序"),
+        false, 2, null);
+
+    assertThat(decision.generated()).isNotNull();
+    assertThat(decision.generated().question()).contains("定位");
+    assertThat(decision.generated().answerBasis()).isEqualTo("回填乱序");
+    assertThat(decision.nextQuestion()).isNull();
+    assertThat(decision.recommendationAccepted()).isTrue();
+  }
+
+  @Test
+  @DisplayName("生成缺少回答依据时不生成，退回本组合适候选")
+  void rejectsGenerationWithoutAnswerBasis() {
+    List<InterviewQuestionDTO> questions = twoTopicSession();
+    InterviewQuestionDTO main = questions.getFirst();
+
+    AdaptiveInterviewPolicy.Decision decision = AdaptiveInterviewPolicy.decideNext(
+        questions, Set.of(main.questionId()), main,
+        generated("随便一个问题？", "考察点", ""),
+        false, 2, null);
+
+    assertThat(decision.generated()).isNull();
+    assertThat(decision.nextQuestion().question()).isEqualTo("F1a: 堆区如何分代？");
+  }
+
+  @Test
+  @DisplayName("追问预算用尽时不再消费本组未问候选，切下一主问题（候选容量≠预算）")
+  void followUpBudgetCapStopsConsumingGroup() {
+    List<InterviewQuestionDTO> questions = twoTopicSession();
+    InterviewQuestionDTO main = questions.getFirst();
+    InterviewQuestionDTO firstFollowUp = questions.get(1);
+    // 本组已问一条追问，每组上限=1 → F1b 仍在池但不再追问
+    Set<String> asked = Set.of(main.questionId(), firstFollowUp.questionId());
+
+    AdaptiveInterviewPolicy.Decision decision = AdaptiveInterviewPolicy.decideNext(
+        questions, asked, firstFollowUp, eval(AnswerState.GOOD), false, 1, null);
+
+    assertThat(decision.nextQuestion().question()).isEqualTo("Q2: Redis 持久化？");
+    assertThat(decision.nextQuestion().isFollowUp()).isFalse();
+  }
+
+  @Test
+  @DisplayName("明确要求停止深挖时软转场到下一主问题，不当成答不上")
+  void stopDeepDiveSoftTransitionsKeepingEvidence() {
+    List<InterviewQuestionDTO> questions = twoTopicSession();
+    InterviewQuestionDTO main = questions.getFirst();
+    TurnEvaluation evaluation = new TurnEvaluation(
+        70, 0.6, List.of("堆"), List.of("栈"), AnswerState.GOOD, "还想深挖",
+        true, false, RecommendedAction.FOLLOW_UP, questions.get(1).questionId(),
+        "先聊到这", "", "", "", "", DifficultyAdjust.NONE, true);
+
+    AdaptiveInterviewPolicy.Decision decision = AdaptiveInterviewPolicy.decideNext(
+        questions, Set.of(main.questionId()), main, evaluation, false, 2, null);
+
+    assertThat(decision.nextQuestion().question()).isEqualTo("Q2: Redis 持久化？");
+    assertThat(decision.reason()).contains("停止深挖");
+    assertThat(decision.recommendationAccepted()).isFalse();
+  }
+
+  @Test
+  @DisplayName("难度偏好让转场优先选择接近该难度的主问题")
+  void difficultyPreferenceBiasesNextMain() {
+    InterviewQuestionDTO answered = InterviewQuestionDTO.createMain(
+        0, "开场题", "GENERAL", "综合", "", 3, List.of());
+    InterviewQuestionDTO easyMain = InterviewQuestionDTO.createMain(
+        1, "基础主问题", "JVM", "JVM", "", 2, List.of());
+    InterviewQuestionDTO hardMain = InterviewQuestionDTO.createMain(
+        2, "进阶主问题", "REDIS", "Redis", "", 5, List.of());
+    List<InterviewQuestionDTO> questions = List.of(answered, easyMain, hardMain);
+    Set<String> asked = Set.of(answered.questionId());
+    TurnEvaluation evaluation = new TurnEvaluation(
+        88, 1.0, List.of(), List.of(), AnswerState.EXCELLENT, "",
+        true, false, RecommendedAction.NEXT_MAIN, null, "换题", "", "", "", "",
+        DifficultyAdjust.NONE, false);
+
+    AdaptiveInterviewPolicy.Decision senior = AdaptiveInterviewPolicy.decideNext(
+        questions, asked, answered, evaluation, false, 2, "senior");
+    AdaptiveInterviewPolicy.Decision none = AdaptiveInterviewPolicy.decideNext(
+        questions, asked, answered, evaluation, false, 2, null);
+
+    // senior(基线4) 偏好进阶题；无偏好按顺序取基础题
+    assertThat(senior.nextQuestion().question()).isEqualTo("进阶主问题");
+    assertThat(none.nextQuestion().question()).isEqualTo("基础主问题");
   }
 }

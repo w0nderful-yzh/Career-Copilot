@@ -231,10 +231,10 @@ React 展示本轮结果与下一步
 
 ### 4.5 贯穿各批的文档与可靠性验收
 
-- [ ] **DOC-1 架构与协议同步**：每批修改同步面试设计、前端协议及相关规则；保留 Java 业务权威与实时循环边界，移除固定题数、固定配额与列表耗尽即结束等过时约束。
-- [ ] **契约行为回归**：随字段落地验证时间预算、节奏动作、版本和请求标识真正影响业务；继续守住简历与 focus 的既有契约。
-- [ ] **可靠性回归**：缓存旧状态、报告失败、重复提交、并发结束、晚到模型结果、历史数据修复及画像重算均有断言；Redis 特定行为用真实 Redis 验证。
-- [ ] **P6-1 异步与失败体验统一**：剩余异步流程统一 loading / failed / retry / completed 和超时出口；区分加载失败、空结果、用户停止及依赖失败；跨会话、刷新与重试不丢状态或重复写入。
+- [x] **DOC-1 架构与协议同步**（见 7.20）：每批修改同步面试设计、前端协议及相关规则；保留 Java 业务权威与实时循环边界，移除固定题数、固定配额与列表耗尽即结束等过时约束。
+- [x] **契约行为回归**（见 7.20）：随字段落地验证时间预算、节奏动作、版本和请求标识真正影响业务；继续守住简历与 focus 的既有契约。
+- [x] **可靠性回归**（见 7.20）：缓存旧状态、报告失败、重复提交、并发结束、晚到模型结果、历史数据修复及画像重算均有断言；Redis 特定行为用真实 Redis 验证。
+- [ ] **P6-1 异步与失败体验统一**（第一批已完成，见 7.20）：剩余异步流程统一 loading / failed / retry / completed 和超时出口；区分加载失败、空结果、用户停止及依赖失败；跨会话、刷新与重试不丢状态或重复写入。
 
 ### 4.6 面试闭环稳定后：简历闭环与产品收尾
 
@@ -360,6 +360,48 @@ POST /api/profile/repair/skip-semantics     复核「已标记作答但得 0 分
 - [x] **创建面试请求幂等透传**：前端确认流程生成稳定 requestId，Python 传至 Java；配置变化换新标识。此项仅覆盖创建，逐轮提交一致性见 P4-9a。
 - [x] **ARCH-2a Python 执行器与 Prompt 治理**：模型调用收敛到 LlmExecutor，结构化解析与契约校验、错误分类、结果状态、逻辑尝试次数和耗时可观测；Prompt 资源具有 ID 与版本，流式不由执行器重放。
   - 每操作共享截止时间、底层 SDK 重试配置及 Java 实时评估治理已在 ARCH-2b 收口（见 7.9）；端到端延迟是否达标仍需实测，见 P4-9b，不能据此宣称延迟已满足目标。
+
+### 7.20 文档同步与可靠性回归（DOC-1 / 契约行为回归 / 可靠性回归）
+
+- [x] **DOC-1 文档同步**：设计文档三处过时约束改为落地口径——
+  §4 稳定性边界去掉「题目数量」，补齐追问预算 / 必要覆盖 / 「模型等待不计时间」；
+  §38 会话状态示例换成真实字段（plannedDurationMinutes / consumedSeconds / requiredTopics /
+  focusCategories / candidateVersion），并写明「候选素材与实际轮次分离、计数与覆盖实时推导」；
+  追问上限伪代码补上「运行期预算 = min(组内未问候选, 上限 − 已问)」。
+  另按 `固定题数 / 题数配额 / 列表耗尽 / currentQuestionIndex / questions_json / totalQuestions`
+  全量扫描 docs 与 `.claude/rules/`，除 TodoList 的历史记录外无残留。
+- [x] **契约行为回归（字段真的影响业务）**：新增 `InterviewPlanBoundaryTest` 5 例——
+  预算用尽按 `BUDGET_EXHAUSTED` 收束且不再出下一题、**覆盖达标且模型建议收束**才按
+  `COVERAGE_SATISFIED` 结束、覆盖达标但模型没建议收束时继续推进（覆盖不单独掐断面试）、
+  覆盖未完成正常推进、旧会话无计划不被新边界误伤。
+  顺带确认了收束语义的真实形状：**模型建议 + Java 覆盖校验**是「与」关系，不是覆盖单独触发。
+- [x] **可靠性回归**：新增 `RedisSessionCacheIntegrationTest`（真实 Redis，3 例）——
+  候选 / 轨迹 / 计划 / 耗时穿过 Redisson 编解码往返（P4-1、P4Q-2、P5-2 新增字段一漏就丢）、
+  会话键有 TTL、缓存缺失返回空而非抛错；配套新增 `LocalRedisGate`（Redis 不可达整类跳过，
+  与 LocalDatabaseGate 同一套判据；@SpringBootTest 启动仍需数据库，故判据是二者同时可用）。
+  晚到模型结果补上断言（`InterviewTurnConsistencyIntegrationTest` 新增 1 例）：
+  当前代次可领取（同代次重投＝重试路径仍允许）、**旧代次被丢弃**、报告已完成后不再领取。
+  缓存旧状态 / 报告失败 / 重复提交 / 并发结束 / 历史修复 / 画像重算由既有测试覆盖。
+- [x] **已验证**（2026-09-20，本机）：`:app:test` 全绿（含真实 DB 与真实 Redis 两类集成测试）；
+  Python `ruff` / `mypy` / `pytest` 159 通过；前端 `build` + 13 个 `test:*`（76 例）+ `test:e2e` 14 例全绿。
+- [~] **P6-1 异步与失败体验统一（批 1：共享判据 + 三条流程接入）**：
+  审计结论——各异步流程**各自实现状态语义**（约 15 处渲染点），没有共同的失败判据。
+  批 1 落地：
+  - 新增 `utils/asyncFlow.ts` 统一契约：五种失败**彼此不混**（`task_failed` 任务本身失败 /
+    `dependency_failed` 依赖服务不可用 / `timeout` 等待超阈值 / `load_failed` 界面取数失败 /
+    `user_stopped` 用户主动停止），`retryable` 按类别决定（用户停止不给重试），
+    `isStuck` 卡住判据带统一阈值 `DEFAULT_STUCK_AFTER_MS`（2 分钟）且**没有时间戳不猜**。
+  - 三条流程接入并保留原 API：`questionGenerationStatus`（新增等待超时出口：任务卡住从
+    「生成中」转为可重试提示；`FAILED` 带统一判据且**不回显 backend error**——可能含连接串）、
+    `voiceEvaluationStatus`（阈值改用统一常量、失败判据区分「任务失败 vs 等待超时」）、
+    `knowledgeBaseInterviewCompletion`（失败带 retryable + 判据）。
+  - UI 接线：题目生成页的重试出口从「仅 FAILED」改为按统一判据（覆盖等待超时）。
+  - 测试：新增 `asyncFlow.test.ts`（4 例）+ 三处既有断言补判据（共 81 前端单测），
+    脚本 `test:async-flow` 已注册进 CI。
+  - 已验证（2026-09-20，本机）：前端 `build` + 14 个 `test:*`（81 例）+ `test:e2e` 14 例全绿。
+  - 剩余（批 2）：`AnalysisPanel`（简历分析）、`KnowledgeBaseManagePage`（向量化）、
+    `HistoryList` / `InterviewHistoryPage`、`evaluatePolling` 与 copilot 消息态逐处换用共享判据；
+    「跨会话 / 刷新 / 重试不丢状态不重复写入」的断言属各流程既有测试，随批 2 逐处核对。
 
 ### 7.19 三个闭环：画像可追溯、Copilot 串联、面试 E2E（P5-2 / P5-3 / P6-4）
 

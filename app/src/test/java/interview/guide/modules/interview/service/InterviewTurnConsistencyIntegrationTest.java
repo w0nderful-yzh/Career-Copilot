@@ -12,6 +12,7 @@ import interview.guide.modules.interview.model.InterviewSessionEntity;
 import interview.guide.modules.interview.model.InterviewTurnCommit;
 import interview.guide.modules.interview.model.InterviewTurnDTO;
 import interview.guide.modules.interview.model.InterviewTurnResult;
+import interview.guide.modules.interview.repository.InterviewSessionRepository;
 import interview.guide.support.LocalDatabaseGate;
 import java.util.List;
 import org.junit.jupiter.api.DisplayName;
@@ -57,6 +58,10 @@ class InterviewTurnConsistencyIntegrationTest {
 
   @Autowired
   private InterviewPersistenceService persistenceService;
+
+  /** 模拟消费端完成评估：真实链路里由评估 Stream 消费端写状态 */
+  @Autowired
+  private InterviewSessionRepository sessionRepository;
 
   private static List<InterviewQuestionDTO> questions() {
     return List.of(
@@ -207,5 +212,31 @@ class InterviewTurnConsistencyIntegrationTest {
     assertThat(after.getEndReason()).isEqualTo(InterviewSessionEntity.END_USER_FINISHED);
     assertThat(after.getTurnVersion()).isEqualTo(1);
     assertThat(persistenceService.findTurnsBySessionId(sessionId)).isEmpty();
+  }
+
+  @Test
+  @DisplayName("评估触发按代次领取：旧代次与已完成都被拒（晚到模型结果不重复计算）")
+  void staleEvaluationTriggerIsDiscarded() {
+    String sessionId = "e2e-turn-epoch-0005";
+    List<InterviewQuestionDTO> candidates = seedSession(sessionId);
+    String first = candidates.get(0).questionId();
+
+    // 一轮收束：会话进入 COMPLETED、评估状态 PENDING、代次 +1
+    persistenceService.applyTurn(
+        answerCommit(sessionId, "req-epoch-1", first, 0, true, null, 2, 0));
+    assertThat(persistenceService.findEvaluateEpoch(sessionId)).contains(1L);
+
+    // 当前代次可领取（消费端原子领取）
+    assertThat(persistenceService.claimEvaluation(sessionId, 1L)).isTrue();
+    // 同一代次再次投递（失败重试路径）仍可领取：重试是刻意允许的
+    assertThat(persistenceService.claimEvaluation(sessionId, 1L)).isTrue();
+    // **旧代次的晚到触发被丢弃**：否则一次重试会写出第二份报告
+    assertThat(persistenceService.claimEvaluation(sessionId, 0L)).isFalse();
+
+    // 报告已完成后不再领取：不会重复计算已有结果
+    InterviewSessionEntity finished = persistenceService.findBySessionId(sessionId).orElseThrow();
+    finished.setEvaluateStatus(AsyncTaskStatus.COMPLETED);
+    sessionRepository.save(finished);
+    assertThat(persistenceService.claimEvaluation(sessionId, 1L)).isFalse();
   }
 }

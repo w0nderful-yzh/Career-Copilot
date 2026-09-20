@@ -127,13 +127,19 @@ Agent 不应拥有无限制追问能力。
 必须通过代码限制：
 
 ```text
-最大追问次数
+最大追问次数（每组上限，创建时可配）
+追问预算（运行期 = min(组内未问候选, 上限 − 已问追问)）
 Topic 最大时间
-剩余时间
-难度范围
-题目数量
+剩余时间（只统计用户答题时间，模型等待不计）
+难度范围（含用户显式调整节奏）
+必要覆盖（requiredTopics：未覆盖前不跳过其主问题）
 知识点覆盖率
 ```
+
+> 更新（P4Q-2 / 第三批落地口径）：「题目数量」不再是边界——规模由**预计时长**推导
+> （主问题数 ≈ 时长 / 4，夹取 3-12），候选容量与追问预算分开计算；
+> 结束条件也不再是「列表耗尽」，而是必要覆盖完成 / 预算用尽 / 候选耗尽 / 用户结束四种真实原因
+> （`end_reason` 四值）。
 
 LLM 负责语义判断。
 
@@ -641,8 +647,9 @@ END_INTERVIEW
 例如：
 
 ```text
-if followupCount >= 2:
+if 组内已问追问 >= 每组上限（可配，缺省 2）:
     NEXT_QUESTION
+# 运行期追问预算 = min(组内未问候选, 上限 − 已问追问)：候选容量不等于追问预算
 ```
 
 ---
@@ -1454,29 +1461,33 @@ modules/
 
 ```json
 {
-  "sessionId": 1001,
+  "sessionId": "8f3c…",
 
   "status": "IN_PROGRESS",
 
-  "currentTopic": "JVM",
+  "currentQuestionId": "q4a91f3c2b",
 
-  "currentQuestionId": 202,
+  "plannedDurationMinutes": 20,
 
-  "questionCount": 4,
+  "consumedSeconds": 320,
 
-  "followupCount": 1,
+  "remainingSeconds": 880,
 
-  "remainingSeconds": 1240,
+  "requiredTopics": ["实习经历", "Java"],
 
-  "difficulty": 2,
+  "focusCategories": ["JAVA", "REDIS"],
 
-  "coverage": {
-    "JVM": 0.28,
-    "Redis": 0.10,
-    "Spring": 0.06
-  }
+  "difficultyPreference": null,
+
+  "candidateVersion": 1
 }
 ```
+
+> 更新（P4-1 / P4Q-2 落地口径）：**候选素材与实际轮次分离**——
+> `questions_json` 是「可以问什么」的素材池，实际发生过的轮次在 `interview_answers`
+> （带稳定 `question_id`、真实发生顺序 `turn_ordinal` 与本轮决定 `decided_action`）。
+> 因此状态里不再有 `questionCount` / `followupCount` / 内嵌 `coverage`：
+> 计数与覆盖都由「素材池 × 实际轨迹」实时推导（覆盖状态不落库，避免与轨迹漂移）。
 
 ---
 

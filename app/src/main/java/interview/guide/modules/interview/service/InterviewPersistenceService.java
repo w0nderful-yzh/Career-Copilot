@@ -673,6 +673,7 @@ public class InterviewPersistenceService {
             session.setStrengthsJson(objectMapper.writeValueAsString(report.strengths()));
             session.setImprovementsJson(objectMapper.writeValueAsString(report.improvements()));
             session.setReferenceAnswersJson(objectMapper.writeValueAsString(report.referenceAnswers()));
+            session.setReportJson(objectMapper.writeValueAsString(report));
             session.setStatus(InterviewSessionEntity.SessionStatus.EVALUATED);
             session.setCompletedAt(LocalDateTime.now());
 
@@ -749,7 +750,29 @@ public class InterviewPersistenceService {
 
         } catch (JacksonException e) {
             log.error("序列化报告失败: {}", e.getMessage(), e);
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "保存面试报告失败");
         }
+    }
+
+    /**
+     * 读取已经落库的最终报告快照（P4-5）。
+     *
+     * <p>旧会话没有 report_json 时返回 empty，由上层按兼容路径重新生成一次并补齐快照。
+     */
+    @Transactional(readOnly = true)
+    public Optional<InterviewReportDTO> findSavedReport(String sessionId) {
+        return sessionRepository.findBySessionId(sessionId)
+            .map(InterviewSessionEntity::getReportJson)
+            .filter(json -> json != null && !json.isBlank())
+            .flatMap(json -> {
+                try {
+                    return Optional.of(objectMapper.readValue(json, InterviewReportDTO.class));
+                } catch (JacksonException e) {
+                    log.warn("解析报告快照失败，按旧会话重新生成: sessionId={}, error={}",
+                        sessionId, e.getMessage());
+                    return Optional.empty();
+                }
+            });
     }
     
     /**

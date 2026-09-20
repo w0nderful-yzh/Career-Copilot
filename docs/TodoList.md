@@ -215,7 +215,7 @@ React 展示本轮结果与下一步
 
 ### 4.4 第四批：报告、画像、Agent 复盘与面试闭环
 
-- [ ] **P4-5 报告与可变路线评价**
+- [x] **P4-5 报告与可变路线评价**（见 7.16）
   - 将实际轮次、覆盖证据、题目难度、考察点及决策依据与最终报告关联，解释实时判断与报告差异。
   - 明确主题内主问 / 追问及跨主题聚合口径，避免追问题量左右总分；提供规则版本和可重算验证。
   - 报告标明覆盖范围、未考察项、跳过项和证据不足，不把缺失评价补成 0 分。
@@ -551,3 +551,25 @@ POST /api/profile/repair/skip-semantics     复核「已标记作答但得 0 分
   `P4_LIVE_ACCEPTANCE=true P4_LIVE_MODE=normal P4_LIVE_PROVIDER=deepseek ./gradlew :app:test --tests '*InterviewLiveAcceptanceTest' --no-daemon --rerun-tasks`
   与 `P4_LIVE_ACCEPTANCE=true P4_LIVE_MODE=failure P4_LIVE_PROVIDER=deepseek ./gradlew :app:test --tests '*InterviewLiveAcceptanceTest' --no-daemon --rerun-tasks`；
   `--rerun-tasks` 用于避免 Gradle 因环境变量变化复用旧结果。
+
+### 7.16 报告与可变路线评价（P4-5）
+
+- [x] **逐题语义评分与路线聚合分离**：LLM 只负责实际作答轮次的语义分数与反馈；Java 使用版本化规则
+  `adaptive-report-v1` 聚合——主问占组内 70%，同组全部追问的均值合计占 30%，主题内各主问题组等权，
+  最后跨主题等权；主问或追问仅一侧有正式评分时使用可用的一侧。追加追问只改变所属主问题组的证据，
+  不会增加该路线在总分中的权重。
+- [x] **缺失评价不是 0 分**：批次评估缺项、上游失败或无有效评分时，逐题 / 主题 / 总分保持 `null` 并标记
+  `INSUFFICIENT_EVIDENCE`；主动跳过为 `SKIPPED`，未进入实际路线的话题为 `NOT_ASSESSED`。全部跳过时不调用
+  评估模型，直接生成无分报告；画像 Evidence 继续只消费非空正式评分。
+- [x] **报告关联真实路线**：逐题报告携带 `questionId` / `turnOrdinal` / `MAIN|FOLLOW_UP` / `parentQuestionId` /
+  `topic` / `difficulty` / `expectedPoints` / `answerState` / `realtimeDecision` / `decisionReason`，并单独说明“实时判断用于选下一步，
+  正式报告在结束后独立评分”，不把两种用途混成一个结论。覆盖项列出实际轮次、有效主问题组、证据题和考察点。
+- [x] **完整快照与可重算**：迁移 `V20260925` 新增 `interview_sessions.report_json`，保存规则版本、聚合输入与
+  最终结果；报告读取、完成卡与 PDF 导出消费同一快照，不再因 GET 报告重复调用模型。旧会话没有快照时保留
+  一次兼容重算并补齐快照。固定输入重复组装得到完全相同报告的回归已落地。
+- [x] **前端结果卡**：总分为空时明确显示“暂无足够评分证据”，主题分不补 0；展示必考标签、已评估 / 未考察 /
+  已跳过 / 证据不足以及实际轮次和有效主问题组数，并直接展示规则版本与聚合口径。
+- [x] **已验证**（2026-09-20，本机）：`./gradlew :app:test --no-daemon` 全绿（含 `V20260925` 迁移真跑、
+  可变路线等权聚合、缺失 / 跳过 / 未考察和快照复用回归）；`pnpm run build` 通过，面试轮次与评估轮询
+  专项测试共 23 例通过。尚未新增真实模型下的报告质量验收；语义评分质量仍取决于所选 Provider，本批已验证
+  的是路线证据、确定性聚合、缺失语义与读取一致性。

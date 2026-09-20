@@ -21,6 +21,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.stream.StreamMessageId;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.stereotype.Component;
+import tools.jackson.core.JacksonException;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 
@@ -172,7 +173,8 @@ public class EvaluateStreamConsumer extends AbstractStreamConsumer<EvaluateStrea
 
         String resumeText = session.getResume() != null ? session.getResume().getResumeText() : "";
         InterviewReportDTO report = evaluationService.evaluateInterview(
-            chatClient, sessionId, resumeText, candidates, turns);
+            chatClient, sessionId, resumeText, candidates, turns,
+            parseRequiredTopics(session.getRequiredTopicsJson()));
         persistenceService.saveReport(sessionId, report);
 
         // 评估完成 → 提取逐题评分写入技能画像（失败不影响评估结果本身）
@@ -181,6 +183,18 @@ public class EvaluateStreamConsumer extends AbstractStreamConsumer<EvaluateStrea
             profileAggregator.applyEvidence(evidences);
         } catch (Exception e) {
             log.error("画像证据应用失败（不影响评估结果）: sessionId={}", sessionId, e);
+        }
+    }
+
+    private List<String> parseRequiredTopics(String json) {
+        if (json == null || json.isBlank()) {
+            return List.of();
+        }
+        try {
+            return objectMapper.readValue(json, new TypeReference<List<String>>() {});
+        } catch (JacksonException e) {
+            log.warn("必要覆盖配置损坏，报告按未声明处理: {}", e.getMessage());
+            return List.of();
         }
     }
 

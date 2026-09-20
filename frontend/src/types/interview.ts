@@ -201,28 +201,60 @@ export interface CurrentQuestionResponse {
 export interface InterviewReport {
   sessionId: string;
   totalQuestions: number;
-  overallScore: number;
+  overallScore: number | null;
   categoryScores: CategoryScore[];
   questionDetails: QuestionEvaluation[];
   overallFeedback: string;
   strengths: string[];
   improvements: string[];
   referenceAnswers: ReferenceAnswer[];
+  scoringRuleVersion: string;
+  aggregationMethod: string;
+  coverage: TopicCoverage[];
+  unassessedTopics: string[];
+  skippedQuestionIds: string[];
+  insufficientEvidenceQuestionIds: string[];
 }
 
 export interface CategoryScore {
   category: string;
-  score: number;
+  score: number | null;
   questionCount: number;
+  mainGroupCount: number;
+  evaluatedMainGroupCount: number;
+  aggregationNote: string;
 }
 
 export interface QuestionEvaluation {
   questionIndex: number;
+  questionId: string;
+  turnOrdinal: number | null;
   question: string;
   category: string;
-  userAnswer: string;
-  score: number;
+  topic: string;
+  followUp: boolean;
+  parentQuestionId: string | null;
+  difficulty: number | null;
+  expectedPoints: string[];
+  userAnswer: string | null;
+  answerState: 'ANSWERED' | 'SKIPPED' | 'DECLINED' | 'UNANSWERED';
+  score: number | null;
   feedback: string;
+  realtimeDecision: string | null;
+  decisionReason: string | null;
+  decisionComparison: string | null;
+}
+
+export interface TopicCoverage {
+  topic: string;
+  required: boolean;
+  status: 'ASSESSED' | 'NOT_ASSESSED' | 'SKIPPED' | 'INSUFFICIENT_EVIDENCE';
+  actualTurnCount: number;
+  answeredTurnCount: number;
+  skippedTurnCount: number;
+  evaluatedMainGroupCount: number;
+  evidenceQuestionIds: string[];
+  expectedPoints: string[];
 }
 
 export interface ReferenceAnswer {

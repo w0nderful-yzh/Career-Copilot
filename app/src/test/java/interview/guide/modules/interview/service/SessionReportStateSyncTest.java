@@ -18,6 +18,7 @@ import interview.guide.infrastructure.redis.InterviewSessionCache.CachedSession;
 import interview.guide.infrastructure.redis.RedisService;
 import interview.guide.modules.interview.listener.EvaluateStreamProducer;
 import interview.guide.modules.interview.model.InterviewQuestionDTO;
+import interview.guide.modules.interview.model.InterviewReportDTO;
 import interview.guide.modules.interview.model.InterviewSessionDTO;
 import interview.guide.modules.interview.model.InterviewSessionDTO.SessionStatus;
 import interview.guide.modules.interview.model.InterviewSessionEntity;
@@ -198,6 +199,25 @@ class SessionReportStateSyncTest {
     verify(evaluateStreamProducer, never()).sendEvaluateTask(anyString(), anyLong());
     // 幂等路径不应重新请求评估：既不重置状态，也不递增评估代次
     verify(persistenceService, never()).requestEvaluation(anyString());
+  }
+
+  @Test
+  @DisplayName("报告读取返回持久化快照，不重复调用模型生成另一份结果")
+  void reportReadUsesSavedSnapshot() {
+    InterviewReportDTO saved = new InterviewReportDTO(
+        "s-report", 1, 82, List.of(), List.of(), "稳定报告",
+        List.of(), List.of(), List.of(), "adaptive-report-v1", "等权聚合",
+        List.of(), List.of(), List.of(), List.of());
+    when(sessionCache.getSession("s-report"))
+        .thenReturn(Optional.of(cached("s-report", SessionStatus.EVALUATED)));
+    when(persistenceService.findSavedReport("s-report")).thenReturn(Optional.of(saved));
+
+    InterviewReportDTO actual = service.generateReport("s-report");
+
+    assertThat(actual).isSameAs(saved);
+    verify(evaluationService, never()).evaluateInterview(
+        any(), anyString(), anyString(), any(), any(), any());
+    verify(llmProviderRegistry, never()).getChatClientOrDefault(any());
   }
 
   @Test

@@ -3,7 +3,7 @@ import { Bot, Clock, Loader2, RotateCcw, Sparkles, User, X } from 'lucide-react'
 import { interviewApi } from '../../api/interview';
 import { ApiError } from '../../api/request';
 import type { InterviewModeState } from '../../types/copilot';
-import type { InterviewQuestion, ProfileImpact } from '../../types/interview';
+import type { InterviewQuestion, InterviewReport, ProfileImpact } from '../../types/interview';
 import {
   deriveInterviewView,
   interviewPlanProgress,
@@ -35,6 +35,20 @@ const DIFFICULTY_LABELS: Record<string, string> = {
   junior: '校招',
   mid: '中级',
   senior: '高级',
+};
+
+const REPORT_COVERAGE_LABELS: Record<string, string> = {
+  ASSESSED: '已评估',
+  NOT_ASSESSED: '未考察',
+  SKIPPED: '已跳过',
+  INSUFFICIENT_EVIDENCE: '证据不足',
+};
+
+const REPORT_COVERAGE_STYLES: Record<string, string> = {
+  ASSESSED: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300',
+  NOT_ASSESSED: 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-300',
+  SKIPPED: 'bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300',
+  INSUFFICIENT_EVIDENCE: 'bg-rose-50 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300',
 };
 
 function formatSeconds(total: number): string {
@@ -93,7 +107,7 @@ export default function InterviewWorkspace({
   const [budgetDraft, setBudgetDraft] = useState<number | null>(null);
   /** 本场难度偏好（P4Q-3c）：显式「难一点/简单一点」就地调整，下一轮生效 */
   const [paceLevel, setPaceLevel] = useState<'junior' | 'mid' | 'senior'>('mid');
-  const [summary, setSummary] = useState<{ overallScore: number; categoryScores: Array<{ category: string; score: number }> } | null>(null);
+  const [summary, setSummary] = useState<InterviewReport | null>(null);
   // 本场带来的画像变化（P3 待收口）；拉取失败静默降级（结果卡本身不依赖它）
   const [impact, setImpact] = useState<ProfileImpact | null>(null);
   const timerRef = useRef<number | null>(null);
@@ -259,10 +273,7 @@ export default function InterviewWorkspace({
       if (pollRef.current) window.clearInterval(pollRef.current);
       if (decision.phase === 'ready') {
         const report = await interviewApi.getReport(mode.sessionId);
-        setSummary({
-          overallScore: report.overallScore,
-          categoryScores: report.categoryScores,
-        });
+        setSummary(report);
         // 画像变化是旁路增强：拉不到就降级为只显示报告分，不阻塞结果卡
         interviewApi
           .getProfileImpact(mode.sessionId)
@@ -642,22 +653,60 @@ export default function InterviewWorkspace({
           )}
 
           {isDone && summary && (
-            <div className="mx-auto max-w-md rounded-2xl bg-white px-5 py-4 text-center shadow-sm ring-1 ring-slate-100 dark:bg-slate-800 dark:ring-slate-700">
-              <p className="text-xs font-bold uppercase tracking-widest text-slate-400">面试完成</p>
-              <p className="mt-1 text-3xl font-bold text-slate-900 dark:text-white">{summary.overallScore}</p>
-              <div className="mt-3 flex flex-wrap justify-center gap-2">
-                {summary.categoryScores.slice(0, 6).map((c) => (
-                  <span key={c.category} className="rounded-lg bg-slate-50 px-2 py-1 text-xs dark:bg-slate-700/50">
-                    <span className="text-slate-500 dark:text-slate-300">{c.category}</span>{' '}
-                    <span className="font-bold text-slate-800 dark:text-white">{c.score}</span>
-                  </span>
-                ))}
+            <div className="mx-auto w-full max-w-2xl overflow-hidden rounded-2xl bg-white text-left shadow-sm ring-1 ring-slate-100 dark:bg-slate-800 dark:ring-slate-700">
+              <div className="border-b border-slate-100 px-5 py-4 dark:border-slate-700">
+                <p className="text-xs font-bold uppercase tracking-widest text-slate-400">面试完成</p>
+                <div className="mt-1 flex items-end gap-3">
+                  <p className="text-3xl font-bold text-slate-900 dark:text-white">
+                    {summary.overallScore ?? '—'}
+                  </p>
+                  <p className="pb-1 text-xs text-slate-400">
+                    {summary.overallScore === null ? '暂无足够评分证据' : '可变路线综合分'}
+                  </p>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {summary.categoryScores.slice(0, 6).map((c) => (
+                    <span key={c.category} className="rounded-lg bg-slate-50 px-2 py-1 text-xs dark:bg-slate-700/50">
+                      <span className="text-slate-500 dark:text-slate-300">{c.category}</span>{' '}
+                      <span className="font-bold text-slate-800 dark:text-white">{c.score ?? '未评分'}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              <div className="px-5 py-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs font-semibold tracking-wide text-slate-500 dark:text-slate-300">考察覆盖</p>
+                  <span className="font-mono text-[10px] text-slate-400">{summary.scoringRuleVersion}</span>
+                </div>
+                <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                  {summary.coverage.map((item) => (
+                    <div
+                      key={item.topic}
+                      className="flex items-center justify-between rounded-xl border border-slate-100 px-3 py-2 dark:border-slate-700"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium text-slate-700 dark:text-slate-100">
+                          {item.topic}
+                          {item.required && <span className="ml-1 text-[10px] text-primary-500">必考</span>}
+                        </p>
+                        <p className="text-[11px] text-slate-400">
+                          {item.actualTurnCount} 轮 · {item.evaluatedMainGroupCount} 个有效主问题组
+                        </p>
+                      </div>
+                      <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold ${REPORT_COVERAGE_STYLES[item.status]}`}>
+                        {REPORT_COVERAGE_LABELS[item.status]}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-3 text-[11px] leading-relaxed text-slate-400">{summary.aggregationMethod}</p>
               </div>
               {/* P3 待收口：不止展示最新静态分，还要说清「这场让画像变了什么、凭什么」 */}
               {impact && impact.skills.length > 0 && onViewSession && (
                 <ProfileImpactCard impact={impact} onViewSession={onViewSession} />
               )}
-              <div className="mt-4 flex flex-wrap justify-center gap-2">
+              <div className="flex flex-wrap justify-end gap-2 border-t border-slate-100 px-5 py-4 dark:border-slate-700">
                 {onReview && (
                   <button
                     onClick={onReview}

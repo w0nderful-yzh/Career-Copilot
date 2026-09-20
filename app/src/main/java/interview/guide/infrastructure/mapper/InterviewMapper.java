@@ -19,24 +19,6 @@ import java.util.function.Function;
 @Mapper(componentModel = "spring", unmappedTargetPolicy = ReportingPolicy.IGNORE)
 public interface InterviewMapper {
 
-    // ========== QuestionEvaluation 映射 ==========
-
-    /**
-     * 将面试答案实体转换为问题评估详情
-     */
-    @Mapping(target = "questionIndex", source = "questionIndex", qualifiedByName = "nullIndexToZero")
-    @Mapping(target = "question", source = "question")
-    @Mapping(target = "category", source = "category")
-    @Mapping(target = "userAnswer", source = "userAnswer")
-    @Mapping(target = "score", source = "score", qualifiedByName = "nullScoreToZero")
-    @Mapping(target = "feedback", source = "feedback")
-    InterviewReportDTO.QuestionEvaluation toQuestionEvaluation(InterviewAnswerEntity entity);
-
-    /**
-     * 批量转换面试答案实体
-     */
-    List<InterviewReportDTO.QuestionEvaluation> toQuestionEvaluations(List<InterviewAnswerEntity> entities);
-
     // ========== AnswerDetailDTO 映射 ==========
 
     /**
@@ -134,15 +116,4 @@ public interface InterviewMapper {
             .toList();
     }
 
-    // ========== 工具方法 ==========
-
-    @Named("nullIndexToZero")
-    default int nullIndexToZero(Integer value) {
-        return value != null ? value : 0;
-    }
-
-    @Named("nullScoreToZero")
-    default int nullScoreToZero(Integer value) {
-        return value != null ? value : 0;
-    }
 }

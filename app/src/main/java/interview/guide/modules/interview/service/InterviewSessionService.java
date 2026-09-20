@@ -1561,6 +1561,13 @@ public class InterviewSessionService {
 
         log.info("生成面试报告: {}", sessionId);
 
+        // P4-5：异步评估已经保存完整快照；读取必须返回同一份报告，不再重复花模型调用，
+        // 也避免同一场面试因模型波动得到不同分数。旧报告无快照时才走下方兼容生成。
+        Optional<InterviewReportDTO> savedReport = persistenceService.findSavedReport(sessionId);
+        if (savedReport.isPresent()) {
+            return savedReport.get();
+        }
+
         List<InterviewQuestionDTO> questions = session.getQuestions(objectMapper);
 
         // 获取 LLM 客户端
@@ -1576,7 +1583,8 @@ public class InterviewSessionService {
             sessionId,
             session.getResumeText(),
             InterviewQuestionIdentity.withDerivedIds(questions),
-            turnsOf(session)
+            turnsOf(session),
+            requiredTopicsOf(session)
         );
 
         // 更新 Redis 缓存状态

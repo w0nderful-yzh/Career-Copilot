@@ -8,6 +8,7 @@ import static org.mockito.Mockito.when;
 import interview.guide.common.exception.BusinessException;
 import interview.guide.common.exception.ErrorCode;
 import interview.guide.modules.resume.model.ResumeOptimizationProposalEntity;
+import interview.guide.modules.resume.model.ResumeJdGapAnalysis;
 import interview.guide.modules.resume.model.ResumePatchItem;
 import interview.guide.modules.resume.repository.ResumeOptimizationProposalRepository;
 import java.util.List;
@@ -68,16 +69,32 @@ class ResumeOptimizationProposalServiceTest {
     void persistsJdTargetedMode() {
       when(proposalRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
+      ResumeJdGapAnalysis gap = new ResumeJdGapAnalysis(
+          "Java 后端实习",
+          ResumeJdGapAnalysis.MatchLevel.MEDIUM,
+          "Spring Boot 匹配，MySQL 待确认",
+          List.of(new ResumeJdGapAnalysis.GapItem(
+              "熟悉 MySQL",
+              ResumeJdGapAnalysis.GapStatus.UNKNOWN,
+              List.of(),
+              "数据库要求暂无证据",
+              List.of("是否实际使用 MySQL"))));
+
       ResumeOptimizationProposalEntity saved = proposalService.createProposal(
           1L, 5L,
           ResumeOptimizationProposalEntity.OptimizationType.JD_TARGETED,
           42L, null,
           "按 JD 突出匹配点",
+          gap,
           List.of(patch(ResumePatchItem.PatchType.REPLACE)));
 
       assertThat(saved.getOptimizationType())
           .isEqualTo(ResumeOptimizationProposalEntity.OptimizationType.JD_TARGETED);
       assertThat(saved.getTargetJobId()).isEqualTo(42L);
+      assertThat(proposalService.parseJdGapAnalysis(saved).items())
+          .singleElement()
+          .extracting(ResumeJdGapAnalysis.GapItem::status)
+          .isEqualTo(ResumeJdGapAnalysis.GapStatus.UNKNOWN);
     }
 
     @Test
@@ -96,6 +113,39 @@ class ResumeOptimizationProposalServiceTest {
           .isEqualTo(ResumeOptimizationProposalEntity.OptimizationType.TARGET_DIRECTION);
       assertThat(saved.getTargetDirection()).isEqualTo("Java 后端实习");
       assertThat(saved.getTargetJobId()).isNull();
+    }
+
+    @Test
+    @DisplayName("JD 定向提案缺少 Gap 时拒绝落库")
+    void rejectsJdTargetedProposalWithoutGap() {
+      assertThatThrownBy(() -> proposalService.createProposal(
+          1L, 5L,
+          ResumeOptimizationProposalEntity.OptimizationType.JD_TARGETED,
+          42L, null,
+          "伪 JD 定向提案",
+          List.of(patch(ResumePatchItem.PatchType.REPLACE))))
+          .isInstanceOf(BusinessException.class)
+          .hasMessageContaining("Gap");
+    }
+
+    @Test
+    @DisplayName("JD 定向提案的 Gap 没有要求明细时拒绝落库")
+    void rejectsJdTargetedProposalWithEmptyGap() {
+      ResumeJdGapAnalysis emptyGap = new ResumeJdGapAnalysis(
+          "Java 后端实习",
+          ResumeJdGapAnalysis.MatchLevel.UNKNOWN,
+          "没有形成有效对照",
+          List.of());
+
+      assertThatThrownBy(() -> proposalService.createProposal(
+          1L, 5L,
+          ResumeOptimizationProposalEntity.OptimizationType.JD_TARGETED,
+          42L, null,
+          "空 Gap 提案",
+          emptyGap,
+          List.of(patch(ResumePatchItem.PatchType.REPLACE))))
+          .isInstanceOf(BusinessException.class)
+          .hasMessageContaining("Gap");
     }
 
     @Test

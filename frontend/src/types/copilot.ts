@@ -10,6 +10,7 @@ export type AgentBlockType =
   | 'interview_summary'
   | 'knowledge_citations'
   | 'skill_profile'
+  | 'resume_gap_analysis'
   | 'resume_optimization'
   | 'interview_proposal'
   | 'interview_session';
@@ -179,6 +180,25 @@ export interface ResumeOptimizationPatch {
   oldValue?: string | null;
   newValue?: string | null;
   reason: string;
+  evidence?: string[];
+  impact?: string | null;
+  verificationRequired?: string[];
+}
+
+export interface ResumeGapAnalysisBlock {
+  type: 'resume_gap_analysis';
+  resumeId: number;
+  jobId: number;
+  jobTitle: string;
+  matchLevel: 'HIGH' | 'MEDIUM' | 'LOW' | 'UNKNOWN';
+  summary: string;
+  items: Array<{
+    requirement: string;
+    status: 'MATCHED' | 'PARTIAL' | 'MISSING' | 'UNKNOWN';
+    resumeEvidence: string[];
+    impact: string;
+    verificationRequired: string[];
+  }>;
 }
 
 /** 简历优化提案块（P2-3）：Diff 卡片 + 勾选应用（用户确认后才执行写操作） */
@@ -204,6 +224,7 @@ export type AgentBlock =
   | InterviewSummaryBlock
   | KnowledgeCitationsBlock
   | SkillProfileBlock
+  | ResumeGapAnalysisBlock
   | ResumeOptimizationBlock
   | InterviewProposalBlock
   | InterviewSessionBlock;

@@ -1,5 +1,7 @@
 package interview.guide.modules.resume.model;
 
+import java.util.List;
+
 /**
  * 单条优化建议（P2-1）：Agent 产出的 JSON-path 定位修改。
  *
@@ -13,8 +15,23 @@ public record ResumePatchItem(
     String path,
     String oldValue,
     String newValue,
-    String reason
+    String reason,
+    List<String> evidence,
+    String impact,
+    List<String> verificationRequired
 ) {
+
+  /** 兼容历史提案与既有调用点；新提案由 Agent 补齐解释字段。 */
+  public ResumePatchItem(
+      String id,
+      PatchType type,
+      String path,
+      String oldValue,
+      String newValue,
+      String reason
+  ) {
+    this(id, type, path, oldValue, newValue, reason, List.of(), null, List.of());
+  }
 
   public enum PatchType {
     REPLACE,  // 修改现有内容

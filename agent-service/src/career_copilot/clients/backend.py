@@ -186,6 +186,7 @@ class BackendClient:
         optimization_type: str,
         summary: str,
         patches: list[dict[str, Any]],
+        jd_gap_analysis: dict[str, Any] | None = None,
         target_job_id: int | None = None,
         target_direction: str | None = None,
     ) -> int:
@@ -204,6 +205,7 @@ class BackendClient:
                 "targetJobId": target_job_id,
                 "targetDirection": target_direction,
                 "summary": summary,
+                "jdGapAnalysis": jd_gap_analysis,
                 "patches": patches,
             },
         )

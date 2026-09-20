@@ -7,6 +7,7 @@ import type {
   StreamEvent,
 } from '../types/copilot';
 import type { UploadResponse } from '../types/resume';
+import { serializeAttachments } from '../utils/agentChatProtocol';
 
 /**
  * 发送消息并消费 SSE 流式响应。
@@ -35,12 +36,7 @@ export async function streamChat(
       message,
       conversation_id: conversationId ?? null,
       // 前端类型用 camelCase，Python 协议用 snake_case，在边界转换
-      attachments: (attachments ?? []).map((att) => ({
-        kind: att.kind,
-        resume_id: att.resumeId,
-        filename: att.filename ?? null,
-        duplicate: att.duplicate ?? false,
-      })),
+      attachments: serializeAttachments(attachments ?? []),
       action: action ?? null,
       active_interview_session_id: activeInterviewSessionId ?? null,
     }),

@@ -3,6 +3,7 @@ package interview.guide.modules.resume.service;
 import interview.guide.common.exception.BusinessException;
 import interview.guide.common.exception.ErrorCode;
 import interview.guide.modules.resume.model.ResumeOptimizationProposalEntity;
+import interview.guide.modules.resume.model.ResumeJdGapAnalysis;
 import interview.guide.modules.resume.model.ResumePatchItem;
 import interview.guide.modules.resume.repository.ResumeOptimizationProposalRepository;
 import java.util.List;
@@ -29,6 +30,20 @@ public class ResumeOptimizationProposalService {
   private final ResumeOptimizationProposalRepository proposalRepository;
   private final ObjectMapper objectMapper;
 
+  /** 兼容非 JD 模式与既有调用点。 */
+  public ResumeOptimizationProposalEntity createProposal(
+      Long resumeId,
+      Long sourceVersionId,
+      ResumeOptimizationProposalEntity.OptimizationType optimizationType,
+      Long targetJobId,
+      String targetDirection,
+      String summary,
+      List<ResumePatchItem> patches) {
+    return createProposal(
+        resumeId, sourceVersionId, optimizationType, targetJobId, targetDirection,
+        summary, null, patches);
+  }
+
   /**
    * 创建提案（Python 子图调用）。
    *
@@ -46,7 +61,17 @@ public class ResumeOptimizationProposalService {
       Long targetJobId,
       String targetDirection,
       String summary,
+      ResumeJdGapAnalysis jdGapAnalysis,
       List<ResumePatchItem> patches) {
+    if (optimizationType == ResumeOptimizationProposalEntity.OptimizationType.JD_TARGETED
+        && (targetJobId == null
+            || jdGapAnalysis == null
+            || jdGapAnalysis.items() == null
+            || jdGapAnalysis.items().isEmpty())) {
+      throw new BusinessException(
+          ErrorCode.RESUME_OPTIMIZATION_INVALID,
+          "JD 定向提案必须包含目标 JD 与非空 Gap 分析");
+    }
     if (patches == null || patches.isEmpty()) {
       throw new BusinessException(ErrorCode.RESUME_OPTIMIZATION_INVALID, "提案不包含任何修改建议");
     }
@@ -65,6 +90,7 @@ public class ResumeOptimizationProposalService {
     proposal.setTargetDirection(targetDirection);
     proposal.setStatus(ResumeOptimizationProposalEntity.ProposalStatus.PENDING);
     proposal.setSummary(summary);
+    proposal.setJdGapAnalysisJson(serializeNullable(jdGapAnalysis));
     proposal.setPatchesJson(serialize(patches));
 
     ResumeOptimizationProposalEntity saved = proposalRepository.save(proposal);
@@ -90,6 +116,23 @@ public class ResumeOptimizationProposalService {
       log.error("解析提案 Patch 列表失败: proposalId={}", proposal.getId(), e);
       throw new BusinessException(
           ErrorCode.RESUME_OPTIMIZATION_INVALID, "提案内容损坏，无法应用");
+    }
+  }
+
+  /** 还原 JD Gap 快照；通用 / 方向优化没有 Gap 时返回 null。 */
+  @Transactional(readOnly = true)
+  public ResumeJdGapAnalysis parseJdGapAnalysis(
+      ResumeOptimizationProposalEntity proposal) {
+    String json = proposal.getJdGapAnalysisJson();
+    if (json == null || json.isBlank()) {
+      return null;
+    }
+    try {
+      return objectMapper.readValue(json, ResumeJdGapAnalysis.class);
+    } catch (JacksonException e) {
+      log.error("解析提案 JD Gap 失败: proposalId={}", proposal.getId(), e);
+      throw new BusinessException(
+          ErrorCode.RESUME_OPTIMIZATION_INVALID, "提案 JD Gap 内容损坏");
     }
   }
 
@@ -130,6 +173,18 @@ public class ResumeOptimizationProposalService {
     } catch (JacksonException e) {
       log.error("序列化提案 Patch 列表失败", e);
       throw new BusinessException(ErrorCode.RESUME_OPTIMIZATION_INVALID, "保存提案失败");
+    }
+  }
+
+  private String serializeNullable(Object value) {
+    if (value == null) {
+      return null;
+    }
+    try {
+      return objectMapper.writeValueAsString(value);
+    } catch (JacksonException e) {
+      log.error("序列化 JD Gap 分析失败", e);
+      throw new BusinessException(ErrorCode.RESUME_OPTIMIZATION_INVALID, "保存 JD Gap 失败");
     }
   }
 }

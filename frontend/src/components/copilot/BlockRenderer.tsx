@@ -2,8 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ArrowRight,
+  AlertTriangle,
   BookOpen,
   BriefcaseBusiness,
+  CheckCircle2,
   CheckSquare,
   ChevronDown,
   FileSearch,
@@ -12,6 +14,8 @@ import {
   MessagesSquare,
   Minus,
   Plus,
+  ShieldAlert,
+  ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   Square,
@@ -31,6 +35,7 @@ import type {
   NavigationBlock,
   ResumeOptimizationBlock,
   ResumeOptimizationPatch,
+  ResumeGapAnalysisBlock,
   ResumeSummaryBlock,
   SkillProfileBlock,
 } from '../../types/copilot';
@@ -522,6 +527,100 @@ const PATCH_TYPE_META: Record<ResumeOptimizationPatch['type'], { label: string; 
   DELETE: { label: '删除', className: 'bg-red-50 text-red-600 dark:bg-red-900/40 dark:text-red-300' },
 };
 
+const GAP_STATUS_META: Record<
+  ResumeGapAnalysisBlock['items'][number]['status'],
+  { label: string; className: string; icon: typeof CheckCircle2 }
+> = {
+  MATCHED: {
+    label: '已匹配',
+    className: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/35 dark:text-emerald-300',
+    icon: CheckCircle2,
+  },
+  PARTIAL: {
+    label: '部分匹配',
+    className: 'bg-amber-50 text-amber-700 dark:bg-amber-900/35 dark:text-amber-300',
+    icon: AlertTriangle,
+  },
+  MISSING: {
+    label: '缺失',
+    className: 'bg-red-50 text-red-700 dark:bg-red-900/35 dark:text-red-300',
+    icon: ShieldAlert,
+  },
+  UNKNOWN: {
+    label: '待确认',
+    className: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300',
+    icon: ShieldAlert,
+  },
+};
+
+const MATCH_LEVEL_LABEL: Record<ResumeGapAnalysisBlock['matchLevel'], string> = {
+  HIGH: '高匹配',
+  MEDIUM: '中等匹配',
+  LOW: '低匹配',
+  UNKNOWN: '证据不足',
+};
+
+/** JD Gap 独立证据区：不把缺失要求偷换成可直接应用的 Patch。 */
+function ResumeGapAnalysisBlockView({ block }: { block: ResumeGapAnalysisBlock }) {
+  return (
+    <section className="mt-4 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-900">
+      <div className="border-b border-slate-100 bg-[linear-gradient(120deg,rgba(15,23,42,0.04),rgba(14,165,233,0.08))] px-4 py-4 dark:border-slate-800 dark:bg-[linear-gradient(120deg,rgba(15,23,42,0.9),rgba(14,165,233,0.12))]">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-bold text-slate-950 dark:text-white">
+              <FileSearch className="h-4 w-4 text-sky-600 dark:text-sky-400" />
+              JD Gap 分析
+            </div>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{block.jobTitle}</p>
+          </div>
+          <span className="rounded-full border border-sky-200 bg-white/80 px-2.5 py-1 text-xs font-semibold text-sky-700 dark:border-sky-800 dark:bg-slate-900/70 dark:text-sky-300">
+            {MATCH_LEVEL_LABEL[block.matchLevel]}
+          </span>
+        </div>
+        <p className="mt-3 text-xs leading-5 text-slate-600 dark:text-slate-300">{block.summary}</p>
+      </div>
+
+      <div className="space-y-2.5 p-4">
+        {block.items.map((item, index) => {
+          const meta = GAP_STATUS_META[item.status];
+          const StatusIcon = meta.icon;
+          return (
+            <article key={`${item.requirement}-${index}`} className="rounded-xl border border-slate-100 p-3 dark:border-slate-800">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <p className="min-w-0 flex-1 text-sm font-semibold text-slate-800 dark:text-slate-100">
+                  {item.requirement}
+                </p>
+                <span className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-semibold ${meta.className}`}>
+                  <StatusIcon className="h-3 w-3" />
+                  {meta.label}
+                </span>
+              </div>
+              {item.resumeEvidence.length > 0 ? (
+                <div className="mt-2 border-l-2 border-sky-200 pl-2.5 dark:border-sky-800">
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">简历证据</p>
+                  {item.resumeEvidence.map((evidence) => (
+                    <p key={evidence} className="mt-1 text-xs leading-5 text-slate-600 dark:text-slate-300">“{evidence}”</p>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-2 text-xs text-slate-400">简历中暂未找到可支撑的原文证据。</p>
+              )}
+              <p className="mt-2 text-[11px] leading-5 text-slate-500 dark:text-slate-400">
+                <span className="font-semibold">影响：</span>{item.impact}
+              </p>
+              {item.verificationRequired.length > 0 && (
+                <div className="mt-2 rounded-lg bg-amber-50 px-2.5 py-2 text-[11px] text-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
+                  <span className="font-semibold">需你核实：</span>{item.verificationRequired.join('；')}
+                </div>
+              )}
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 /** 优化模式标签（P2 待修正）：让「通用 / 定向方向 / JD 定向」在卡片上可分辨 */
 function optimizationModeLabel(
   type: ResumeOptimizationBlock['optimizationType'],
@@ -568,6 +667,7 @@ function ResumeOptimizationBlockView({
     () => new Set(block.patches.map((patch) => patch.id)),
   );
   const [applied, setApplied] = useState(false);
+  const [confirmingApply, setConfirmingApply] = useState(false);
   // 提案决策（P2 待修正）：拒绝入口 + 刷新回放时的权威状态回显。
   // 历史消息块只存 patches，不回显状态的话已应用/已忽略的提案刷新后仍显示成可操作。
   const [rejected, setRejected] = useState(false);
@@ -621,6 +721,9 @@ function ResumeOptimizationBlockView({
           oldValue: patch.oldValue ?? null,
           newValue: patch.newValue ?? null,
           reason: patch.reason ?? null,
+          evidence: patch.evidence ?? [],
+          impact: patch.impact ?? null,
+          verificationRequired: patch.verificationRequired ?? [],
         }));
       const blob = await historyApi.previewResumePdf(content, selectedPatches);
       if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
@@ -657,6 +760,7 @@ function ResumeOptimizationBlockView({
   // 两者若各写一份，极易只改状态而漏掉预览（全选/全不选曾因此与预览不一致）。
   // 应用/拒绝后锁定不再重渲。
   const updateSelection = (compute: (prev: Set<string>) => Set<string>) => {
+    setConfirmingApply(false);
     setSelectedIds((prev) => {
       const next = compute(prev);
       if (!locked) schedulePreview(next);
@@ -675,7 +779,13 @@ function ResumeOptimizationBlockView({
 
   const handleApply = () => {
     if (!canApply || !onActionSelect) return;
+    setConfirmingApply(true);
+  };
+
+  const confirmApply = () => {
+    if (!canApply || !onActionSelect) return;
     setApplied(true);
+    setConfirmingApply(false);
     onActionSelect({
       action: 'APPLY_RESUME_PATCHES',
       label: '应用勾选修改',
@@ -689,6 +799,7 @@ function ResumeOptimizationBlockView({
   /** 放弃本轮全部建议：不动简历内容，只落 Java 审计状态（REJECTED） */
   const handleReject = async () => {
     if (locked || rejecting) return;
+    setConfirmingApply(false);
     setRejecting(true);
     setDecisionError('');
     try {
@@ -799,7 +910,41 @@ function ResumeOptimizationBlockView({
                       <span>{patch.newValue}</span>
                     </p>
                   )}
-                  <p className="mt-1.5 text-[11px] text-slate-400">{patch.reason}</p>
+                  <div className="mt-2 grid gap-2 rounded-lg border border-slate-100 bg-slate-50/70 p-2.5 text-[11px] dark:border-slate-700 dark:bg-slate-900/40 sm:grid-cols-2">
+                    <div>
+                      <p className="font-semibold text-slate-500 dark:text-slate-300">修改理由</p>
+                      <p className="mt-1 leading-5 text-slate-600 dark:text-slate-400">{patch.reason}</p>
+                    </div>
+                    <div>
+                      <p className="font-semibold text-slate-500 dark:text-slate-300">影响范围</p>
+                      <p className="mt-1 leading-5 text-slate-600 dark:text-slate-400">
+                        {patch.impact || `影响 ${patchPathLabel(patch.path)} 中的对应内容`}
+                      </p>
+                    </div>
+                    <div className="sm:col-span-2">
+                      <p className="font-semibold text-slate-500 dark:text-slate-300">依据</p>
+                      {(patch.evidence?.length ?? 0) > 0 ? (
+                        <ul className="mt-1 space-y-1 text-slate-600 dark:text-slate-400">
+                          {(patch.evidence ?? []).map((evidence) => <li key={evidence}>“{evidence}”</li>)}
+                        </ul>
+                      ) : (
+                        <p className="mt-1 text-amber-600 dark:text-amber-400">未提供可核对依据，建议不勾选。</p>
+                      )}
+                    </div>
+                    <div className="sm:col-span-2">
+                      {(patch.verificationRequired?.length ?? 0) > 0 ? (
+                        <div className="flex gap-1.5 rounded-md bg-amber-50 px-2 py-1.5 text-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
+                          <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                          <span><strong>需核实：</strong>{patch.verificationRequired?.join('；')}</span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1.5 text-emerald-700 dark:text-emerald-400">
+                          <ShieldCheck className="h-3.5 w-3.5" />
+                          仅重组已有事实，无需额外核实
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </div>
             </label>
@@ -818,7 +963,7 @@ function ResumeOptimizationBlockView({
             <CheckSquare className="h-4 w-4" />
             {applied || decidedStatus === 'APPLIED'
               ? '已提交应用'
-              : `应用勾选修改（${selectedCount}/${block.patches.length}）`}
+              : `核对并应用（${selectedCount}/${block.patches.length}）`}
           </button>
           {/* 与「应用」对称的决策出口：拒绝只落审计状态，不改动简历内容 */}
           <button
@@ -833,6 +978,36 @@ function ResumeOptimizationBlockView({
         </div>
         {decisionError && (
           <p className="mt-2 text-[11px] text-red-500">操作失败：{decisionError}</p>
+        )}
+        {confirmingApply && (
+          <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50/80 p-3 dark:border-amber-800 dark:bg-amber-950/25">
+            <div className="flex gap-2">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-amber-900 dark:text-amber-200">确认生成新版本？</p>
+                <p className="mt-1 text-xs leading-5 text-amber-800 dark:text-amber-300">
+                  将严格按当前勾选的 {selectedCount} 条 Patch 生成新版本；
+                  Diff、当前 PDF 预览与本次应用使用同一组选择，原版本不会被覆盖。
+                </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={confirmApply}
+                    className="rounded-lg bg-amber-700 px-3 py-2 text-xs font-semibold text-white transition hover:bg-amber-800"
+                  >
+                    确认生成新版本
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingApply(false)}
+                    className="rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs font-medium text-amber-800 dark:bg-slate-900 dark:text-amber-300"
+                  >
+                    取消
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
         )}
         <p className="mt-2 text-[11px] text-slate-400">
           应用后生成新版本，原版本保持不变；忽略则不改动任何内容
@@ -923,6 +1098,8 @@ export default function BlockRenderer({
       return <KnowledgeCitationsBlockView block={block} />;
     case 'skill_profile':
       return <SkillProfileBlockView block={block} />;
+    case 'resume_gap_analysis':
+      return <ResumeGapAnalysisBlockView block={block} />;
     case 'resume_optimization':
       return (
         <ResumeOptimizationBlockView

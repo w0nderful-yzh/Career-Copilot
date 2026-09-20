@@ -1456,6 +1456,44 @@ _VALID_PATCH_PAYLOAD = {
     ],
 }
 
+_JD_PATCH_PAYLOAD = {
+    "summary": "针对 Java 后端岗位突出 Spring Boot 项目证据",
+    "jdGapAnalysis": {
+        "jobTitle": "Java 后端实习",
+        "matchLevel": "MEDIUM",
+        "summary": "Spring Boot 项目相关，MySQL 经验仍缺少简历证据。",
+        "items": [
+            {
+                "requirement": "熟悉 Spring Boot",
+                "status": "MATCHED",
+                "resumeEvidence": ["Demo（Spring Boot）"],
+                "impact": "支撑核心框架匹配",
+                "verificationRequired": [],
+            },
+            {
+                "requirement": "熟悉 MySQL",
+                "status": "UNKNOWN",
+                "resumeEvidence": [],
+                "impact": "数据库要求暂无法证明",
+                "verificationRequired": ["是否在项目中实际使用 MySQL"],
+            },
+        ],
+    },
+    "patches": [
+        {
+            "id": "patch_1",
+            "type": "REPLACE",
+            "path": "projects[0].bullets[0]",
+            "oldValue": "负责后端开发工作",
+            "newValue": "基于 Spring Boot 主导后端开发工作",
+            "reason": "突出与 JD 直接匹配的框架经验",
+            "evidence": ["项目 Demo 使用 Spring Boot"],
+            "impact": "项目经历首条职责描述",
+            "verificationRequired": [],
+        },
+    ],
+}
+
 
 async def test_graph_optimize_resume_without_version_guides_confirmation(backend_transport):
     """无 ACTIVE 结构化版本时如实引导先完成解析确认。"""
@@ -1833,7 +1871,7 @@ async def test_optimize_jd_targeted_without_jd_clarifies(backend_transport):
                        "message": "success"}
         )
 
-    deps = _optimization_deps(transport, _VALID_PATCH_PAYLOAD)
+    deps = _optimization_deps(transport, _JD_PATCH_PAYLOAD)
     graph = build_graph(deps)
     state = build_initial_state(
         conversation_id=None, message="按这份 JD 优化我的简历", attachments=[],
@@ -1950,7 +1988,7 @@ async def test_optimize_jd_targeted_persists_job_id(backend_transport):
             200, json={"code": 200, "data": data.get(tool, []), "message": "success"}
         )
 
-    deps = _optimization_deps(transport, _VALID_PATCH_PAYLOAD)
+    deps = _optimization_deps(transport, _JD_PATCH_PAYLOAD)
     graph = build_graph(deps)
     state = build_initial_state(
         conversation_id=None, message="按这份 JD 优化我的简历", attachments=[],
@@ -1961,8 +1999,54 @@ async def test_optimize_jd_targeted_persists_job_id(backend_transport):
 
     assert captured["optimizationType"] == "JD_TARGETED"
     assert captured["targetJobId"] == 42
+    assert captured["jdGapAnalysis"]["matchLevel"] == "MEDIUM"
+    assert captured["patches"][0]["evidence"]
     block = next(b for b in result["plan"].blocks if b.type == "resume_optimization")
     assert block.optimizationType == "JD_TARGETED"
+    gap = next(b for b in result["plan"].blocks if b.type == "resume_gap_analysis")
+    assert gap.jobTitle == "Java 后端实习"
+    assert gap.items[1].status == "UNKNOWN"
+
+
+async def test_optimize_jd_dependency_failure_is_not_disguised_as_no_changes():
+    """JD 取数失败必须显示失败，不生成通用 Patch 冒充定向结果。"""
+    calls: list[str] = []
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == "/internal/agent/resume-optimization/proposals":
+            return httpx.Response(200, json={"code": 200, "data": 77, "message": "success"})
+        tool = request.url.path.rsplit("/", 1)[-1]
+        if tool == "get_job":
+            return httpx.Response(200, json={"code": 7001, "message": "JD 依赖不可用"})
+        data = {
+            "get_resume_version": {
+                "id": 5, "resumeId": 1, "version": 1, "confirmationStatus": "ACTIVE",
+                "content": {"basicInfo": {"name": "张三"}, "education": [],
+                            "experience": [], "projects": [], "skills": [],
+                            "customSections": []},
+            },
+            "get_resume": {"id": 1, "resumeText": "姓名：张三"},
+            "get_skill_profile": {"skills": []},
+        }
+        return httpx.Response(
+            200, json={"code": 200, "data": data.get(tool, []), "message": "success"}
+        )
+
+    deps = _optimization_deps(transport, _JD_PATCH_PAYLOAD)
+    graph = build_graph(deps)
+    state = build_initial_state(
+        conversation_id=None, message="按这份 JD 优化我的简历", attachments=[],
+        action={"type": "ACTION_SELECTED", "action": "OPTIMIZE_RESUME",
+                "payload": {"resumeId": 1, "jobId": 42}},
+    )
+    result = await graph.ainvoke(state)
+
+    text = "".join([chunk async for chunk in result["plan"].text])
+    assert "JD 差距分析失败" in text
+    assert "没有生成优化建议" in text
+    assert not any(b.type == "resume_optimization" for b in result["plan"].blocks)
+    assert "/internal/agent/resume-optimization/proposals" not in calls
 
 
 async def test_optimize_clarification_choice_forces_mode(backend_transport):

@@ -5,6 +5,7 @@ import interview.guide.common.exception.BusinessException;
 import interview.guide.common.exception.ErrorCode;
 import interview.guide.common.result.Result;
 import interview.guide.modules.resume.model.ResumeOptimizationProposalEntity;
+import interview.guide.modules.resume.model.ResumeJdGapAnalysis;
 import interview.guide.modules.resume.model.ResumePatchItem;
 import interview.guide.modules.resume.service.ResumeOptimizationProposalService;
 import java.time.LocalDateTime;
@@ -42,6 +43,7 @@ public class ResumeOptimizationProposalController {
       Long targetJobId,
       String targetDirection,
       String summary,
+      ResumeJdGapAnalysis jdGapAnalysis,
       List<ResumePatchItem> patches
   ) {}
 
@@ -55,6 +57,7 @@ public class ResumeOptimizationProposalController {
       String targetDirection,
       String status,
       String summary,
+      ResumeJdGapAnalysis jdGapAnalysis,
       List<ResumePatchItem> patches,
       LocalDateTime createdAt,
       LocalDateTime decidedAt
@@ -70,6 +73,7 @@ public class ResumeOptimizationProposalController {
         request.targetJobId(),
         request.targetDirection(),
         request.summary(),
+        request.jdGapAnalysis(),
         request.patches());
     return Result.success(saved.getId());
   }
@@ -122,6 +126,7 @@ public class ResumeOptimizationProposalController {
         entity.getTargetDirection(),
         entity.getStatus() != null ? entity.getStatus().name() : null,
         entity.getSummary(),
+        proposalService.parseJdGapAnalysis(entity),
         parsePatches(entity),
         entity.getCreatedAt(),
         entity.getDecidedAt());

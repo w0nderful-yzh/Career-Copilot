@@ -12,6 +12,8 @@ from career_copilot.schemas.message import (
     InterviewSessionBlock,
     InterviewSummaryBlock,
     KnowledgeCitationsBlock,
+    ResumeGapAnalysisBlock,
+    ResumeGapItem,
     ResumeOptimizationBlock,
     ResumeOptimizationPatch,
     ResumeSummaryBlock,
@@ -136,6 +138,9 @@ def resume_optimization_block(
             oldValue=patch.oldValue,
             newValue=patch.newValue,
             reason=patch.reason,
+            evidence=patch.evidence,
+            impact=patch.impact,
+            verificationRequired=patch.verificationRequired,
         )
         for patch in patches
     ]
@@ -148,6 +153,29 @@ def resume_optimization_block(
         rejectedNote=rejected_note,
         optimizationType=optimization_type,
         targetDirection=target_direction,
+    )
+
+
+def resume_gap_analysis_block(
+    *, resume_id: int, job_id: int, analysis: Any
+) -> ResumeGapAnalysisBlock:
+    """JD Gap 独立展示块：字段来自已验证的结构化输出。"""
+    return ResumeGapAnalysisBlock(
+        resumeId=resume_id,
+        jobId=job_id,
+        jobTitle=analysis.jobTitle,
+        matchLevel=analysis.matchLevel.value,
+        summary=analysis.summary,
+        items=[
+            ResumeGapItem(
+                requirement=item.requirement,
+                status=item.status.value,
+                resumeEvidence=item.resumeEvidence,
+                impact=item.impact,
+                verificationRequired=item.verificationRequired,
+            )
+            for item in analysis.items
+        ],
     )
 
 

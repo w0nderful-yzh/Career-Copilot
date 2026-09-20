@@ -166,6 +166,33 @@ class ResumeOptimizationPatch(BaseModel):
     oldValue: str | None = Field(default=None, description="原值")
     newValue: str | None = Field(default=None, description="新值")
     reason: str = Field(description="修改理由")
+    evidence: list[str] = Field(default_factory=list, description="简历 / JD 原文依据")
+    impact: str = Field(description="影响范围与预期效果")
+    verificationRequired: list[str] = Field(
+        default_factory=list, description="需用户核实的事实"
+    )
+
+
+class ResumeGapItem(BaseModel):
+    """JD 要求与简历证据的单条对照。"""
+
+    requirement: str
+    status: Literal["MATCHED", "PARTIAL", "MISSING", "UNKNOWN"]
+    resumeEvidence: list[str] = Field(default_factory=list)
+    impact: str
+    verificationRequired: list[str] = Field(default_factory=list)
+
+
+class ResumeGapAnalysisBlock(BaseModel):
+    """JD Gap 独立块：先呈现匹配证据和差距，再进入 Patch 决策。"""
+
+    type: Literal["resume_gap_analysis"] = "resume_gap_analysis"
+    resumeId: int
+    jobId: int
+    jobTitle: str
+    matchLevel: Literal["HIGH", "MEDIUM", "LOW", "UNKNOWN"]
+    summary: str
+    items: list[ResumeGapItem] = Field(default_factory=list)
 
 
 class ResumeOptimizationBlock(BaseModel):
@@ -267,6 +294,7 @@ MessageBlock = Annotated[
     | InterviewSummaryBlock
     | KnowledgeCitationsBlock
     | SkillProfileBlock
+    | ResumeGapAnalysisBlock
     | ResumeOptimizationBlock
     | InterviewProposalBlock
     | InterviewSessionBlock,

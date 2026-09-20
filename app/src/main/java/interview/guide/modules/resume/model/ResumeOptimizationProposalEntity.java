@@ -72,6 +72,10 @@ public class ResumeOptimizationProposalEntity {
   @Column(name = "patches_json", nullable = false, columnDefinition = "TEXT")
   private String patchesJson;
 
+  /** JD 定向时的独立 Gap 分析快照；非 JD 模式为 null */
+  @Column(name = "jd_gap_analysis_json", columnDefinition = "TEXT")
+  private String jdGapAnalysisJson;
+
   @Column(name = "created_at", nullable = false)
   private LocalDateTime createdAt;
 

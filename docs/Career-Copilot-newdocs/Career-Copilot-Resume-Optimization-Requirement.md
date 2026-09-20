@@ -218,9 +218,11 @@ Career Evidence
         ↓
 Agent 分析
         ↓
+JD 定向时生成独立 Gap Analysis
+        ↓
 生成 ResumePatch[]
         ↓
-前端展示修改建议
+前端展示 Gap + Diff + PDF Preview
         ↓
 用户接受 / 忽略
         ↓
@@ -229,6 +231,8 @@ Agent 分析
 Java Backend 应用 Patch
         ↓
 生成 Resume Version
+        ↓
+版本查询 / PDF 导出
 ```
 
 ---
@@ -244,16 +248,42 @@ Agent 不直接返回完整的新简历。
 ```json
 {
   "id": "patch_001",
-  "operation": "REPLACE",
-  "section": "PROJECT",
-  "itemId": "career-copilot",
-  "field": "description",
-  "before": "使用 LangGraph 实现 Agent 功能",
-  "after": "基于 LangGraph 构建 Stateful Agent 工作流，通过 Tool Calling 编排简历分析、岗位匹配与模拟面试等业务能力",
+  "type": "REPLACE",
+  "path": "projects[0].bullets[0]",
+  "oldValue": "使用 LangGraph 实现 Agent 功能",
+  "newValue": "基于 LangGraph 构建 Stateful Agent 工作流，通过 Tool Calling 编排简历分析、岗位匹配与模拟面试等业务能力",
   "reason": "减少技术栈堆砌，突出 Agent 编排职责",
-  "status": "PENDING"
+  "evidence": ["简历原文：使用 LangGraph 实现 Agent 功能"],
+  "impact": "项目经历第一条，提升个人职责辨识度",
+  "verificationRequired": []
 }
 ```
+
+每条 Patch 必须让用户看清四件事：为什么改、依据是什么、影响哪里、哪些事实还需本人核实。
+`verificationRequired` 是具体事实的字符串数组，不是布尔开关；仅重组已有事实时为空数组。
+
+JD 定向模式还必须单独返回 `JdGapAnalysis`，不能用 Patch 列表代替差距分析：
+
+```json
+{
+  "jobTitle": "Java 后端实习生",
+  "matchLevel": "MEDIUM",
+  "summary": "框架经验匹配，测试与容器化证据不足",
+  "items": [
+    {
+      "requirement": "使用 Spring Boot 构建 REST API",
+      "status": "MATCHED",
+      "resumeEvidence": ["Spring Boot 统一承载受控 Tool API"],
+      "impact": "支撑岗位核心职责",
+      "verificationRequired": []
+    }
+  ]
+}
+```
+
+状态只允许 `MATCHED / PARTIAL / MISSING / UNKNOWN`。已匹配或部分匹配必须给出简历证据；
+无法确认必须列出待核实事实。JD 读取失败、模型调用失败或 JD 定向结果缺少 Gap 时，必须明确失败且不保存提案，
+不得降级成通用改写或展示成「无需优化」。
 
 ---
 
@@ -756,11 +786,13 @@ Preparation Plan
 3. 通用优化
 4. JD 定向优化
 5. Agent 生成 ResumePatch
-6. 前端显示 Before / After / Reason
+6. JD 定向时先显示独立 Gap，再显示 Before / After / Reason / Evidence / Impact / Verification
 7. 用户接受 / 忽略 Patch
-8. 用户确认写入
-9. 创建新的 Resume Version
-10. 原始版本保持不变
+8. 同一组选中项生成 PDF Preview
+9. 用户二次确认写入
+10. 创建新的 Resume Version
+11. 原始版本保持不变
+12. 新版本可查询并导出 PDF
 ```
 
 ---
@@ -820,6 +852,7 @@ byte-java-jd.pdf
 
 ```text
 结合 Resume + JD
+先展示独立 JD Gap（要求、状态、证据、影响、待核实事实）
 生成定向修改建议
 ```
 
@@ -854,6 +887,16 @@ Agent 不得生成：
 建议补充真实性能数据。
 ```
 
+### Case 5：模型或 JD 依赖失败
+
+期望：
+
+```text
+明确说明未得到可验证 Gap / Patch，简历没有修改
+不创建伪 JD 定向提案
+不显示「无需优化」或「简历已经很好」
+```
+
 ---
 
 ## 26. Definition of Done
@@ -864,13 +907,18 @@ Agent 不得生成：
 Resume Optimization Intent 可识别
 Resume Context 可读取
 JD Context 可选读取
+JD 定向模式包含独立 Gap Analysis
 ResumePatch 使用结构化输出
+每条 Patch 展示原因、依据、影响范围与待核实事实
 Patch 可以单独接受 / 拒绝
+Diff、PDF Preview 与应用使用同一组选中项
 Apply 操作需要用户确认
 原始 Resume 不被覆盖
 新 Resume Version 可查询
+新 Resume Version 可导出 PDF
 Agent 不直接写数据库
 不存在明显事实编造
+调用失败不冒充「无需优化」
 ```
 
 ---

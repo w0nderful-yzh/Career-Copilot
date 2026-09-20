@@ -31,7 +31,10 @@ from career_copilot.agent.deps import GraphDeps
 from career_copilot.agent.events import emit_run_status, emit_tool_completed, emit_tool_started
 from career_copilot.agent.nodes.patch_validator import validate_patches
 from career_copilot.agent.plan import StreamPlan, static_text
-from career_copilot.agent.response import resume_optimization_block
+from career_copilot.agent.response import (
+    resume_gap_analysis_block,
+    resume_optimization_block,
+)
 from career_copilot.agent.state import CareerAgentState, RunStatus
 from career_copilot.clients.backend import BusinessToolError
 from career_copilot.config import settings
@@ -229,21 +232,31 @@ async def resume_optimization(
         profile_summary = ""
     emit_tool_completed("profile_query")
 
-    # 5. JD 上下文（P2-5）：仅 JD_TARGETED 注入 JD 全文（截断）；
-    #    用户显式指定方向时以方向为准，不被会话绑定的 JD 覆盖；失败不阻断
+    # 5. JD 上下文：JD_TARGETED 必须真正取到 JD，不得在依赖失败时
+    #    静默退化成通用优化，却仍对用户标注「JD 定向」。
     jd_context = ""
     if mode == OptimizationMode.JD_TARGETED.value and job_id is not None:
         emit_tool_started("job_query")
         try:
             job = await deps.backend.get_job(job_id)
             jd_text = (job.get("contentText") or "")[: settings.jd_context_max_chars]
-            if jd_text:
-                jd_context = (
-                    f"目标岗位：{job.get('title') or '未命名岗位'}"
-                    f"（{job.get('company') or '公司未知'}）\n{jd_text}"
+            if not jd_text.strip():
+                raise BusinessToolError(400, "JD 没有可用的文本内容")
+            jd_context = (
+                f"目标岗位：{job.get('title') or '未命名岗位'}"
+                f"（{job.get('company') or '公司未知'}）\n{jd_text}"
+            )
+        except BusinessToolError as exc:
+            emit_tool_completed("job_query")
+            return {
+                "plan": StreamPlan(
+                    text=static_text(
+                        f"JD 差距分析失败：{exc.message}。"
+                        "本次没有生成优化建议，避免把通用改写冒充成 JD 定向结果。"
+                        "请检查 JD 后重试。"
+                    )
                 )
-        except BusinessToolError:
-            jd_context = ""
+            }
         emit_tool_completed("job_query")
 
     # 6. LLM 生成 Patch 提案（结构化输出）
@@ -263,22 +276,32 @@ async def resume_optimization(
             target_direction=direction,
         )
     except Exception:
-        # 模型输出解析失败：诚实回落「无建议」而非整轮报错
-        # （简历优化不能瞎编建议，宁可不给；docstring 约定即此行为）
-        logger.exception("优化提案生成失败，回落无建议回复: resumeId=%s", resume_id)
+        # 调用失败必须与「模型确认无需优化」分开，不能用空建议掩盖错误。
+        logger.exception("优化提案生成失败: resumeId=%s", resume_id)
         emit_tool_completed("generate_patch")
         return {
             "plan": StreamPlan(
                 text=static_text(
-                    "这次没能生成有价值的优化建议（模型输出异常），暂时不做修改。"
-                    "可以稍后再试，或告诉我想优化的具体方向（比如某个项目描述），我再仔细看。"
+                    "本次简历优化调用失败，未得到可验证的 Gap 或 Patch。"
+                    "简历没有被修改；请稍后重试。"
                 )
             )
         }
     emit_tool_completed("generate_patch")
 
+    if mode == OptimizationMode.JD_TARGETED.value and proposal.jdGapAnalysis is None:
+        logger.warning("JD 定向输出缺少 Gap 分析: resumeId=%s jobId=%s", resume_id, job_id)
+        return {
+            "plan": StreamPlan(
+                text=static_text(
+                    "JD 定向分析结果不完整（缺少 Gap 证据），"
+                    "本次不展示也不保存 Patch，避免无依据修改。请重试。"
+                )
+            )
+        }
+
     # 7. 代码校验（结构性 + 真实性：数字/技术栈/公司/经历事实）
-    patches = proposal.patches
+    patches = [_complete_patch_explanation(patch) for patch in proposal.patches]
     validation = validate_patches(patches, resume_text)
     if validation.rejected:
         rejected_note = "；".join(
@@ -313,13 +336,25 @@ async def resume_optimization(
                 len(review_dropped), resume_id, [pid for pid, _ in review_dropped],
             )
 
+    gap_block = (
+        resume_gap_analysis_block(
+            resume_id=resume_id,
+            job_id=job_id,
+            analysis=proposal.jdGapAnalysis,
+        )
+        if proposal.jdGapAnalysis is not None and job_id is not None
+        else None
+    )
+
     if not patches:
         return {
             "plan": StreamPlan(
+                blocks=[gap_block] if gap_block is not None else [],
                 text=static_text(
-                    "我仔细看过了这份简历，目前没有值得动手改的地方——"
-                    "保持现有内容即可。如果你想针对某个方向（比如某个岗位 JD）"
-                    "做定向优化，告诉我方向我再仔细看一遍。"
+                    "分析已完成，但本轮没有通过真实性校验的安全 Patch。"
+                    "这不代表简历已经完美；JD Gap 中的缺失与待核实事实仍需你补充。"
+                    if gap_block is not None
+                    else "分析已完成，本轮没有通过真实性校验的安全 Patch。"
                 )
             )
         }
@@ -336,6 +371,10 @@ async def resume_optimization(
             optimization_type=mode,
             summary=proposal.summary,
             patches=[patch.model_dump() for patch in patches],
+            jd_gap_analysis=(
+                proposal.jdGapAnalysis.model_dump()
+                if proposal.jdGapAnalysis is not None else None
+            ),
             target_job_id=job_id if mode == OptimizationMode.JD_TARGETED.value else None,
             target_direction=direction if mode == OptimizationMode.TARGET_DIRECTION.value else None,
         )
@@ -371,6 +410,7 @@ async def resume_optimization(
     return {
         "plan": StreamPlan(
             blocks=[
+                *([gap_block] if gap_block is not None else []),
                 block,
                 ChoiceBlock(
                     title="其他操作",
@@ -391,6 +431,16 @@ async def resume_optimization(
             ),
         )
     }
+
+
+def _complete_patch_explanation(patch: ResumePatch) -> ResumePatch:
+    """为旧模型输出补齐可解释字段，不创造新事实。"""
+    evidence = patch.evidence
+    if not evidence:
+        source = patch.oldValue if patch.oldValue else patch.newValue
+        evidence = [source] if source else []
+    impact = patch.impact or f"影响 {patch.path} 对应的简历内容"
+    return patch.model_copy(update={"evidence": evidence, "impact": impact})
 
 
 def _mode_hint(mode: str, direction: str | None) -> str:

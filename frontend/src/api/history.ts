@@ -203,6 +203,9 @@ export const historyApi = {
       oldValue: string | null;
       newValue: string | null;
       reason: string | null;
+      evidence?: string[];
+      impact?: string | null;
+      verificationRequired?: string[];
     }>,
     templateId?: string,
   ): Promise<Blob> {
@@ -264,6 +267,11 @@ export interface ResumeOptimizationProposalItem {
   optimizationType: 'GENERAL' | 'TARGET_DIRECTION' | 'JD_TARGETED';
   status: 'PENDING' | 'APPLIED' | 'REJECTED';
   summary: string | null;
+  jdGapAnalysis?: {
+    jobTitle: string;
+    matchLevel: 'HIGH' | 'MEDIUM' | 'LOW' | 'UNKNOWN';
+    summary: string;
+  } | null;
   createdAt: string;
   decidedAt: string | null;
 }

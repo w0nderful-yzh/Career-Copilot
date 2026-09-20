@@ -227,11 +227,11 @@ public class TurnEvaluationService {
         try {
             TurnEvalDTO dto = structuredOutputInvoker.invoke(
                 chatClient, systemPrompt, userPrompt, outputConverter,
-                ErrorCode.INTERVIEW_EVALUATION_FAILED, "回合评估失败：", "回合评估", log,
+                ErrorCode.INTERVIEW_EVALUATION_FAILED, "回合评估失败：", "turn_evaluation", log,
                 // 实时档：整个操作（含解析重试）共享一个预算，最坏等待可控（ARCH-2b）
                 StructuredCallPolicy.realtime(structuredOutputProperties)
             );
-            TurnEvaluation evaluation = normalize(dto);
+            TurnEvaluation evaluation = normalize(dto, answer);
             log.debug("回合评估完成: question={}, score={}, state={}",
                 question.questionIndex(), evaluation.score(), evaluation.answerState());
             return evaluation;
@@ -663,6 +663,17 @@ public class TurnEvaluationService {
      * - coverage 由 covered/missing 代码计算。
      */
     static TurnEvaluation normalize(TurnEvalDTO dto) {
+        return normalize(dto, null);
+    }
+
+    /**
+     * 归一化模型输出，并在真实调用路径校验生成追问的回答依据。
+     *
+     * <p>提示词要求 {@code generatedAnswerBasis} 逐字引用用户回答，但模型输出本身不能作为
+     * 这个事实的证明。只有依据片段确实出现在本轮回答中，Java 才允许后续策略接纳生成追问；
+     * 否则清空依据，让既有受限生成边界确定性回退到预置候选或下一主问题。
+     */
+    static TurnEvaluation normalize(TurnEvalDTO dto, String answer) {
         if (dto == null) {
             return TurnEvaluation.unknownFallback();
         }
@@ -697,6 +708,9 @@ public class TurnEvaluationService {
         String generatedFollowUp = cleanText(dto.generatedFollowUp(), MAX_GENERATED_FOLLOW_UP_CHARS);
         String generatedExpectedPoint = cleanText(dto.generatedExpectedPoint(), MAX_FOCUS_CHARS);
         String generatedAnswerBasis = cleanText(dto.generatedAnswerBasis(), MAX_ANSWER_BASIS_CHARS);
+        if (answer != null && !answer.contains(generatedAnswerBasis)) {
+            generatedAnswerBasis = "";
+        }
         // P4Q-3c：难度与停深挖指令，与答案质量分开保留
         DifficultyAdjust difficultyAdjust = parseDifficultyAdjust(dto.difficultyAdjust());
         boolean stopDeepDive = Boolean.TRUE.equals(dto.stopDeepDive());

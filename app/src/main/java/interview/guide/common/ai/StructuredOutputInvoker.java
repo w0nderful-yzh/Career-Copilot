@@ -32,8 +32,9 @@ import java.util.regex.Pattern;
  * <h3>重试与预算（ARCH-2b）</h3>
  * <ul>
  *   <li><b>重试责任只有这一层</b>：底层重试已显式关闭
- *       （{@code spring.ai.retry.max-attempts=1}），因此这里的 attempts 就是实际模型请求数，
- *       不会出现「日志说 1 次、账单说 3 次」。</li>
+ *       （{@code spring.ai.retry.max-attempts=1}）；实时档同时禁用 schema advisor 的内部模型修复，
+ *       因此实时 attempts 就是实际模型请求数，不会出现「日志说 1 次、账单说 3 次」。
+ *       后台档仍保留 schema validation，其 attempts 只表示本封装的逻辑尝试次数。</li>
  *   <li><b>重试共享一个截止时间</b>：预算按**整个操作**计，解析重试只能用剩余额度；
  *       剩余低于 {@code minAttemptMs} 时不再发起新尝试，避免把用户等待拖成
  *       「预算 + 单次调用耗时」。</li>
@@ -168,7 +169,11 @@ public class StructuredOutputInvoker {
             try {
                 T result = callWithinBudget(
                     () -> callStructuredOutput(chatClient, attemptSystemPrompt, userPrompt,
-                        outputConverter, logContext, log),
+                        outputConverter, logContext, log,
+                        // Spring AI 的 schema validation advisor 可能在一次 entity() 调用内部
+                        // 再发模型修复请求。实时档必须让 attempts 等于真实请求数，所以改走
+                        // 单次响应 + 本地解析/引号修复；后台档仍可使用 schema validation。
+                        schemaValidationEnabled && !policy.realtime()),
                     policy, remainMs(deadlineNanos));
                 recordAttempt(contextTag, STATUS_SUCCESS, null);
                 recordInvocation(contextTag, STATUS_SUCCESS, null, startNanos);
@@ -232,13 +237,14 @@ public class StructuredOutputInvoker {
         String userPrompt,
         BeanOutputConverter<T> outputConverter,
         String logContext,
-        Logger log
+        Logger log,
+        boolean validateSchema
     ) {
         var call = chatClient.prompt()
             .system(systemPrompt)
             .user(userPrompt)
             .call();
-        if (schemaValidationEnabled) {
+        if (validateSchema) {
             return call.entity(outputConverter, spec -> spec.validateSchema());
         }
         String content = call.content();

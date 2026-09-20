@@ -122,6 +122,21 @@ class TurnEvaluationServiceTest {
   }
 
   @Test
+  @DisplayName("受限生成依据必须逐字出现在本轮回答中，模型编造的依据由 Java 清空")
+  void rejectsGeneratedBasisNotQuotedFromAnswer() {
+    TurnEvalDTO dto = new TurnEvalDTO(
+        60, "PARTIAL", List.of("堆"), List.of("乱序回填"), "验证乱序回填", false,
+        "follow_up_generated", "", "缺少亲历细节", "",
+        "你提到回填乱序，当时怎么定位的？", "定位过程", "回填乱序", "none", false);
+
+    TurnEvaluation accepted = TurnEvaluationService.normalize(dto, "当时日志显示回填乱序");
+    TurnEvaluation rejected = TurnEvaluationService.normalize(dto, "当时只看到缓存命中率下降");
+
+    assertThat(accepted.generatedAnswerBasis()).isEqualTo("回填乱序");
+    assertThat(rejected.generatedAnswerBasis()).isEmpty();
+  }
+
+  @Test
   @DisplayName("含实质内容的技术判断不会被误判为跳过（P4Q-3c）")
   void technicalJudgementIsNotSkipped() {
     // 「不会发生死锁」是技术判断，不是跳过指令：短路词表精确匹配，它不该短路

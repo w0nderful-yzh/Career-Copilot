@@ -10,15 +10,17 @@ package interview.guide.common.ai;
  * @param maxAttempts  尝试上限（含首次）
  * @param budgetMs     整个操作的预算（毫秒）；<= 0 表示不设上限（由 HTTP 超时兜底）
  * @param minAttemptMs 剩余预算低于该值就不再发起新尝试
+ * @param realtime     是否为用户正在等待的实时调用；与是否配置预算是两个独立维度
  */
-public record StructuredCallPolicy(int maxAttempts, long budgetMs, long minAttemptMs) {
+public record StructuredCallPolicy(int maxAttempts, long budgetMs, long minAttemptMs, boolean realtime) {
 
     /** 实时档：用户正在等待（面试逐轮评估、意图分类）——预算收紧、降级要快。 */
     public static StructuredCallPolicy realtime(StructuredOutputProperties properties) {
         return new StructuredCallPolicy(
             Math.max(1, properties.getStructuredRealtimeMaxAttempts()),
             properties.getStructuredRealtimeBudgetMs(),
-            Math.max(0, properties.getStructuredRealtimeMinAttemptMs()));
+            Math.max(0, properties.getStructuredRealtimeMinAttemptMs()),
+            true);
     }
 
     /** 后台档：报告、优化提案这类异步任务——默认不设上限，保持既有行为。 */
@@ -26,7 +28,8 @@ public record StructuredCallPolicy(int maxAttempts, long budgetMs, long minAttem
         return new StructuredCallPolicy(
             Math.max(1, properties.getStructuredMaxAttempts()),
             properties.getStructuredBackgroundBudgetMs(),
-            0);
+            0,
+            false);
     }
 
     /** 是否受预算约束 */

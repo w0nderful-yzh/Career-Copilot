@@ -174,5 +174,7 @@ class StructuredOutputInvokerTest {
 
         assertThat(result.direction()).isEqualTo("report");
         assertThat(StructuredCallPolicy.background(properties).budgeted()).isFalse();
+        assertThat(StructuredCallPolicy.background(properties).realtime()).isFalse();
+        assertThat(StructuredCallPolicy.realtime(properties).realtime()).isTrue();
     }
 }

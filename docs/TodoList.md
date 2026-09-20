@@ -188,8 +188,8 @@ React 展示本轮结果与下一步
 
 ### 4.3 第三批：针对回答的追问与完整节奏控制
 
-> P4-4b 与 P4Q-3c / P4-8b 已完成，见 7.14。P4-9b 的确定性质量与一致性回归已随本批落地，
-> 但真实模型下的成对质量样例与 P95 延迟仍需实测，未在本批虚报。
+> P4-4b、P4Q-3c / P4-8b 与 P4-9b 均已完成，见 7.14、7.15。第三批已用固定简历、成对回答和真实模型
+> 验证「有关键缺口才追问、回答充分即转场」，并同时记录正常 / 故障链路的 P95、实际请求数与降级比例。
 
 - [x] **P4-4b 候选多样性与受限生成**（见 7.14）
   - 候选覆盖澄清、原理、取舍、场景、故障及个人贡献；组内候选池容量与运行期追问预算解耦，
@@ -206,11 +206,11 @@ React 展示本轮结果与下一步
   - 承接语简短且可选，不固定赞美或泄露标准答案；Java 否决建议后文案与最终动作一致。
   - 验收用例：泛泛描述与提到亲历乱序回填分别落到不同缺口→不同追问；「不会发生死锁」不误判为跳过；
     明确停止深挖当轮软转场、保留证据、不计 NO_ANSWER。
-- [ ] **P4-9b 面试质量与响应速度联合验收**
-  - 固定简历 / 成对回答样例的质量与一致性回归已随 7.14 落地（不同缺口、充分回答转场、无新增信息、
-    预算用尽、生成题提交一致性与恢复）。
-  - 仍待：真实模型下分别统计正常调用与故障时的端到端耗时、实际调用次数与降级比例，对照 3.5 性能目标；
-    不能用大量降级换取表面达标。
+- [x] **P4-9b 面试质量与响应速度联合验收**（见 7.15）
+  - 固定简历与 10 组「关键缺口 / 充分回答」成对样例，经真实 HTTP → 模型 → Java 决策 → 短事务落库 →
+    下一题响应链路验证；正常模式质量通过率 100%，P95 2876ms，20 个样例对应 20 次实际模型请求，降级 0%。
+  - 故障模式将实时预算压到 100ms：P95 154ms，20 个样例对应 20 次实际模型请求，降级 100%，均安全转入
+    下一主问题且没有隐藏重试；该数据只验证失败边界，不拿降级结果冒充正常性能。
 
 
 ### 4.4 第四批：报告、画像、Agent 复盘与面试闭环
@@ -434,8 +434,9 @@ POST /api/profile/repair/skip-semantics     复核「已标记作答但得 0 分
 ### 7.9 实时调用治理收口（ARCH-2b）
 
 - [x] **重试责任只有一层**：Python 侧 `ChatOpenAI(max_retries=0)`、Java 侧 `spring.ai.retry.max-attempts=1`
-  都是显式配置；`LlmResult.requests` 与 `StructuredOutputInvoker` 的 attempts 就是实际模型请求数，
-  「日志说 1 次、上游计费 3 次」不再可能。
+  都是显式配置；Java 实时档禁用 schema advisor 内部模型修复，改为单次响应后本地解析 / 引号修复，
+  因而 `LlmResult.requests` 与实时 `StructuredOutputInvoker.attempts` 都是实际模型请求数。后台档仍允许 schema
+  validation，其 attempts 只表示本封装的逻辑尝试次数，不作为上游计费口径。
 - [x] **一次操作共享一个截止时间**：Python `LlmExecutor` 用 operation deadline，解析重试只能用剩余预算，
   剩余低于 `llm_min_attempt_ms` 时不再发起（该下限不超过预算的一半，小预算不会被下限吃光）；
   Java `StructuredCallPolicy` 承载同一语义，逐题评估按 `structured-realtime-*` 的预算执行，超时即降级为 UNKNOWN。
@@ -455,8 +456,7 @@ POST /api/profile/repair/skip-semantics     复核「已标记作答但得 0 分
   - 真实链路（自起 8082 实例，用完即停，未碰 8081）：向自适应探针会话提交一次真实作答，
     端到端 831ms 完成逐题评估并返回下一题，`turnVersion` 正常推进（顺带回归了 P4-9a 的提交链路）。
     单次样本只用于确认预算没有卡住真实调用，P95 口径的实测属 P4-9b。
-  - **仍未证明的事**：端到端延迟是否达到 3.5 节的目标属 P4-9b，需要实测数据；
-    本次只保证预算与降级路径可解释，不用降级率换表面数字。
+  - P4-9b 已在 2026-09-20 完成 20 组正常 / 20 组故障真实链路实测，结果见 7.15。
 
 ### 7.8 逐轮提交幂等与推进一致性（P4-9a）
 
@@ -528,5 +528,26 @@ POST /api/profile/repair/skip-semantics     复核「已标记作答但得 0 分
 - [x] **已验证**（2026-09-18，本机）：Java `./gradlew :app:test --no-daemon` 全绿（含 `V20260924` 迁移真跑、
   `AdaptiveInterviewPolicyTest` 新增 5 例覆盖生成接纳 / 依据缺失回退 / 预算用尽不消费候选 / 停深挖 / 难度偏好、
   `TurnEvaluationServiceTest` 新增生成与节奏归一、不-误判-跳过、预算裁剪，及 `InterviewSessionAdaptiveTest`
-  生成题落库断言）；前端 `pnpm run build` 与 `test:interview-turns`（16 例）通过。**仍未做**：真实模型下的
-  成对质量样例与端到端 P95 延迟实测（属 P4-9b），本批不以降级或桩用例冒充已测延迟。
+  生成题落库断言）；前端 `pnpm run build` 与 `test:interview-turns`（16 例）通过。真实模型联合验收已在
+  2026-09-20 补齐，见 7.15。
+
+### 7.15 面试质量与响应速度联合验收（P4-9b）
+
+- [x] **可重复的真实链路夹具**：新增 opt-in 的 `InterviewLiveAcceptanceTest`，固定简历、候选池与 10 组
+  「只回答堆、遗漏栈」/「堆栈均回答充分」成对答案；每个样例都从随机端口 HTTP 接口进入，穿过真实模型、
+  Java 决策、逐轮短事务与下一题响应。默认测试不连接外部模型，仅在 `P4_LIVE_ACCEPTANCE=true` 时运行；
+  会话及临时 Provider 在测试后清理，报告写入 `app/build/reports/p4-9b/`。
+- [x] **正常模式实测**（2026-09-20，本机，`deepseek-v4-flash`）：20 个样例全部得到可用评估；10 个关键缺口
+  全部进入针对「虚拟机栈」的追问，10 个充分回答全部转入 Redis 主问题，质量通过率 100%；端到端 P95
+  为 **2876ms**，达到 3.5 节「争取 ≤3s」目标；实际模型请求 20 次、降级 0%，没有用降级换取延迟。
+- [x] **故障模式实测**：将实时总预算压到 100ms 后，20 个样例端到端 P95 为 **154ms**，实际模型请求
+  20 次、失败调用 20 次、降级 100%；全部按 UNKNOWN 保守转入下一主问题，没有因超时追加隐藏重试。
+  该模式只验证可解释降级和节奏不中断，不评价追问质量。
+- [x] **验收中修正的边界**：Spring AI schema validation advisor 可能在一次 `entity()` 内部再发模型修复请求，
+  导致业务 attempts 小于真实请求数；实时档现改为「单次模型响应 + 本地结构化解析 / 引号修复」，后台档仍保留
+  schema validation。受限生成的 `generatedAnswerBasis` 也从“非空即可”收紧为必须逐字出现在本轮回答中，
+  否则 Java 清空依据并走既有确定性回退。
+- [x] **复跑命令**：正常与故障分别执行
+  `P4_LIVE_ACCEPTANCE=true P4_LIVE_MODE=normal P4_LIVE_PROVIDER=deepseek ./gradlew :app:test --tests '*InterviewLiveAcceptanceTest' --no-daemon --rerun-tasks`
+  与 `P4_LIVE_ACCEPTANCE=true P4_LIVE_MODE=failure P4_LIVE_PROVIDER=deepseek ./gradlew :app:test --tests '*InterviewLiveAcceptanceTest' --no-daemon --rerun-tasks`；
+  `--rerun-tasks` 用于避免 Gradle 因环境变量变化复用旧结果。

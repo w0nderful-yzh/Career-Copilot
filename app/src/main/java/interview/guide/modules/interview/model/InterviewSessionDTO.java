@@ -61,7 +61,9 @@ public record InterviewSessionDTO(
     /** 剩余预算（秒，P4Q-2）；无计划时为 null（前端不显示假数字） */
     Integer remainingSeconds,
     /** 必要覆盖话题（P4Q-2）；空 = 未声明（覆盖状态由前端按 candidates×turns 推导展示） */
-    List<String> requiredTopics
+    List<String> requiredTopics,
+    /** 提案重点分类（P5-2）；空 = 未记录（旧会话或未走提案创建）——闭环审计用 */
+    List<String> focusCategories
 ) {
 
     /** 兼容构造点：只有素材、没有轨迹（知识库面试等尚未接入 P4-1 的链路） */
@@ -73,7 +75,7 @@ public record InterviewSessionDTO(
             currentQuestionId(candidates, currentQuestionIndex, status),
             currentQuestion(candidates, currentQuestionIndex, status), candidates,
             List.of(), status, knowledgeBaseId, interviewCategory, adaptive, null, null, null, null,
-            0, null, null, 0, null, List.of());
+            0, null, null, 0, null, List.of(), List.of());
     }
 
     /** 兼容构造点（带评估状态但未带简历来源） */
@@ -86,7 +88,7 @@ public record InterviewSessionDTO(
             currentQuestionId(candidates, currentQuestionIndex, status),
             currentQuestion(candidates, currentQuestionIndex, status), candidates,
             List.of(), status, knowledgeBaseId, interviewCategory, adaptive, evaluateStatus,
-            evaluateError, null, null, 0, null, null, 0, null, List.of());
+            evaluateError, null, null, 0, null, null, 0, null, List.of(), List.of());
     }
 
     /** 兼容构造点：带简历来源与版本（创建 / 报告链路不关心轨迹，轨迹由会话读取补齐） */
@@ -100,7 +102,8 @@ public record InterviewSessionDTO(
             currentQuestionId(candidates, currentQuestionIndex, status),
             currentQuestion(candidates, currentQuestionIndex, status), candidates,
             List.of(), status, knowledgeBaseId, interviewCategory, adaptive, evaluateStatus,
-            evaluateError, resumeSource, resumeVersion, 0, null, null, 0, null, List.of());
+            evaluateError, resumeSource, resumeVersion, 0, null, null, 0, null, List.of(),
+            List.of());
     }
 
     /** 兼容旧构造点（无 adaptive 与评估状态），默认非自适应 */
@@ -112,7 +115,7 @@ public record InterviewSessionDTO(
             currentQuestionId(candidates, currentQuestionIndex, status),
             currentQuestion(candidates, currentQuestionIndex, status), candidates,
             List.of(), status, knowledgeBaseId, interviewCategory, false, null, null, null, null,
-            0, null, null, 0, null, List.of());
+            0, null, null, 0, null, List.of(), List.of());
     }
 
     private static String currentQuestionId(List<InterviewQuestionDTO> candidates, int currentIndex,

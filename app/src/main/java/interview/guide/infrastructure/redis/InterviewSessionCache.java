@@ -70,6 +70,8 @@ public class InterviewSessionCache {
         private Integer plannedDurationMinutes;
         /** 必要覆盖话题（JSON 数组，P4Q-2） */
         private String requiredTopicsJson;
+        /** 提案重点分类（JSON 数组，P5-2）：让「为什么这场重点考了这些」可审计 */
+        private String focusCategoriesJson;
         /** 用户答题累计耗时（秒，P4Q-2）：不含模型等待 */
         private Integer consumedSeconds = 0;
         private SessionStatus status;
@@ -266,8 +268,10 @@ public class InterviewSessionCache {
             try {
                 session.setRequiredTopicsJson(
                     objectMapper.writeValueAsString(plan.requiredTopics()));
+                session.setFocusCategoriesJson(
+                    objectMapper.writeValueAsString(plan.focusCategories()));
             } catch (JacksonException e) {
-                log.warn("序列化必要覆盖失败，计划按无覆盖处理: sessionId={}", sessionId, e);
+                log.warn("序列化计划快照失败，计划按无覆盖处理: sessionId={}", sessionId, e);
             }
             String key = buildSessionKey(sessionId);
             redisService.set(key, session, SESSION_TTL);

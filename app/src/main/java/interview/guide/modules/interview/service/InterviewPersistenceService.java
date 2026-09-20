@@ -234,6 +234,9 @@ public class InterviewPersistenceService {
             if (plan != null) {
                 session.setPlannedDurationMinutes(plan.plannedDurationMinutes());
                 session.setRequiredTopicsJson(objectMapper.writeValueAsString(plan.requiredTopics()));
+                // P5-2：重点分类一并落库，闭环审计才有据可依
+                session.setFocusCategoriesJson(
+                    objectMapper.writeValueAsString(plan.focusCategories()));
             }
             if (questions != null && !questions.isEmpty()) {
                 session.setQuestionPresentedAt(LocalDateTime.now());

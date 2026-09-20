@@ -70,7 +70,7 @@ class InterviewProgressServiceTest {
         "s1", "", 4, 2, "q3", database, candidates,
         List.of(answered("q1", 1, "JVM 的主问题", "堆分新生代与老年代")),
         SessionStatus.IN_PROGRESS, null, "java-backend", true, null, null, null, null, 1, null,
-        20, 300, 900, List.of("JVM", "数据库"));
+        20, 300, 900, List.of("JVM", "数据库"), List.of("JVM"));
   }
 
   @Test
@@ -117,7 +117,7 @@ class InterviewProgressServiceTest {
         List.of(main("q1", "JVM", 0)),
         List.of(answered("q1", 1, "JVM 的主问题", longAnswer)),
         SessionStatus.IN_PROGRESS, null, "java-backend", true, null, null, null, null, 1, null,
-        20, 60, 1140, List.of("JVM"));
+        20, 60, 1140, List.of("JVM"), List.of("JVM"));
     when(sessionService.getSession("s1")).thenReturn(session);
 
     InterviewProgressDTO progress = service().progressOf("s1", "q1");
@@ -137,7 +137,7 @@ class InterviewProgressServiceTest {
         "s1", "", 1, 0, "q1", main("q1", "JVM", 0),
         List.of(main("q1", "JVM", 0)), List.of(),
         SessionStatus.IN_PROGRESS, null, "java-backend", true, null, null, null, null, 1, null,
-        null, 0, null, List.of());
+        null, 0, null, List.of(), List.of());
     when(sessionService.getSession("s1")).thenReturn(legacy);
 
     InterviewProgressDTO progress = service().progressOf("s1", null);

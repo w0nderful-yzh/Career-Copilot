@@ -10,6 +10,8 @@ import java.util.List;
  * 时长才是用户真正给的约束。
  *
  * @param plannedDurationMinutes 预计时长（分钟）：规模与收束判据都由它推导
+ * @param focusCategories        提案重点分类 key（P5-2）：落库构成计划快照，
+ *                               让「为什么这场重点考了这些」在面试结束后仍可审计
  * @param requiredTopics         必要覆盖的话题（label/key）。
  *                               **空 = 未声明必要覆盖**——此时「覆盖完成」不作为收束条件，
  *                               面试按候选与预算自然收束；只有显式声明的必要覆盖才会触发
@@ -18,6 +20,7 @@ import java.util.List;
  */
 public record InterviewPlan(
     int plannedDurationMinutes,
+    List<String> focusCategories,
     List<String> requiredTopics
 ) {
 
@@ -31,7 +34,13 @@ public record InterviewPlan(
     public static final int MAX_DURATION_MINUTES = 120;
 
     public InterviewPlan {
+        focusCategories = focusCategories == null ? List.of() : List.copyOf(focusCategories);
         requiredTopics = requiredTopics == null ? List.of() : List.copyOf(requiredTopics);
+    }
+
+    /** 兼容构造点：只关心时长与必要覆盖的调用方（如进展读取） */
+    public InterviewPlan(int plannedDurationMinutes, List<String> requiredTopics) {
+        this(plannedDurationMinutes, List.of(), requiredTopics);
     }
 
     /** 主问题规模：由时长推导并夹取到合理区间（3-12 个主题） */
@@ -47,8 +56,8 @@ public record InterviewPlan(
      * @param legacyQuestionCount    旧契约的题数：按「每主问题 4 分钟」折算成时长，
      *                               让 Agent 等旧调用方在 P4-8a 改造前不至于丢掉规模意图
      */
-    public static InterviewPlan of(Integer plannedDurationMinutes, List<String> requiredTopics,
-                                   Integer legacyQuestionCount) {
+    public static InterviewPlan of(Integer plannedDurationMinutes, List<String> focusCategories,
+                                   List<String> requiredTopics, Integer legacyQuestionCount) {
         int minutes = plannedDurationMinutes != null
             ? plannedDurationMinutes
             : (legacyQuestionCount != null
@@ -56,6 +65,7 @@ public record InterviewPlan(
                 : DEFAULT_DURATION_MINUTES);
         return new InterviewPlan(
             Math.max(MIN_DURATION_MINUTES, Math.min(MAX_DURATION_MINUTES, minutes)),
+            focusCategories,
             requiredTopics);
     }
 

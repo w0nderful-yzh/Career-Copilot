@@ -140,7 +140,10 @@ async def interview_proposal(
     #    不再下发「重新推荐」Choice 触发聊天消息；自然语言调整直接在 Composer 输入，
     #    由 LLM 结合本条消息（含用户调整诉求）重新推荐）
     emit_run_status(RunStatus.WAITING_USER.value)
-    reasons = profile_reasons_for(profile, focus_skill)
+    # 依据要解释**实际推荐的重点**：用户点了按钮就用他指定的那个，
+    # 否则用推导后的首个重点——不然「建议补强 Java」到了提案卡上就只剩一句泛泛的推荐理由
+    explained_skill = focus_skill or (proposal["focus"][0] if proposal["focus"] else None)
+    reasons = profile_reasons_for(profile, explained_skill)
     if focus_skill and not proposal["requested_focus_applied"]:
         # 用户的指定没落到本方向分类上：如实说明，不假装考得到（P6-3：无依据不宣称）
         reasons.append(f"{focus_skill} 不在推荐方向的考察分类里，本场先按方向推荐")

@@ -163,7 +163,7 @@ public class InterviewSessionService {
         // P4Q-2：计划以「预计时长 + 必要覆盖」表达；规模（主问题数）由时长推导。
         // 旧调用方只传题数 → 按每主问题 4 分钟折算，保持规模意图不丢（P4-8a 再改契约）。
         InterviewPlan requestedPlan = InterviewPlan.of(request.plannedDurationMinutes(),
-            request.requiredTopics(), request.questionCount());
+            request.focusCategories(), request.requiredTopics(), request.questionCount());
         int mainCount = InterviewPlan.mainCountFor(requestedPlan.plannedDurationMinutes());
 
         log.info("创建新面试会话: {}, skill: {}, difficulty: {}, 计划 {} 分钟（约 {} 个主问题）, resumeId: {}",
@@ -359,7 +359,7 @@ public class InterviewSessionService {
                 dto.resumeSource(), dto.resumeVersion(), entity.getTurnVersion(),
                 entity.getEndReason(),
                 dto.plannedDurationMinutes(), dto.consumedSeconds(), dto.remainingSeconds(),
-                dto.requiredTopics()))
+                dto.requiredTopics(), dto.focusCategories()))
             .orElse(dto);
     }
 
@@ -1653,8 +1653,22 @@ public class InterviewSessionService {
             planned,
             consumed,
             remainingSeconds,
-            requiredTopicsOf(session)
+            requiredTopicsOf(session),
+            focusCategoriesOf(session)
         );
+    }
+
+    /** 提案重点分类（P5-2）：缓存里存的是 JSON 数组；解析失败按未记录处理 */
+    private List<String> focusCategoriesOf(CachedSession session) {
+        String json = session.getFocusCategoriesJson();
+        if (json == null || json.isBlank()) {
+            return List.of();
+        }
+        try {
+            return objectMapper.readValue(json, new TypeReference<List<String>>() {});
+        } catch (JacksonException e) {
+            return List.of();
+        }
     }
 
     /** 必要覆盖话题（P4Q-2）：缓存里存的是 JSON 数组；解析失败按未声明处理 */

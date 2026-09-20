@@ -186,6 +186,15 @@ public class InterviewSessionEntity {
     private String requiredTopicsJson;
 
     /**
+     * 提案重点分类 key 列表（P5-2，JSON 数组）。
+     *
+     * <p>focus 只在出题那一刻被消费过，不落库就没人说得清「为什么这场重点考了这些」。
+     * 与必要覆盖、计划时长一起构成计划快照；推荐依据文本不落库（展示层措辞，实时推导）。
+     */
+    @Column(name = "focus_categories_json", columnDefinition = "TEXT")
+    private String focusCategoriesJson;
+
+    /**
      * 用户答题累计耗时（秒，P4Q-2）。
      *
      * <p>只记「题目展示 → 本轮提交」的墙钟并扣除本轮模型评估耗时——
@@ -494,6 +503,14 @@ public class InterviewSessionEntity {
 
     public void setEndReason(String endReason) {
         this.endReason = endReason;
+    }
+
+    public String getFocusCategoriesJson() {
+        return focusCategoriesJson;
+    }
+
+    public void setFocusCategoriesJson(String focusCategoriesJson) {
+        this.focusCategoriesJson = focusCategoriesJson;
     }
 
     public Integer getPlannedDurationMinutes() {

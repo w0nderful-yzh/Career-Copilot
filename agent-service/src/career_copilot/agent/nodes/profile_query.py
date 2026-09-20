@@ -4,6 +4,7 @@
 上下文注入聚合分与证据明细，回答流式生成；无画像数据时引导先参加面试。
 """
 
+import logging
 from typing import Any
 
 from career_copilot.agent.deps import GraphDeps
@@ -12,8 +13,16 @@ from career_copilot.agent.plan import StreamPlan, static_text
 from career_copilot.agent.response import skill_profile_block
 from career_copilot.agent.router import ActionRoute
 from career_copilot.agent.state import CareerAgentState
+from career_copilot.clients.backend import BusinessToolError
 from career_copilot.schemas.message import ActionBlock
-from career_copilot.tools import format_history, summarize_skill_profile
+from career_copilot.tools import (
+    format_history,
+    latest_interview_session_id,
+    summarize_profile_advice,
+    summarize_skill_profile,
+)
+
+logger = logging.getLogger(__name__)
 
 
 async def profile_query(state: CareerAgentState, deps: GraphDeps) -> dict[str, Any]:
@@ -44,7 +53,24 @@ async def profile_query(state: CareerAgentState, deps: GraphDeps) -> dict[str, A
             )
         }
 
-    context = summarize_skill_profile(profile)
+    # 本场变化（P6-3）：从画像证据里找最近一场面试，再取 Java 算好的前后分。
+    # 差分是 Java 的业务判断（跨场聚合），Python 只取用；取不到就退化为画像事实，不自己算分。
+    impact: dict[str, Any] = {}
+    session_id = latest_interview_session_id(profile)
+    if session_id:
+        emit_tool_started("profile_impact")
+        try:
+            impact = await deps.backend.get_profile_impact(session_id)
+        except BusinessToolError as exc:
+            logger.info("画像差分读取失败，建议退化为画像事实: code=%s", exc.code)
+        emit_tool_completed("profile_impact")
+
+    context = (
+        f"{summarize_skill_profile(profile)}\n\n"
+        f"{summarize_profile_advice(profile, impact)}\n\n"
+        "以上是可宣称的事实：没有证据的技能不要描述其水平或提升（只有简历声明 ≠ 已验证）；"
+        "给建议时请指向可执行的动作（如针对某个待补强技能来一场定向面试）。"
+    )
     return {
         "plan": StreamPlan(
             blocks=[skill_profile_block(profile)],

@@ -26,6 +26,7 @@ from career_copilot.clients.backend import BusinessToolError
 from career_copilot.config import settings
 from career_copilot.prompts import load
 from career_copilot.tools import (
+    profile_reasons_for,
     summarize_resume_version,
     summarize_skill_profile,
     summarize_skills,
@@ -75,8 +76,14 @@ MAX_DURATION_MINUTES = 120
 async def interview_proposal(
     state: CareerAgentState, deps: GraphDeps
 ) -> dict[str, Any]:
-    """面试发起：读技能方向 + 目标简历 → 推荐配置 → 提案确认块。"""
+    """面试发起：读技能方向 + 目标简历 → 推荐配置 → 提案确认块。
+
+    <p>P4-6b：从画像低分项「一键定向」发起时，动作载荷会带 `focusSkill`——
+    它是用户的明确选择，**优先级高于模型推荐**：能对上方向分类就强制进重点与必要覆盖，
+    对不上就如实说明（不悄悄换成一个考不到的重点）。
+    """
     emit_tool_started("interview_proposal")
+    focus_skill = _requested_focus_skill(state)
 
     # 1. 技能方向（list_skills，Java 侧）
     emit_tool_started("list_skills")
@@ -126,12 +133,17 @@ async def interview_proposal(
         resume_context=resume_context,
         profile=profile,
         profile_summary=summarize_skill_profile(profile, limit=PROFILE_SKILL_LIMIT),
+        focus_skill=focus_skill,
     )
 
     # 5. 产出提案确认块（Interview Mode 重构：手动调整由前端内联面板完成，
     #    不再下发「重新推荐」Choice 触发聊天消息；自然语言调整直接在 Composer 输入，
     #    由 LLM 结合本条消息（含用户调整诉求）重新推荐）
     emit_run_status(RunStatus.WAITING_USER.value)
+    reasons = profile_reasons_for(profile, focus_skill)
+    if focus_skill and not proposal["requested_focus_applied"]:
+        # 用户的指定没落到本方向分类上：如实说明，不假装考得到（P6-3：无依据不宣称）
+        reasons.append(f"{focus_skill} 不在推荐方向的考察分类里，本场先按方向推荐")
     block = interview_proposal_block(
         direction=proposal["direction"],
         direction_name=_direction_name(skills, proposal["direction"]),
@@ -142,6 +154,7 @@ async def interview_proposal(
         required_topics=proposal["required_topics"],
         resume_id=resume_id,
         summary=proposal["summary"],
+        reasons=reasons,
     )
     return {
         "plan": StreamPlan(
@@ -165,6 +178,7 @@ async def _derive_proposal(
     resume_context: str | None,
     profile: dict[str, Any],
     profile_summary: str,
+    focus_skill: str | None = None,
 ) -> dict[str, Any]:
     """调用 Answerer 底层模型做结构化推荐，失败回落默认值。
 
@@ -212,6 +226,9 @@ async def _derive_proposal(
         if not required_topics:
             # 提案说是重点，就至少触及其中前两个；Java 创建后还会剔除候选池不存在的话题。
             required_topics = focus[:2]
+        focus, required_topics, applied = _apply_requested_focus(
+            focus, required_topics, focus_skill, categories
+        )
         summary = (draft.summary or "")[:80]
         return {
             "direction": direction,
@@ -222,6 +239,7 @@ async def _derive_proposal(
             ),
             "required_topics": required_topics,
             "summary": summary,
+            "requested_focus_applied": applied,
         }
     except Exception:
         # 模型异常不应阻断面试发起：回落确定性默认推荐（focus 仍尽量取画像候选）
@@ -229,6 +247,7 @@ async def _derive_proposal(
         fallback_focus = _profile_focus_hints(
             profile, _direction_categories(skills, DEFAULT_DIRECTION)
         )
+        applied = focus_skill is None
         return {
             "direction": DEFAULT_DIRECTION,
             "difficulty": DEFAULT_DIFFICULTY,
@@ -236,7 +255,50 @@ async def _derive_proposal(
             "planned_duration_minutes": settings.interview_default_duration_minutes,
             "required_topics": fallback_focus[:2],
             "summary": "按 Java 后端 · 中级难度推荐",
+            "requested_focus_applied": applied,
         }
+
+
+def _requested_focus_skill(state: CareerAgentState) -> str | None:
+    """从动作载荷取用户指定的重点技能（画像低分项「一键定向」发起时带上）。"""
+    action = state.get("action") or {}
+    payload = action.get("payload") or {}
+    raw = payload.get("focusSkill")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return raw.strip()
+
+
+def _apply_requested_focus(
+    focus: list[str],
+    required_topics: list[str],
+    focus_skill: str | None,
+    categories: list[dict[str, str]],
+) -> tuple[list[str], list[str], bool]:
+    """把用户指定的重点技能强制放进 focus 与必要覆盖。
+
+    用户的选择优先于模型推荐：能对上本方向分类就置顶；对不上则原样返回并让调用方如实说明，
+    不悄悄换一个考不到的重点（那会让用户以为在补强 A、实际一直在考 B）。
+    """
+    if not focus_skill:
+        return focus, required_topics, True
+    matched = next(
+        (
+            category["key"]
+            for category in categories
+            if str(category.get("label", "")).strip().lower() == focus_skill.strip().lower()
+            or str(category.get("key", "")).strip().lower() == focus_skill.strip().lower()
+        ),
+        None,
+    )
+    if matched is None:
+        return focus, required_topics, False
+    return _dedupe_first(matched, focus), _dedupe_first(matched, required_topics), True
+
+
+def _dedupe_first(head: str, items: list[str]) -> list[str]:
+    """把 head 放到首位并去重（保留原有顺序）。"""
+    return [head] + [item for item in items if item != head]
 
 
 def _normalize_duration(value: int | None) -> int:

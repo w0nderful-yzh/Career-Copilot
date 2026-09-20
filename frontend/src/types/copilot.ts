@@ -47,6 +47,11 @@ export interface InterviewProposalBlock {
   required_topics: string[];
   resume_id?: number | null;
   summary: string;
+  /**
+   * 推荐依据（P4-6b）：画像里的真实事实（分数 / 证据条数 / 最近考察 / 仅声明未验证）。
+   * 由 Java 数据确定性拼装，不是模型编的；为空时不展示这一节。
+   */
+  reasons?: string[];
 }
 
 /**

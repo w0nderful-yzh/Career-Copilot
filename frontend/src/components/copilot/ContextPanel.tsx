@@ -84,7 +84,15 @@ function useBoundJobTitle(activeJobId: number | null | undefined): string | null
   return title;
 }
 
-function ProfileSection() {
+function ProfileSection({
+  refreshToken = 0,
+  onStartFocusInterview,
+}: {
+  /** 变化即重取画像（P4-6b）：面试报告完成后证据刚写入，侧栏不能还显示旧分 */
+  refreshToken?: number;
+  /** 一键定向（P4-6b）：把「补强这个技能」的明确选择交给提案节点 */
+  onStartFocusInterview?: (skill: string) => void;
+}) {
   const [state, setState] = useState<ProfileState>({ status: 'loading' });
 
   useEffect(() => {
@@ -107,7 +115,7 @@ function ProfileSection() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refreshToken]);
 
   return (
     <section className="mb-6">
@@ -126,23 +134,34 @@ function ProfileSection() {
         )}
         {state.status === 'ready' &&
           state.skills.map((skill) => (
-            <div
-              key={skill.skill}
-              className="grid grid-cols-[5rem_1fr_2rem] items-center gap-2"
-              title={`来自 ${skill.evidenceCount} 条面试证据`}
-            >
-              <span className="truncate text-xs font-semibold text-slate-600 dark:text-slate-300">
-                {skill.skill}
-              </span>
-              <div className="h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-700">
-                <div
-                  className={`h-full rounded-full ${skillBarColor(skill.score)}`}
-                  style={{ width: `${Math.min(Math.max(skill.score, 0), 100)}%` }}
-                />
+            <div key={skill.skill} className="group">
+              <div
+                className="grid grid-cols-[5rem_1fr_2rem] items-center gap-2"
+                title={`来自 ${skill.evidenceCount} 条面试证据`}
+              >
+                <span className="truncate text-xs font-semibold text-slate-600 dark:text-slate-300">
+                  {skill.skill}
+                </span>
+                <div className="h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-700">
+                  <div
+                    className={`h-full rounded-full ${skillBarColor(skill.score)}`}
+                    style={{ width: `${Math.min(Math.max(skill.score, 0), 100)}%` }}
+                  />
+                </div>
+                <span className="text-right text-xs font-bold tabular-nums text-slate-600 dark:text-slate-300">
+                  {skill.score}
+                </span>
               </div>
-              <span className="text-right text-xs font-bold tabular-nums text-slate-600 dark:text-slate-300">
-                {skill.score}
-              </span>
+              {onStartFocusInterview && (
+                <button
+                  type="button"
+                  onClick={() => onStartFocusInterview(skill.skill)}
+                  className="mt-1 pl-[5rem] text-[11px] font-semibold text-primary-600 opacity-0 transition group-hover:opacity-100 focus:opacity-100 dark:text-primary-400"
+                  title={`针对 ${skill.skill} 来一场定向面试（带上该技能作为重点与必要覆盖）`}
+                >
+                  定向补强 →
+                </button>
+              )}
             </div>
           ))}
         {state.status === 'ready' && state.declared.length > 0 && (
@@ -155,12 +174,16 @@ function ProfileSection() {
             </p>
             <div className="mt-1.5 flex flex-wrap gap-1">
               {state.declared.map((item) => (
-                <span
+                <button
                   key={item.skill}
-                  className="rounded bg-slate-50 px-1.5 py-0.5 text-[11px] text-slate-500 dark:bg-slate-700/50 dark:text-slate-300"
+                  type="button"
+                  disabled={!onStartFocusInterview}
+                  onClick={() => onStartFocusInterview?.(item.skill)}
+                  className="rounded bg-slate-50 px-1.5 py-0.5 text-[11px] text-slate-500 transition enabled:hover:bg-primary-50 enabled:hover:text-primary-700 disabled:cursor-default dark:bg-slate-700/50 dark:text-slate-300 dark:enabled:hover:bg-primary-950/40 dark:enabled:hover:text-primary-300"
+                  title="还没有面试证据：点一下针对它来一场定向面试"
                 >
                   {item.skill}
-                </span>
+                </button>
               ))}
             </div>
           </div>
@@ -173,9 +196,14 @@ function ProfileSection() {
 export default function ContextPanel({
   messages,
   activeJobId,
+  profileRefreshToken,
+  onStartFocusInterview,
 }: {
   messages: CopilotMessage[];
   activeJobId?: number | null;
+  /** 报告完成后 +1：侧栏画像随之重取（P4-6b） */
+  profileRefreshToken?: number;
+  onStartFocusInterview?: (skill: string) => void;
 }) {
   const activeResume = findLatestResume(messages);
   // JD 展示优先级：会话绑定（Conversation Memory，跨轮有效）> 本轮附件文件名
@@ -242,7 +270,10 @@ export default function ContextPanel({
         </div>
       </section>
 
-      <ProfileSection />
+      <ProfileSection
+        refreshToken={profileRefreshToken}
+        onStartFocusInterview={onStartFocusInterview}
+      />
 
       <section>
         <SectionTitle icon={CheckCircle2}>今日任务 · 示例</SectionTitle>

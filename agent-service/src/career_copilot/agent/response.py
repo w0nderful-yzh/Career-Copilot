@@ -162,6 +162,7 @@ def interview_proposal_block(
     required_topics: list[str] | None = None,
     resume_id: int | None = None,
     summary: str = "",
+    reasons: list[str] | None = None,
 ) -> InterviewProposalBlock:
     """面试提案确认块：Agent 推荐的面试配置 + [按推荐开始] / [调整配置]。
 
@@ -179,6 +180,7 @@ def interview_proposal_block(
         required_topics=required_topics or [],
         resume_id=resume_id,
         summary=summary,
+        reasons=reasons or [],
     )
 
 

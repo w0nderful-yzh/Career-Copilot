@@ -173,6 +173,132 @@ def _source_label(evidence: dict[str, Any]) -> str:
     return source_id or "未知来源"
 
 
+def latest_interview_session_id(profile: dict[str, Any]) -> str | None:
+    """画像证据里最近一场面试的 sessionId（源标识形如 "sessionId:questionKey"）。
+
+    建议要谈「本场变化」就得知道是哪一场——这里从证据里取最近的一条，
+    不额外请求 Java（画像本身就是证据的聚合）。
+    """
+    latest: tuple[str, str] | None = None
+    for skill in profile.get("skills") or []:
+        for evidence in skill.get("evidences") or []:
+            if evidence.get("sourceType") != "INTERVIEW_TURN":
+                continue
+            source_id = str(evidence.get("sourceId") or "")
+            session_id = source_id.split(":", 1)[0]
+            occurred = str(evidence.get("occurredAt") or "")
+            if not session_id:
+                continue
+            if latest is None or occurred > latest[0]:
+                latest = (occurred, session_id)
+    return latest[1] if latest else None
+
+
+def summarize_profile_advice(profile: dict[str, Any], impact: dict[str, Any] | None) -> str:
+    """下一步建议的素材（P6-3）：可宣称的事实 + 待验证 + 本场变化。
+
+    **只陈述有证据的东西**：有分技能给分数与证据条数；只有简历声明的技能标为「待验证、
+    不构成提升证据」；差分只取 Java 算出的 before/after/delta，Python 不自己算分。
+    没有任何依据时如实说明，不生成「你在 X 上提升了」这类无依据的话。
+    """
+    skills = profile.get("skills") or []
+    declared = profile.get("declaredSkills") or []
+    if not skills and not declared:
+        return "（用户还没有任何画像数据：既没有面试评分证据，也没有简历声明技能）"
+
+    lines: list[str] = []
+    if skills:
+        lines.append("已评分技能（证据均值，可追溯）：")
+        for skill in skills[:8]:
+            lines.append(
+                f"  - {skill.get('skill')}: {skill.get('score')} 分"
+                f"（{skill.get('evidenceCount')} 条证据）"
+            )
+    else:
+        lines.append("已评分技能：（还没有面试评分证据）")
+
+    if declared:
+        names = "、".join(str(item.get("skill")) for item in declared[:8] if item.get("skill"))
+        lines.append(f"仅简历声明、未验证的技能（不要当成水平依据）：{names}")
+
+    if impact and impact.get("skills"):
+        lines.append("最近一场面试带来的变化：")
+        for item in impact["skills"][:8]:
+            before = item.get("beforeScore")
+            after = item.get("afterScore")
+            delta = item.get("delta") or 0
+            if before is None:
+                lines.append(
+                    f"  - {item.get('skill')}: 本场首次考到，{after} 分"
+                    "（无历史基线，不谈涨幅）"
+                )
+            else:
+                direction = "上升" if delta > 0 else ("下降" if delta < 0 else "持平")
+                lines.append(
+                    f"  - {item.get('skill')}: {before} → {after}"
+                    f"（{direction} {abs(delta)}）"
+                )
+
+    # 下一步建议的候选（不替用户做决定，只给可执行方向）
+    focus_candidates: list[str] = []
+    for skill in skills:
+        if isinstance(skill.get("score"), int) and skill["score"] < 60:
+            focus_candidates.append(f"{skill.get('skill')}（{skill['score']} 分，待提升）")
+    focus_candidates.extend(
+        f"{item.get('skill')}（仅声明，未验证）" for item in declared[:3] if item.get("skill")
+    )
+    if focus_candidates:
+        lines.append("可优先补强的方向：" + "；".join(focus_candidates[:4]))
+    return "\n".join(lines)
+
+
+def _same_skill(left: Any, right: Any) -> bool:
+    """技能名比较：忽略大小写与首尾空白。
+
+    画像里的技能名来自分类 label/key，英文大小写并不统一，直接等值比较会漏配。
+    """
+    return str(left or "").strip().lower() == str(right or "").strip().lower()
+
+
+def profile_reasons_for(profile: dict[str, Any], focus_skill: str | None = None) -> list[str]:
+    """推荐依据（P4-6b）：从画像数据**确定性**拼装，不让模型编。
+
+    只陈述画像里真实存在的事实：分数（有分技能的面试证据均值）、证据条数、最近一次考察时间、
+    「仅简历声明、尚无证据」。**没有依据时返回空列表**——宁可不写，
+    也不生成「你在这方面较弱」这类没有数据支撑的话（P6-3：无依据不宣称）。
+
+    :param profile: Java /api/agent/tools/get_skill_profile 的返回
+    :param focus_skill: 用户指定的重点技能（从画像低分项一键发起时带上）
+    """
+    reasons: list[str] = []
+    skills = profile.get("skills") or []
+    declared = profile.get("declaredSkills") or []
+
+    if focus_skill:
+        match = next(
+            (item for item in skills if _same_skill(item.get("skill"), focus_skill)), None
+        )
+        if match is not None:
+            reasons.append(
+                f"{focus_skill} 当前 {match.get('score')} 分"
+                f"（{match.get('evidenceCount')} 条面试证据）"
+            )
+            updated = str(match.get("updatedAt") or "")[:10]
+            if updated:
+                reasons.append(f"最近一次考察：{updated}")
+        elif any(_same_skill(item.get("skill"), focus_skill) for item in declared):
+            reasons.append(f"{focus_skill} 只出现在简历里，还没有任何面试证据")
+        else:
+            reasons.append(f"按你的要求优先考察 {focus_skill}")
+
+    # 待验证技能：信息量最大的一类（简历已列但从未考过），最多列 3 个
+    pending = [str(item.get("skill")) for item in declared if item.get("skill")][:3]
+    if pending:
+        reasons.append("简历已列但从未考察：" + "、".join(pending))
+
+    return reasons
+
+
 def summarize_interview_progress(progress: dict[str, Any], max_turns: int = 8) -> str:
     """把面试进展（P4-10）裁成可放进 Prompt 的文本。
 

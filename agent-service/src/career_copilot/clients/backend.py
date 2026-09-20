@@ -141,6 +141,22 @@ class BackendClient:
         data = body.get("data")
         return data if isinstance(data, dict) else {}
 
+    async def get_profile_impact(self, session_id: str) -> dict[str, Any]:
+        """单场面试带来的画像变化（P6-3 建议的数据源）。
+
+        直连 Java /api/interview/sessions/{sessionId}/profile-impact（前端结果卡用的是同一个端点）：
+        每技能的本场前/后分与逐条证据。会话不存在或无证据时返回空结构，不阻断建议。
+        """
+        try:
+            response = await self._client.get(
+                f"/api/interview/sessions/{session_id}/profile-impact"
+            )
+        except httpx.HTTPError as exc:
+            raise BusinessToolError(500, f"后端服务不可达: {exc}", retryable=True) from exc
+        body = self._unwrap_result(response)
+        data = body.get("data")
+        return data if isinstance(data, dict) else {}
+
     async def get_skill_profile(self) -> dict[str, Any]:
         """用户技能画像：各技能聚合分 + 可追溯证据（来自哪些面试、每题得分）。
 

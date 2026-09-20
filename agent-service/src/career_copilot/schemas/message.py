@@ -232,6 +232,11 @@ class InterviewProposalBlock(BaseModel):
     required_topics: list[str] = Field(default_factory=list, description="必要覆盖话题（分类 key）")
     resume_id: int | None = Field(default=None, description="基于的简历（可选）")
     summary: str = Field(default="", description="推荐理由（一句话）")
+    reasons: list[str] = Field(
+        default_factory=list,
+        description="推荐依据（P4-6b）：画像里的真实事实（分数/证据条数/最近考察/仅声明未验证），"
+        "由 Java 数据确定性拼装；没有依据时为空列表，前端不展示空标题",
+    )
 
 
 class InterviewSessionBlock(BaseModel):

@@ -106,6 +106,19 @@ export default function CopilotPage() {
   useEffect(() => {
     interviewModeRef.current = interviewMode;
   }, [interviewMode]);
+  /**
+   * 侧栏画像刷新令牌（P4-6b）：面试报告完成时 +1。
+   *
+   * 报告落库会同时写入画像证据，侧栏若不重取就还在显示面试前的分数——
+   * 用户刚看到「本场画像变化」，旁边的画像却纹丝不动，是最容易让人不信任的一类不一致。
+   */
+  const [profileRefreshToken, setProfileRefreshToken] = useState(0);
+  useEffect(() => {
+    if (interviewMode?.status === 'completed') {
+      setProfileRefreshToken((token) => token + 1);
+    }
+  }, [interviewMode?.status]);
+
   // 新建会话首次触发历史加载时跳过（保留刚追加的流式消息，避免被空历史覆盖）
   const skipHistoryLoadRef = useRef<number | null>(null);
 
@@ -431,6 +444,28 @@ export default function CopilotPage() {
     [runTurn, updateMessage],
   );
 
+  /**
+   * 画像低分项「一键定向」（P4-6b）。
+   *
+   * 把用户的明确选择作为动作载荷交给提案节点：它能对上方向分类就强制进「重点 + 必要覆盖」，
+   * 对不上会如实说明——不悄悄换成一个考不到的重点。
+   */
+  const startFocusInterview = useCallback(
+    (skill: string) => {
+      const text = `针对「${skill}」来一场定向面试`;
+      void runTurn({
+        message: text,
+        userContent: text,
+        action: {
+          type: 'ACTION_SELECTED',
+          action: 'START_INTERVIEW',
+          payload: { focusSkill: skill },
+        },
+      });
+    },
+    [runTurn],
+  );
+
   const submitAction = useCallback(
     (option: ChoiceOption) => {
       // 文案仅用于可读的用户气泡和历史；Graph 只按结构化 action 确定性路由。
@@ -667,7 +702,12 @@ export default function CopilotPage() {
           </>
         )}
       </section>
-      <ContextPanel messages={messages} activeJobId={boundJobId} />
+      <ContextPanel
+        messages={messages}
+        activeJobId={boundJobId}
+        profileRefreshToken={profileRefreshToken}
+        onStartFocusInterview={startFocusInterview}
+      />
     </div>
   );
 }

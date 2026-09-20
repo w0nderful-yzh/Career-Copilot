@@ -117,6 +117,38 @@ def mock_backend_transport() -> Callable[[httpx.Request], httpx.Response]:
                     "evaluateStatus": "COMPLETED",
                 },
             ],
+            "get_interview_progress": {
+                "sessionId": "s1",
+                "status": "IN_PROGRESS",
+                "endReason": None,
+                "plannedDurationMinutes": 20,
+                "consumedSeconds": 300,
+                "remainingSeconds": 900,
+                "requiredTopics": ["JVM", "数据库"],
+                "coverageSummary": "- 必要覆盖：JVM=已覆盖；数据库=本轮正在考察",
+                "budgetSummary": "- 时间预算：剩余约 15 分钟",
+                "legalCandidates": ["[q4] 主问题｜算法｜中级：算法 的主问题"],
+                "askedTurnCount": 1,
+                "satisfiedRequiredTopicCount": 1,
+                "currentQuestion": {
+                    "questionId": "q3",
+                    "question": "数据库 的主问题",
+                    "topic": "数据库",
+                    "category": "数据库",
+                    "isFollowUp": False,
+                },
+                "turns": [
+                    {
+                        "ordinal": 1,
+                        "questionId": "q1",
+                        "question": "JVM 的主问题",
+                        "topic": "JVM",
+                        "category": "JVM",
+                        "answerState": "ANSWERED",
+                        "userAnswer": "堆分新生代与老年代",
+                    }
+                ],
+            },
             "list_knowledge_bases": [{"id": 1, "name": "Java 知识库"}],
             "search_knowledge": {
                 "answer": "JVM 是 Java 虚拟机。",

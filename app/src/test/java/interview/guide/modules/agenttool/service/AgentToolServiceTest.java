@@ -104,7 +104,7 @@ class AgentToolServiceTest {
     void listToolsReturnsAllToolsWithPermissions() {
       List<ToolInfoDTO> tools = agentToolService.listTools();
 
-      assertThat(tools).hasSize(13);
+      assertThat(tools).hasSize(14);
       // 只读 Tool 仍全部为 READ；写 Tool（create_interview / apply_resume_patches）为 CONFIRM_WRITE
       assertThat(tools)
           .extracting(ToolInfoDTO::permission)
@@ -112,7 +112,8 @@ class AgentToolServiceTest {
       assertThat(tools)
           .extracting(ToolInfoDTO::name)
           .contains("get_resume_list", "get_skill_profile", "get_resume_version",
-              "search_knowledge", "create_interview", "apply_resume_patches");
+              "get_interview_report", "get_interview_progress", "search_knowledge",
+              "create_interview", "apply_resume_patches");
       assertThat(tools)
           .allSatisfy(tool -> {
             assertThat(tool.description()).isNotBlank();

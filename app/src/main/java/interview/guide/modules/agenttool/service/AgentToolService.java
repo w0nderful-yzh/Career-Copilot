@@ -12,7 +12,9 @@ import interview.guide.modules.interview.model.InterviewDetailDTO;
 import interview.guide.modules.interview.model.InterviewSessionDTO;
 import interview.guide.modules.interview.model.ResumeAnalysisResponse;
 import interview.guide.modules.interview.model.SessionListItemDTO;
+import interview.guide.modules.interview.model.InterviewProgressDTO;
 import interview.guide.modules.interview.service.InterviewHistoryService;
+import interview.guide.modules.interview.service.InterviewProgressService;
 import interview.guide.modules.interview.service.InterviewPersistenceService;
 import interview.guide.modules.interview.service.InterviewSessionService;
 import interview.guide.modules.interview.skill.InterviewSkillService;
@@ -60,6 +62,8 @@ public class AgentToolService {
   private final ResumePersistenceService resumePersistenceService;
   private final InterviewPersistenceService interviewPersistenceService;
   private final InterviewHistoryService interviewHistoryService;
+  /** 面试进行中的进展读取（P4-10）：只读、按需，不让每轮面试接回主 Graph */
+  private final InterviewProgressService interviewProgressService;
   private final InterviewSessionService interviewSessionService;
   private final KnowledgeBaseListService knowledgeBaseListService;
   private final KnowledgeBaseQueryService knowledgeBaseQueryService;
@@ -109,6 +113,7 @@ public class AgentToolService {
       case GET_JOB -> executeGetJob(parse(tool, args));
       case GET_INTERVIEW_HISTORY -> executeGetInterviewHistory(parse(tool, args));
       case GET_INTERVIEW_REPORT -> executeGetInterviewReport(parse(tool, args));
+      case GET_INTERVIEW_PROGRESS -> executeGetInterviewProgress(parse(tool, args));
       case LIST_KNOWLEDGE_BASES -> executeListKnowledgeBases(parse(tool, args));
       case SEARCH_KNOWLEDGE -> executeSearchKnowledge(parse(tool, args));
       case LIST_SKILLS -> executeListSkills(parse(tool, args));
@@ -213,6 +218,18 @@ public class AgentToolService {
   private ToolResponse executeGetInterviewReport(AgentToolRequests.GetInterviewReport request) {
     InterviewDetailDTO detail = interviewHistoryService.getInterviewDetail(request.sessionId());
     return new ToolResponse(AgentToolName.GET_INTERVIEW_REPORT.getName(), detail);
+  }
+
+  /**
+   * 面试进行中的实时进展（P4-10）。
+   *
+   * <p>复用会话读取与逐轮评估同一套推导（覆盖状态、预算、合法候选），
+   * 因此 Agent 的解释与 Java 的推进/收束判据同源；只读，不改变面试状态。
+   */
+  private ToolResponse executeGetInterviewProgress(AgentToolRequests.GetInterviewProgress request) {
+    InterviewProgressDTO progress =
+        interviewProgressService.progressOf(request.sessionId(), request.questionId());
+    return new ToolResponse(AgentToolName.GET_INTERVIEW_PROGRESS.getName(), progress);
   }
 
   /** 知识库列表：让 Agent 了解用户有哪些可用知识库，再决定是否检索 */

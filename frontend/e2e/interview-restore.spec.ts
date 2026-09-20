@@ -84,6 +84,56 @@ const sessionTurns = [
   },
 ];
 
+/**
+ * 报告桩（P4-5 之后的口径）。
+ *
+ * 结果卡会渲染覆盖明细、评分规则版本与聚合说明——这些是后端真实契约的一部分，
+ * 桩里缺字段会让结果卡在渲染时抛错（页面变空白，而不是「展示不全」）。
+ */
+function reportPayload() {
+  return {
+    sessionId: SESSION_ID,
+    totalQuestions: 4,
+    overallScore: 72,
+    categoryScores: [
+      {
+        category: 'Java',
+        score: 72,
+        questionCount: 2,
+        mainGroupCount: 1,
+        evaluatedMainGroupCount: 1,
+        aggregationNote: '按主问题组内均值',
+      },
+    ],
+    questionDetails: [],
+    overallFeedback: '整体表现稳定，深挖空间在追问细节。',
+    strengths: ['JVM 基础扎实'],
+    improvements: ['追问时给出更具体的排查过程'],
+    referenceAnswers: [],
+    scoringRuleVersion: 'main-group-v1',
+    aggregationMethod: '同一主问题组内取均值，跨主题按组平均',
+    coverage: [
+      {
+        topic: 'JVM',
+        required: true,
+        actualTurnCount: 2,
+        evaluatedMainGroupCount: 1,
+        status: 'ASSESSED',
+      },
+      {
+        topic: '数据库',
+        required: false,
+        actualTurnCount: 0,
+        evaluatedMainGroupCount: 0,
+        status: 'NOT_ASSESSED',
+      },
+    ],
+    unassessedTopics: ['数据库'],
+    skippedQuestionIds: [],
+    insufficientEvidenceQuestionIds: [],
+  };
+}
+
 /** 会话读取的标准桩（P4-1：候选 / 轨迹 / 当前题分开表达） */
 function sessionPayload(overrides: Record<string, unknown> = {}) {
   return {
@@ -217,10 +267,7 @@ test.describe('Interview Mode 刷新恢复', () => {
     });
     await page.route(reportUrl, (route) =>
       route.fulfill(
-        result(200, 'success', {
-          overallScore: 72,
-          categoryScores: [{ category: 'Java', score: 72 }],
-        }),
+        result(200, 'success', reportPayload()),
       ),
     );
 
@@ -271,10 +318,7 @@ test.describe('Interview Mode 刷新恢复', () => {
     });
     await page.route(reportUrl, (route) =>
       route.fulfill(
-        result(200, 'success', {
-          overallScore: 72,
-          categoryScores: [{ category: 'Java', score: 72 }],
-        }),
+        result(200, 'success', reportPayload()),
       ),
     );
 
@@ -336,10 +380,7 @@ test.describe('Interview Mode 刷新恢复', () => {
     });
     await page.route(reportUrl, (route) =>
       route.fulfill(
-        result(200, 'success', {
-          overallScore: 72,
-          categoryScores: [{ category: 'Java', score: 72 }],
-        }),
+        result(200, 'success', reportPayload()),
       ),
     );
     // 差分来自 Java 的证据重算；这里给一条「涨」与一条「本场新增」

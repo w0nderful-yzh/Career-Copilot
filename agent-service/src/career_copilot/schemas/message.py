@@ -64,6 +64,11 @@ class ChatRequest(BaseModel):
     action: ActionSelected | None = Field(
         default=None, description="按钮点击回传的确定性动作（与 message 二选一）"
     )
+    active_interview_session_id: str | None = Field(
+        default=None,
+        description="正在进行中的面试会话 ID（P4-10）：Interview Mode 里前端随消息带上，"
+        "让 Agent 能读取实时进展而不必等面试结束",
+    )
 
 
 class TextBlock(BaseModel):

@@ -100,6 +100,12 @@ export default function CopilotPage() {
   // 退出时会向会话追加一条「面试完成摘要」artifact，messages 因此变化，
   // 下面的自动进入 effect 会重新扫描到那个信号块 —— 不记录就会把用户又拽回面试模式（P4 待修正）。
   const closedInterviewSessionsRef = useRef<Set<string>>(new Set());
+  /** 进行中的面试会话（P4-10）：发送消息时读取，避免把 interviewMode 塞进回调依赖 */
+  const interviewModeRef = useRef<InterviewModeState | null>(null);
+  // 面试模式变化时同步给 ref：发送消息的回调不能依赖 interviewMode（否则每次进出面试都要重建）
+  useEffect(() => {
+    interviewModeRef.current = interviewMode;
+  }, [interviewMode]);
   // 新建会话首次触发历史加载时跳过（保留刚追加的流式消息，避免被空历史覆盖）
   const skipHistoryLoadRef = useRef<number | null>(null);
 
@@ -315,6 +321,9 @@ export default function CopilotPage() {
           conversationId,
           attachments,
           action,
+          // P4-10：Interview Mode 里把进行中的会话告诉后端，
+          // Copilot 才能回答「现在考到哪、还剩什么」而不是只能等结束后的报告
+          interviewModeRef.current?.sessionId,
         );
       } catch (err) {
         if (controller.signal.aborted) {

@@ -66,6 +66,7 @@ class AgentToolContractBehaviorTest {
         resumePersistenceService,
         mock(InterviewPersistenceService.class),
         mock(InterviewHistoryService.class),
+        mock(interview.guide.modules.interview.service.InterviewProgressService.class),
         interviewSessionService,
         mock(KnowledgeBaseListService.class),
         mock(KnowledgeBaseQueryService.class),

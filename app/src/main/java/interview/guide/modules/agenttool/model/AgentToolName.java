@@ -55,6 +55,12 @@ public enum AgentToolName {
       "获取单场模拟面试的完整报告（sessionId）",
       AgentToolPermission.READ,
       AgentToolRequests.GetInterviewReport.class),
+  GET_INTERVIEW_PROGRESS(
+      "get_interview_progress",
+      "获取面试**进行中**的实时进展：当前话题、必要覆盖状态、已发生轮次摘要、剩余时间预算，"
+          + "可用 questionId 取某一轮完整详情（sessionId + 可选 questionId）",
+      AgentToolPermission.READ,
+      AgentToolRequests.GetInterviewProgress.class),
   LIST_KNOWLEDGE_BASES(
       "list_knowledge_bases",
       "获取知识库列表",

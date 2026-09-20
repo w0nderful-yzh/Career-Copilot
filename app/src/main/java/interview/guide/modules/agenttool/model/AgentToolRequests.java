@@ -64,6 +64,18 @@ public final class AgentToolRequests {
   public record GetInterviewReport(
       @NotBlank @ToolParam("面试会话 ID") String sessionId) {}
 
+  /**
+   * get_interview_progress：面试进行中的实时进展（P4-10）。
+   *
+   * <p>与 {@code get_interview_report} 的分工：报告是**结束后**的完整评价，
+   * 进展是**进行中**的当前状态——用户问「现在考到哪了」「还剩什么没考」时用后者，
+   * 不必等面试结束。
+   */
+  public record GetInterviewProgress(
+      @NotBlank @ToolParam("面试会话 ID") String sessionId,
+      @ToolParam("可选：题目标识（questionId），只看这一轮的完整问答与评估；缺省返回整体进展")
+          String questionId) {}
+
   /** list_knowledge_bases：无参数 */
   public record ListKnowledgeBases() {}
 

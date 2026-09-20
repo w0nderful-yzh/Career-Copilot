@@ -116,6 +116,24 @@
         }
       }
     },
+    "get_interview_progress" : {
+      "description" : "获取面试**进行中**的实时进展：当前话题、必要覆盖状态、已发生轮次摘要、剩余时间预算，可用 questionId 取某一轮完整详情（sessionId + 可选 questionId）",
+      "permission" : "READ",
+      "type" : "object",
+      "additionalProperties" : false,
+      "required" : [ "sessionId" ],
+      "properties" : {
+        "sessionId" : {
+          "type" : "string",
+          "minLength" : 1,
+          "description" : "面试会话 ID"
+        },
+        "questionId" : {
+          "type" : "string",
+          "description" : "可选：题目标识（questionId），只看这一轮的完整问答与评估；缺省返回整体进展"
+        }
+      }
+    },
     "list_knowledge_bases" : {
       "description" : "获取知识库列表",
       "permission" : "READ",

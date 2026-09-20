@@ -22,6 +22,11 @@ export async function streamChat(
   conversationId?: number,
   attachments?: AttachmentRef[],
   action?: ActionSelected,
+  /**
+   * 进行中的面试会话 ID（P4-10）：Interview Mode 里带上，
+   * 让 Copilot 能读当前进展（现在考到哪、还剩什么），而不必等面试结束。
+   */
+  activeInterviewSessionId?: string,
 ): Promise<void> {
   const response = await fetch('/api/chat/stream', {
     method: 'POST',
@@ -37,6 +42,7 @@ export async function streamChat(
         duplicate: att.duplicate ?? false,
       })),
       action: action ?? null,
+      active_interview_session_id: activeInterviewSessionId ?? null,
     }),
     signal,
   });

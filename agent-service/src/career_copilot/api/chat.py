@@ -197,6 +197,7 @@ def _initial_state(payload: ChatRequest) -> dict[str, Any]:
         message=payload.message,
         attachments=[att.model_dump() for att in payload.attachments],
         action=payload.action.model_dump() if payload.action else None,
+        active_interview_session_id=payload.active_interview_session_id,
     )
 
 

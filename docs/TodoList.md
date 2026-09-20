@@ -219,7 +219,7 @@ React 展示本轮结果与下一步
   - 将实际轮次、覆盖证据、题目难度、考察点及决策依据与最终报告关联，解释实时判断与报告差异。
   - 明确主题内主问 / 追问及跨主题聚合口径，避免追问题量左右总分；提供规则版本和可重算验证。
   - 报告标明覆盖范围、未考察项、跳过项和证据不足，不把缺失评价补成 0 分。
-- [ ] **P4-10 面试上下文对 Agent 可见**
+- [x] **P4-10 面试上下文对 Agent 可见**（见 7.17）
   - Java 提供按需读取当前进展、覆盖证据和指定轮次详情的受控能力，复用可用接口。
   - 验收：Agent 能解释当前话题与已发生内容，不必等结束才有信息，也不把每轮接回主 Graph。
 - [ ] **P4-6b / P6-3 画像驱动建议**
@@ -360,6 +360,30 @@ POST /api/profile/repair/skip-semantics     复核「已标记作答但得 0 分
 - [x] **创建面试请求幂等透传**：前端确认流程生成稳定 requestId，Python 传至 Java；配置变化换新标识。此项仅覆盖创建，逐轮提交一致性见 P4-9a。
 - [x] **ARCH-2a Python 执行器与 Prompt 治理**：模型调用收敛到 LlmExecutor，结构化解析与契约校验、错误分类、结果状态、逻辑尝试次数和耗时可观测；Prompt 资源具有 ID 与版本，流式不由执行器重放。
   - 每操作共享截止时间、底层 SDK 重试配置及 Java 实时评估治理已在 ARCH-2b 收口（见 7.9）；端到端延迟是否达标仍需实测，见 P4-9b，不能据此宣称延迟已满足目标。
+
+### 7.17 面试上下文对 Agent 可见（P4-10）
+
+- [x] **Java 侧新读路径 `get_interview_progress`（READ）**：入参 `sessionId` + 可选 `questionId`，
+  返回当前话题、必要覆盖逐项状态、剩余时间与追问预算、已发生轮次摘要、下一步合法候选，
+  指定 `questionId` 时额外给该轮完整问答与评估。
+- [x] **复用而非另起一份事实源**：进展由 `InterviewSessionService.getSession`（P4-1 候选/轨迹、
+  P4Q-2 计划与预算）+ `TurnEvaluationService` 的覆盖/预算/合法候选推导函数（与逐轮评估、
+  收束硬边界同源）组装；Python 只做裁剪与措辞，业务判断仍在 Java。
+  覆盖与预算以多行摘要给出，因此 Agent 说的「还差什么」与 Java 是否按覆盖收束不会分叉。
+- [x] **只读且按需**：不推进会话、不写缓存、不触发评估；Agent 需要时才调，
+  面试逐轮循环本身不依赖 Graph（不把每轮接回主 Graph）。
+- [x] **前端→后端的新通道**：`ChatRequest.active_interview_session_id`（Interview Mode 里随消息带上）
+  → Graph 初始状态 → `INTERVIEW_REVIEW` 意图：带会话时读实时进展，不带时仍走原「历史 + 报告」路径。
+  读取失败时明说原因（会话可能刚结束），不静默降级成「你还没有面试记录」。
+- [x] **契约同步**：新增 Tool 后按 7.7 的方式重导出，`docs/contracts/agent-tools.json` 与
+  Python 包内副本一致（14 个 Tool），两侧契约测试与漂移检查通过。
+- [x] **已验证**（2026-09-20，本机）：`:app:test` 全绿（新增 `InterviewProgressServiceTest` 4 例、
+  工具注册表 14 项断言）；Python `ruff` / `mypy` / `pytest` 145 通过（新增
+  `tests/test_interview_progress.py` 6 例，覆盖摘要渲染、缺数据标注、实时分支、失败说明、
+  不带会话时不误读进展）；前端 `build` + 13 个 `test:*` + `test:e2e` 11 例全绿。
+- [x] **顺带修掉的红基线**：第三批与 P4-5 之后，`interview-restore` 的 3 个用例仍用旧的报告桩
+  （只有 overallScore / categoryScores），而结果卡已改读覆盖明细、评分规则版本与聚合说明，
+  渲染时抛错导致页面空白。桩已按新契约补齐——**这是测试夹具欠账，不是应用缺陷**。
 
 ### 7.11 覆盖与时间驱动的计划状态（P4Q-2 批 2a）
 

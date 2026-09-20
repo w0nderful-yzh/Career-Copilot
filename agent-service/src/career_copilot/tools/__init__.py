@@ -173,6 +173,67 @@ def _source_label(evidence: dict[str, Any]) -> str:
     return source_id or "未知来源"
 
 
+def summarize_interview_progress(progress: dict[str, Any], max_turns: int = 8) -> str:
+    """把面试进展（P4-10）裁成可放进 Prompt 的文本。
+
+    进展是**面试进行中**的实时状态（与结束后的报告不同）：当前话题、必要覆盖、
+    剩余时间、已发生轮次摘要。覆盖与预算直接引用 Java 给出的摘要行——它们由实际轨迹与计划
+    确定性推导，Python 不做二次判断（业务逻辑在 Java 侧）。
+
+    回答正文在 Java 侧已按轮裁剪，这里只控制轮次数，避免整场对话塞进 Prompt。
+    """
+    if not progress:
+        return "（面试进展不可用）"
+    lines = [
+        f"面试 {progress.get('sessionId')} 进行中：状态={progress.get('status')}",
+        f"- 已发生 {progress.get('askedTurnCount', 0)} 轮"
+        + (
+            f"，必要覆盖达标 {progress.get('satisfiedRequiredTopicCount')}/"
+            f"{len(progress.get('requiredTopics') or [])}"
+            if progress.get("requiredTopics")
+            else ""
+        ),
+    ]
+    if progress.get("endReason"):
+        lines.append(f"- 结束原因: {progress['endReason']}")
+    current = progress.get("currentQuestion") or {}
+    if current:
+        topic = current.get("topic") or current.get("category") or "未标注话题"
+        lines.append(
+            f"- 当前话题: {topic}｜当前题: {str(current.get('question') or '')[:120]}"
+            + ("（追问）" if current.get("isFollowUp") else "")
+        )
+    else:
+        lines.append("- 当前题: 无（本场已收束）")
+    for key, label in (("coverageSummary", "覆盖"), ("budgetSummary", "预算")):
+        value = progress.get(key)
+        if value:
+            lines.append(f"{label}：")
+            lines.extend(f"  {row}" for row in str(value).splitlines())
+    candidates = progress.get("legalCandidates") or []
+    if candidates:
+        lines.append("- 下一步可能问：")
+        lines.extend(f"  {row}" for row in candidates[:4])
+    turns = progress.get("turns") or []
+    if turns:
+        lines.append("已发生轮次：")
+        for turn in turns[-max_turns:]:
+            answer = str(turn.get("userAnswer") or "（无作答内容）")
+            lines.append(
+                f"  - 第{turn.get('ordinal')}轮 [{turn.get('topic') or turn.get('category')}] "
+                f"状态={turn.get('answerState')}｜问: {str(turn.get('question') or '')[:80]}"
+                f"｜答: {answer[:80]}"
+            )
+    detail = progress.get("turnDetail")
+    if detail:
+        lines.append(f"指定轮次详情（第{detail.get('ordinal')}轮）：")
+        lines.append(f"  问: {detail.get('question')}")
+        lines.append(f"  答: {detail.get('userAnswer')}")
+        if detail.get("feedback"):
+            lines.append(f"  反馈: {detail['feedback']}")
+    return "\n".join(lines)
+
+
 def summarize_resume_for_interview(resume: dict[str, Any], max_chars: int = 1200) -> str:
     """把 get_resume 返回的完整简历文本裁剪为面试推荐所需摘要（Token 纪律）。"""
     filename = resume.get("filename") or f"简历 #{resume.get('id')}"

@@ -44,6 +44,9 @@ class CareerAgentState(TypedDict, total=False):
     active_resume_id: int | None
     active_job_id: int | None
     active_plan_id: int | None
+    # 进行中的面试会话（P4-10）：前端在 Interview Mode 里随消息带上，
+    # 让 Agent 能就「当前这场」回答，而不是只能读结束后的报告
+    active_interview_session_id: str | None
 
     # 简历优化坐标系（P2 待修正）：determine_mode 确定性判定产出；
     # 澄清 ChoiceBlock 通过 OPTIMIZE_RESUME payload 回传（mode / direction）

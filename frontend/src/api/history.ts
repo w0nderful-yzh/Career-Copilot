@@ -14,6 +14,7 @@ export interface ResumeListItem {
   interviewCount: number;
   analyzeStatus?: AnalyzeStatus;
   analyzeError?: string;
+  analyzeStatusUpdatedAt?: string | null;
   storageUrl?: string;
 }
 
@@ -85,6 +86,7 @@ export interface ResumeDetail {
   resumeText: string;
   analyzeStatus?: AnalyzeStatus;
   analyzeError?: string;
+  analyzeStatusUpdatedAt?: string | null;
   analyses: AnalysisItem[];
   interviews: InterviewItem[];
 }

@@ -206,6 +206,11 @@ test.beforeEach(async ({ page }) => {
   await page.route('**/api/agent/tools/get_skill_profile', (route) =>
     route.fulfill(result(200, 'success', { tool: 'get_skill_profile', data: { skills: [] } })),
   );
+  // 报告完成后会旁路读画像差分。默认桩住它，避免并发 E2E 因本地 Java 未启动
+  // 产生无关的代理失败与渲染抖动；需验证差分的用例会在后面覆盖该桩。
+  await page.route('**/api/interview/sessions/*/profile-impact', (route) =>
+    route.fulfill(result(200, 'success', { sessionId: SESSION_ID, skills: [] })),
+  );
 });
 
 test.describe('Interview Mode 刷新恢复', () => {

@@ -7,28 +7,41 @@ import DeleteConfirmDialog from '../components/DeleteConfirmDialog';
 import {formatDateOnly} from '../utils/date';
 import {getScoreProgressColor} from '../utils/score';
 import { ROUTES } from '../constants/routes';
+import {classifyPersistedTask, loadFailed, requestFailure, type AsyncFailure} from '../utils/asyncFlow';
 
 interface HistoryListProps {
   onSelectResume: (id: number) => void;
 }
 
-function isAnalyzing(status?: string): boolean {
-  return status === 'PENDING' || status === 'PROCESSING';
+function getAnalysisState(resume: ResumeListItem) {
+  return classifyPersistedTask({
+    status: resume.analyzeStatus,
+    statusUpdatedAt: resume.analyzeStatusUpdatedAt,
+    hasResult: resume.latestScore != null,
+    missingStatusMeansLoading: true,
+    failedMessage: '简历分析失败',
+    timeoutMessage: '简历分析等待超时',
+  });
 }
 
-function AnalyzeStatusIcon({status}: { status?: string }) {
-  if (status === 'FAILED') return <AlertCircle className="w-4 h-4 text-red-500 dark:text-red-400"/>;
-  if (isAnalyzing(status)) return <RefreshCw className="w-4 h-4 text-blue-500 dark:text-blue-400 animate-spin"/>;
-  if (status === 'COMPLETED') return <CheckCircle className="w-4 h-4 text-green-500 dark:text-green-400"/>;
+function AnalyzeStatusIcon({resume}: { resume: ResumeListItem }) {
+  const state = getAnalysisState(resume);
+  if (state.phase === 'failed') return <AlertCircle className="w-4 h-4 text-red-500 dark:text-red-400"/>;
+  if (state.phase === 'loading') return <RefreshCw className="w-4 h-4 text-blue-500 dark:text-blue-400 animate-spin"/>;
+  if (state.phase === 'ready') return <CheckCircle className="w-4 h-4 text-green-500 dark:text-green-400"/>;
   return <Clock className="w-4 h-4 text-yellow-500 dark:text-yellow-400"/>;
 }
 
-function getAnalyzeStatusText(status?: string): string {
-  if (status === 'FAILED') return '分析失败';
-  if (status === 'PROCESSING') return '分析中';
-  if (status === 'PENDING') return '等待分析';
-  if (status === 'COMPLETED') return '分析完成';
-  return '待分析';
+function getAnalyzeStatusText(resume: ResumeListItem): string {
+  const state = getAnalysisState(resume);
+  if (state.phase === 'failed') {
+    return state.failure?.kind === 'timeout' ? '等待超时' : '分析失败';
+  }
+  if (state.phase === 'loading') {
+    return resume.analyzeStatus === 'PROCESSING' ? '分析中' : '等待分析';
+  }
+  if (state.phase === 'ready') return '分析完成';
+  return '暂无结果';
 }
 
 function resumesEqual(a: ResumeListItem[], b: ResumeListItem[]): boolean {
@@ -36,6 +49,7 @@ function resumesEqual(a: ResumeListItem[], b: ResumeListItem[]): boolean {
   for (let i = 0; i < a.length; i++) {
     if (a[i].id !== b[i].id ||
         a[i].analyzeStatus !== b[i].analyzeStatus ||
+        a[i].analyzeStatusUpdatedAt !== b[i].analyzeStatusUpdatedAt ||
         a[i].latestScore !== b[i].latestScore) return false;
   }
   return true;
@@ -48,6 +62,8 @@ export default function HistoryList({onSelectResume}: HistoryListProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: number; filename: string } | null>(null);
+  const [reanalyzingId, setReanalyzingId] = useState<number | null>(null);
+  const [loadFailure, setLoadFailure] = useState<AsyncFailure | null>(null);
 
   const loadResumes = useCallback(async (isPolling = false) => {
     if (!isPolling) setLoading(true);
@@ -57,8 +73,10 @@ export default function HistoryList({onSelectResume}: HistoryListProps) {
         if (isPolling && resumesEqual(prev, data)) return prev;
         return data;
       });
+      setLoadFailure(null);
     } catch (err) {
       console.error('加载历史记录失败', err);
+      setLoadFailure(loadFailed('简历列表加载失败，当前业务状态未知'));
     } finally {
       if (!isPolling) setLoading(false);
     }
@@ -69,7 +87,7 @@ export default function HistoryList({onSelectResume}: HistoryListProps) {
   }, [loadResumes]);
 
   // 轮询：有分析中的简历时启动 3s 轮询
-  const hasAnalyzing = resumes.some(r => isAnalyzing(r.analyzeStatus));
+  const hasAnalyzing = resumes.some(r => getAnalysisState(r).shouldPoll);
 
   useEffect(() => {
     if (!hasAnalyzing) return;
@@ -80,6 +98,23 @@ export default function HistoryList({onSelectResume}: HistoryListProps) {
   const handleDeleteClick = (id: number, filename: string, e: React.MouseEvent) => {
     e.stopPropagation();
     setDeleteConfirm({id, filename});
+  };
+
+  const handleReanalyze = async (id: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setReanalyzingId(id);
+    try {
+      await historyApi.reanalyze(id);
+      await loadResumes(true);
+    } catch (error) {
+      alert(requestFailure(
+        error,
+        '重新分析请求失败，当前任务状态未知',
+        '简历分析依赖服务暂时不可用，请稍后重试',
+      ).message);
+    } finally {
+      setReanalyzingId(null);
+    }
   };
 
   const handleDeleteConfirm = async () => {
@@ -164,8 +199,24 @@ export default function HistoryList({onSelectResume}: HistoryListProps) {
         </div>
       )}
 
+      {!loading && loadFailure && (
+        <div className="mb-6 flex items-center justify-between gap-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="h-5 w-5 shrink-0" />
+            <span>{loadFailure.message}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => void loadResumes()}
+            className="shrink-0 rounded-lg border border-amber-300 px-3 py-1.5 text-sm font-medium"
+          >
+            重试加载
+          </button>
+        </div>
+      )}
+
       {/* 空状态 */}
-      {!loading && filteredResumes.length === 0 && (
+      {!loading && !loadFailure && filteredResumes.length === 0 && (
         <motion.div
           className="text-center py-20 bg-white dark:bg-slate-800 rounded-2xl"
           initial={{opacity: 0, scale: 0.95}}
@@ -225,14 +276,14 @@ export default function HistoryList({onSelectResume}: HistoryListProps) {
                   <td className="px-6 py-5 text-slate-500 dark:text-slate-400">{formatDateOnly(resume.uploadedAt)}</td>
                   <td className="px-6 py-5">
                     <div className="flex items-center gap-2">
-                      <AnalyzeStatusIcon status={resume.analyzeStatus}/>
+                      <AnalyzeStatusIcon resume={resume}/>
                       <span className="text-sm text-slate-600 dark:text-slate-300">
-                        {getAnalyzeStatusText(resume.analyzeStatus)}
+                        {getAnalyzeStatusText(resume)}
                       </span>
                     </div>
                   </td>
                   <td className="px-6 py-5">
-                    {resume.analyzeStatus === 'COMPLETED' && resume.latestScore !== undefined ? (
+                    {resume.analyzeStatus === 'COMPLETED' && resume.latestScore != null ? (
                       <div className="flex items-center gap-3">
                         <div
                           className="w-20 h-2 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
@@ -245,11 +296,10 @@ export default function HistoryList({onSelectResume}: HistoryListProps) {
                         </div>
                         <span className="font-bold text-slate-800 dark:text-white">{resume.latestScore}</span>
                       </div>
-                    ) : isAnalyzing(resume.analyzeStatus) ? (
+                    ) : getAnalysisState(resume).phase === 'loading' ? (
                       <span className="text-blue-500 dark:text-blue-400 text-sm">生成中...</span>
-                    ) : resume.analyzeStatus === 'FAILED' ? (
-                      <span className="text-red-500 dark:text-red-400 text-sm"
-                            title={resume.analyzeError}>失败</span>
+                    ) : getAnalysisState(resume).phase === 'failed' ? (
+                      <span className="text-red-500 dark:text-red-400 text-sm">失败</span>
                     ) : (
                       <span className="text-slate-400 dark:text-slate-500">-</span>
                     )}
@@ -272,6 +322,16 @@ export default function HistoryList({onSelectResume}: HistoryListProps) {
                   </td>
                   <td className="px-4">
                     <div className="flex items-center gap-2">
+                      {getAnalysisState(resume).failure?.retryable && (
+                        <button
+                          onClick={(e) => handleReanalyze(resume.id, e)}
+                          disabled={reanalyzingId === resume.id}
+                          className="p-2 text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-900/30 rounded-lg disabled:opacity-50"
+                          title="重新分析"
+                        >
+                          <RefreshCw className={`w-5 h-5 ${reanalyzingId === resume.id ? 'animate-spin' : ''}`}/>
+                        </button>
+                      )}
                       <button
                         onClick={(e) => handleDeleteClick(resume.id, resume.filename, e)}
                         disabled={deletingId === resume.id}

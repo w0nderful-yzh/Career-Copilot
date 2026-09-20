@@ -8,6 +8,7 @@
 // 「评估已经失败，界面永远显示评估中」的无限转圈。
 
 import type { AsyncTaskStatus, InterviewSession } from '../types/interview';
+import { taskFailed, timeoutFailure, type AsyncFailure } from './asyncFlow';
 
 export type EvaluationPhase =
   /** 仍在评估：继续轮询 */
@@ -25,6 +26,8 @@ export interface EvaluationDecision {
   shouldContinue: boolean;
   /** 展示给用户的说明（ready 时为空） */
   message: string;
+  /** 与其它异步流程共用的失败判据；等待和完成时为空 */
+  failure: AsyncFailure | null;
 }
 
 /** 轮询间隔与上限：报告是一次 LLM 调用，正常几十秒；2 分钟仍无结果按超时处理 */
@@ -41,21 +44,27 @@ export function decideEvaluationPhase(params: {
   const maxAttempts = params.maxAttempts ?? EVALUATION_MAX_ATTEMPTS;
 
   if (params.status === 'EVALUATED') {
-    return { phase: 'ready', shouldContinue: false, message: '' };
+    return { phase: 'ready', shouldContinue: false, message: '', failure: null };
   }
   if (params.evaluateStatus === 'FAILED') {
+    const failure = taskFailed(
+      '报告生成失败。你可以重试，或先在「面试记录」查看本场作答。',
+    );
     return {
       phase: 'failed',
       shouldContinue: false,
-      message: '报告生成失败。你可以重试，或先在「面试记录」查看本场作答。',
+      message: failure.message,
+      failure,
     };
   }
   if (params.attempt >= maxAttempts) {
+    const failure = timeoutFailure('报告生成超时。可以重试，已完成作答不会丢失。');
     return {
       phase: 'timeout',
       shouldContinue: false,
-      message: '报告生成超时。可以重试，已完成作答不会丢失。',
+      message: failure.message,
+      failure,
     };
   }
-  return { phase: 'waiting', shouldContinue: true, message: '' };
+  return { phase: 'waiting', shouldContinue: true, message: '', failure: null };
 }

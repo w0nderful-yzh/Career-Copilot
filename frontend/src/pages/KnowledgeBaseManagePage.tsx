@@ -20,8 +20,9 @@ import {
   Upload,
   X,
 } from 'lucide-react';
-import {knowledgeBaseApi, KnowledgeBaseItem, KnowledgeBaseStats, SortOption, VectorStatus,} from '../api/knowledgebase';
+import {knowledgeBaseApi, KnowledgeBaseItem, KnowledgeBaseStats, SortOption,} from '../api/knowledgebase';
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog';
+import {classifyPersistedTask, loadFailed, requestFailure, type AsyncFailure} from '../utils/asyncFlow';
 
 interface KnowledgeBaseManagePageProps {
   onUpload: () => void;
@@ -49,33 +50,44 @@ function formatDate(dateStr: string): string {
   });
 }
 
+function getVectorState(kb: KnowledgeBaseItem) {
+  return classifyPersistedTask({
+    status: kb.vectorStatus,
+    statusUpdatedAt: kb.vectorStatusUpdatedAt,
+    hasResult: kb.vectorStatus === 'COMPLETED',
+    failedMessage: '向量化失败',
+    timeoutMessage: '向量化等待超时',
+  });
+}
+
 // 状态图标组件
-function StatusIcon({ status }: { status: VectorStatus }) {
-  switch (status) {
-    case 'COMPLETED':
+function StatusIcon({ kb }: { kb: KnowledgeBaseItem }) {
+  switch (getVectorState(kb).phase) {
+    case 'ready':
       return <CheckCircle className="w-4 h-4 text-green-500" />;
-    case 'PROCESSING':
+    case 'loading':
       return <Loader2 className="w-4 h-4 text-blue-500 animate-spin" />;
-    case 'PENDING':
+    case 'empty':
       return <Clock className="w-4 h-4 text-yellow-500" />;
-    case 'FAILED':
+    case 'failed':
       return <AlertCircle className="w-4 h-4 text-red-500" />;
     default:
-      return <CheckCircle className="w-4 h-4 text-green-500" />;
+      return <Clock className="w-4 h-4 text-slate-400" />;
   }
 }
 
 // 状态文本
-function getStatusText(status: VectorStatus): string {
-  switch (status) {
-    case 'COMPLETED':
+function getStatusText(kb: KnowledgeBaseItem): string {
+  const state = getVectorState(kb);
+  switch (state.phase) {
+    case 'ready':
       return '已完成';
-    case 'PROCESSING':
-      return '处理中';
-    case 'PENDING':
-      return '待处理';
-    case 'FAILED':
-      return '失败';
+    case 'loading':
+      return kb.vectorStatus === 'PROCESSING' ? '处理中' : '待处理';
+    case 'empty':
+      return '暂无结果';
+    case 'failed':
+      return state.failure?.kind === 'timeout' ? '等待超时' : '失败';
     default:
       return '未知';
   }
@@ -131,6 +143,8 @@ export default function KnowledgeBaseManagePage({ onUpload, onChat }: KnowledgeB
 
   // 重新向量化状态
   const [revectorizing, setRevectorizing] = useState<number | null>(null);
+  const [loadFailure, setLoadFailure] = useState<AsyncFailure | null>(null);
+  const [actionFailure, setActionFailure] = useState<AsyncFailure | null>(null);
 
   // 加载数据（不显示loading状态，用于轮询）
   const loadDataSilent = useCallback(async () => {
@@ -147,8 +161,10 @@ export default function KnowledgeBaseManagePage({ onUpload, onChat }: KnowledgeB
       setStats(statsData);
       setKnowledgeBases(kbList);
       setCategories(categoryList);
+      setLoadFailure(null);
     } catch (error) {
       console.error('加载数据失败:', error);
+      setLoadFailure(loadFailed('知识库列表加载失败，当前向量化状态未知'));
     }
   }, [searchKeyword, sortBy, selectedCategory]);
 
@@ -168,8 +184,10 @@ export default function KnowledgeBaseManagePage({ onUpload, onChat }: KnowledgeB
       setStats(statsData);
       setKnowledgeBases(kbList);
       setCategories(categoryList);
+      setLoadFailure(null);
     } catch (error) {
       console.error('加载数据失败:', error);
+      setLoadFailure(loadFailed('知识库列表加载失败，当前向量化状态未知'));
     } finally {
       setLoading(false);
     }
@@ -181,9 +199,7 @@ export default function KnowledgeBaseManagePage({ onUpload, onChat }: KnowledgeB
 
   // 轮询：当有 PENDING 或 PROCESSING 状态时，每5秒刷新一次
   useEffect(() => {
-    const hasPendingItems = knowledgeBases.some(
-      kb => kb.vectorStatus === 'PENDING' || kb.vectorStatus === 'PROCESSING'
-    );
+    const hasPendingItems = knowledgeBases.some(kb => getVectorState(kb).shouldPoll);
 
     if (hasPendingItems && !loading) {
       const timer = setInterval(() => {
@@ -198,10 +214,16 @@ export default function KnowledgeBaseManagePage({ onUpload, onChat }: KnowledgeB
   const handleRevectorize = async (id: number) => {
     try {
       setRevectorizing(id);
+      setActionFailure(null);
       await knowledgeBaseApi.revectorize(id);
       await loadDataSilent();
     } catch (error) {
       console.error('重新向量化失败:', error);
+      setActionFailure(requestFailure(
+        error,
+        '重新向量化请求失败，当前任务状态未知',
+        '向量化依赖服务暂时不可用，请稍后重试',
+      ));
     } finally {
       setRevectorizing(null);
     }
@@ -398,11 +420,35 @@ export default function KnowledgeBaseManagePage({ onUpload, onChat }: KnowledgeB
       </div>
 
       {/* 知识库列表 */}
+        {actionFailure && (
+          <div className="mb-4 flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-600 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            {actionFailure.message}
+          </div>
+        )}
+        {!loading && loadFailure && knowledgeBases.length > 0 && (
+          <div className="mb-4 flex items-center justify-between gap-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+            <span>{loadFailure.message}，下方保留上次成功加载的数据。</span>
+            <button type="button" onClick={() => void loadData()} className="text-sm font-medium">重试加载</button>
+          </div>
+        )}
         <div
             className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-100 dark:border-slate-700 overflow-hidden">
         {loading ? (
           <div className="flex items-center justify-center py-20">
             <Loader2 className="w-8 h-8 text-primary-500 animate-spin" />
+          </div>
+        ) : loadFailure && knowledgeBases.length === 0 ? (
+          <div className="flex flex-col items-center justify-center gap-4 py-20 text-center">
+            <AlertCircle className="h-12 w-12 text-amber-500" />
+            <p className="text-slate-600 dark:text-slate-300">{loadFailure.message}</p>
+            <button
+              type="button"
+              onClick={() => void loadData()}
+              className="rounded-lg border border-amber-300 px-4 py-2 text-sm font-medium text-amber-700 dark:text-amber-300"
+            >
+              重试加载
+            </button>
           </div>
         ) : knowledgeBases.length === 0 ? (
           <div className="text-center py-20">
@@ -539,9 +585,9 @@ export default function KnowledgeBaseManagePage({ onUpload, onChat }: KnowledgeB
                   </td>
                   <td className="px-6 py-4">
                     <div className="flex items-center gap-2">
-                      <StatusIcon status={kb.vectorStatus} />
+                      <StatusIcon kb={kb} />
                         <span className="text-sm text-slate-600 dark:text-slate-300">
-                        {getStatusText(kb.vectorStatus)}
+                        {getStatusText(kb)}
                       </span>
                     </div>
                   </td>
@@ -561,8 +607,8 @@ export default function KnowledgeBaseManagePage({ onUpload, onChat }: KnowledgeB
                       >
                         <Download className="w-4 h-4" />
                       </button>
-                      {/* 重新向量化按钮（仅 FAILED 状态显示） */}
-                      {kb.vectorStatus === 'FAILED' && (
+                      {/* 任务失败或跨刷新等待超时都提供重试出口 */}
+                      {getVectorState(kb).failure?.retryable && (
                         <button
                           onClick={() => handleRevectorize(kb.id)}
                           disabled={revectorizing === kb.id}

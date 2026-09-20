@@ -111,6 +111,10 @@ public class InterviewSessionEntity {
     @Column(length = 500)
     private String evaluateError;
 
+    // 评估状态最后变化时间：供跨刷新超时判断，直接更新语句也必须同步维护
+    @Column(name = "evaluate_status_updated_at")
+    private LocalDateTime evaluateStatusUpdatedAt;
+
     // LLM提供商
     @Column(length = 50)
     private String llmProvider = "dashscope";
@@ -391,6 +395,7 @@ public class InterviewSessionEntity {
 
     public void setEvaluateStatus(AsyncTaskStatus evaluateStatus) {
         this.evaluateStatus = evaluateStatus;
+        this.evaluateStatusUpdatedAt = LocalDateTime.now();
     }
 
     public String getEvaluateError() {
@@ -399,6 +404,14 @@ public class InterviewSessionEntity {
 
     public void setEvaluateError(String evaluateError) {
         this.evaluateError = evaluateError;
+    }
+
+    public LocalDateTime getEvaluateStatusUpdatedAt() {
+        return evaluateStatusUpdatedAt;
+    }
+
+    public void setEvaluateStatusUpdatedAt(LocalDateTime evaluateStatusUpdatedAt) {
+        this.evaluateStatusUpdatedAt = evaluateStatusUpdatedAt;
     }
 
     public String getLlmProvider() {

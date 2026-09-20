@@ -203,6 +203,7 @@ public interface InterviewSessionRepository extends JpaRepository<InterviewSessi
                s.completedAt = :completedAt,
                s.endReason = :endReason,
                s.evaluateStatus = :pending,
+               s.evaluateStatusUpdatedAt = CURRENT_TIMESTAMP,
                s.evaluateError = NULL,
                s.evaluateEpoch = s.evaluateEpoch + 1
          WHERE s.sessionId = :sessionId
@@ -236,6 +237,7 @@ public interface InterviewSessionRepository extends JpaRepository<InterviewSessi
                s.completedAt = :completedAt,
                s.endReason = :endReason,
                s.evaluateStatus = :pending,
+               s.evaluateStatusUpdatedAt = CURRENT_TIMESTAMP,
                s.evaluateError = NULL,
                s.evaluateEpoch = s.evaluateEpoch + 1
          WHERE s.sessionId = :sessionId
@@ -261,7 +263,9 @@ public interface InterviewSessionRepository extends JpaRepository<InterviewSessi
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("""
         UPDATE InterviewSessionEntity s
-           SET s.evaluateStatus = :processing, s.evaluateError = NULL
+           SET s.evaluateStatus = :processing,
+               s.evaluateStatusUpdatedAt = CURRENT_TIMESTAMP,
+               s.evaluateError = NULL
          WHERE s.sessionId = :sessionId
            AND s.evaluateEpoch = :epoch
            AND (s.evaluateStatus IS NULL OR s.evaluateStatus <> :completed)
@@ -286,7 +290,9 @@ public interface InterviewSessionRepository extends JpaRepository<InterviewSessi
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("""
         UPDATE InterviewSessionEntity s
-           SET s.evaluateStatus = :pending, s.evaluateError = NULL,
+           SET s.evaluateStatus = :pending,
+               s.evaluateStatusUpdatedAt = CURRENT_TIMESTAMP,
+               s.evaluateError = NULL,
                s.evaluateEpoch = s.evaluateEpoch + 1
          WHERE s.sessionId = :sessionId
            AND s.status IN :finishedStatuses

@@ -18,6 +18,7 @@
     "test:interview-turns": "tsx --test src/utils/interviewTurns.test.ts",
     "test:profile-impact": "tsx --test src/utils/profileImpact.test.ts",
     "test:evaluate-polling": "tsx --test src/utils/evaluatePolling.test.ts",
+    "test:voice-evaluation": "tsx --test src/pages/voiceEvaluationStatus.test.ts",
     "test:resume-patch-selection": "tsx --test src/utils/resumePatchSelection.test.ts",
     "test:resume-content-edit": "tsx --test src/utils/resumeContentEdit.test.ts",
     "test:interview-turn-sync": "tsx --test src/utils/interviewTurnSync.test.ts",

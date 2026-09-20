@@ -19,9 +19,9 @@ public record KnowledgeBaseListItemDTO(
     Integer questionCount,
     VectorStatus vectorStatus,
     String vectorError,
+    LocalDateTime vectorStatusUpdatedAt,
     Integer chunkCount,
     QuestionGenStatus questionGenStatus,
     String questionGenError
 ) {
 }
-

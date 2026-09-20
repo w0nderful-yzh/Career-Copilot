@@ -20,6 +20,7 @@ public record ResumeDetailDTO(
     String resumeText,
     AsyncTaskStatus analyzeStatus,
     String analyzeError,
+    LocalDateTime analyzeStatusUpdatedAt,
     List<AnalysisHistoryDTO> analyses,
     List<InterviewHistoryItemDTO> interviews
 ) {
@@ -40,4 +41,3 @@ public record ResumeDetailDTO(
         List<Object> suggestions
     ) {}
 }
-

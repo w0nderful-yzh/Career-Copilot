@@ -40,6 +40,7 @@ import {
   TrendingUp,
   Users,
 } from 'lucide-react';
+import {loadFailed, type AsyncFailure} from '../utils/asyncFlow';
 
 type InterviewType = 'all' | 'text' | 'voice';
 type TimeRange = 'all' | '7d' | '30d' | '90d';
@@ -86,11 +87,11 @@ function isLiveStatus(status: string): boolean {
 }
 
 function isEvaluating(item: UnifiedInterviewItem): boolean {
-  return item.evaluateStatus === 'PENDING' || item.evaluateStatus === 'PROCESSING';
+  return Boolean(item.evaluateStatus) && getItemEvaluationPresentation(item).shouldPoll;
 }
 
 function isEvaluateFailed(item: UnifiedInterviewItem): boolean {
-  return item.evaluateStatus === 'FAILED';
+  return getItemEvaluationPresentation(item).failure?.kind === 'task_failed';
 }
 
 function getItemEvaluationPresentation(item: UnifiedInterviewItem) {
@@ -100,13 +101,13 @@ function getItemEvaluationPresentation(item: UnifiedInterviewItem) {
   });
 }
 
-function isVoiceEvaluationRetryable(item: UnifiedInterviewItem): boolean {
-  return item.type === 'voice' && getItemEvaluationPresentation(item).retryable;
+function isEvaluationRetryable(item: UnifiedInterviewItem): boolean {
+  return Boolean(item.evaluateStatus) && getItemEvaluationPresentation(item).retryable;
 }
 
 function StatusIcon({ item }: { item: UnifiedInterviewItem }) {
   if (isEvaluateFailed(item)) return <AlertCircle className="w-4 h-4 text-red-500 dark:text-red-400"/>;
-  if (isVoiceEvaluationRetryable(item)) {
+  if (isEvaluationRetryable(item)) {
     return <AlertCircle className="w-4 h-4 text-amber-500 dark:text-amber-400"/>;
   }
   if (isEvaluating(item)) return <RefreshCw className="w-4 h-4 text-blue-500 dark:text-blue-400 animate-spin"/>;
@@ -117,7 +118,7 @@ function StatusIcon({ item }: { item: UnifiedInterviewItem }) {
 
 function getStatusText(item: UnifiedInterviewItem): string {
   if (isEvaluateFailed(item)) return '评估失败';
-  if (item.type === 'voice' && item.evaluateStatus) {
+  if (item.evaluateStatus) {
     return getItemEvaluationPresentation(item).label;
   }
   if (isEvaluating(item)) return item.evaluateStatus === 'PROCESSING' ? '评估中' : '等待评估';
@@ -237,6 +238,8 @@ export default function InterviewHistoryPage({
   const [deleteItem, setDeleteItem] = useState<UnifiedInterviewItem | null>(null);
   const [exporting, setExporting] = useState<string | null>(null);
   const [retryingVoiceSessionId, setRetryingVoiceSessionId] = useState<number | null>(null);
+  const [retryingTextSessionId, setRetryingTextSessionId] = useState<string | null>(null);
+  const [loadFailure, setLoadFailure] = useState<AsyncFailure | null>(null);
   // P3 待收口：画像变化卡的「查看该场面试」带 sessionId 跳转过来，定位并高亮该场次
   const highlightSessionId =
     (location.state as { highlightSessionId?: string } | null)?.highlightSessionId ?? null;
@@ -293,6 +296,7 @@ export default function InterviewHistoryPage({
 
       const all = [...scopedTextInterviews, ...voiceWithNames];
       all.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      setLoadFailure(null);
 
       setItems(prev => {
         const hasActiveEvaluation = all.some(item =>
@@ -302,6 +306,7 @@ export default function InterviewHistoryPage({
       });
     } catch (err) {
       console.error('加载面试记录失败', err);
+      setLoadFailure(loadFailed('面试记录加载失败，当前评估状态未知'));
     } finally {
       if (!isPolling) setLoading(false);
     }
@@ -309,9 +314,8 @@ export default function InterviewHistoryPage({
 
   // Load text interviews from dedicated API
   async function loadTextInterviews(skills: SkillDTO[]): Promise<UnifiedInterviewItem[]> {
-    try {
-      const sessions = await interviewApi.listSessions();
-      return sessions.map((session: TextSessionMeta) => ({
+    const sessions = await interviewApi.listSessions();
+    return sessions.map((session: TextSessionMeta) => ({
         id: session.sessionId,
         type: 'text' as const,
         sourceType: session.sourceType,
@@ -322,6 +326,7 @@ export default function InterviewHistoryPage({
         status: session.status,
         evaluateStatus: session.evaluateStatus ?? undefined,
         evaluateError: session.evaluateError ?? undefined,
+        evaluateStatusUpdatedAt: session.evaluateStatusUpdatedAt ?? undefined,
         overallScore: session.overallScore,
         totalQuestions: session.totalQuestions,
         createdAt: session.createdAt,
@@ -329,16 +334,12 @@ export default function InterviewHistoryPage({
         knowledgeBaseId: session.knowledgeBaseId ?? undefined,
         interviewCategory: session.interviewCategory ?? null,
       }));
-    } catch {
-      return [];
-    }
   }
 
   // Load voice interviews from voice API
   async function loadVoiceInterviews(): Promise<UnifiedInterviewItem[]> {
-    try {
-      const sessions = await voiceInterviewApi.getAllSessions();
-      return sessions.map((session: SessionMeta) => ({
+    const sessions = await voiceInterviewApi.getAllSessions();
+    return sessions.map((session: SessionMeta) => ({
         id: `voice-${session.sessionId}`,
         type: 'voice' as const,
         title: session.roleType,
@@ -352,9 +353,6 @@ export default function InterviewHistoryPage({
         createdAt: session.createdAt,
         voiceSessionId: session.sessionId,
       }));
-    } catch {
-      return [];
-    }
   }
 
   useEffect(() => {
@@ -451,6 +449,22 @@ export default function InterviewHistoryPage({
       alert('重新生成评估失败，请稍后再试');
     } finally {
       setRetryingVoiceSessionId(null);
+    }
+  };
+
+  const handleRetryTextEvaluation = async (
+    item: UnifiedInterviewItem,
+    e: React.MouseEvent,
+  ) => {
+    e.stopPropagation();
+    setRetryingTextSessionId(item.sessionId);
+    try {
+      await interviewApi.retryEvaluation(item.sessionId);
+      await loadAll(true);
+    } catch {
+      alert('重新生成评估失败，请稍后再试');
+    } finally {
+      setRetryingTextSessionId(null);
     }
   };
 
@@ -677,8 +691,24 @@ export default function InterviewHistoryPage({
         </div>
       )}
 
+      {!loading && loadFailure && (
+        <div className="mb-6 flex items-center justify-between gap-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="h-5 w-5 shrink-0" />
+            <span>{loadFailure.message}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => void loadAll()}
+            className="shrink-0 rounded-lg border border-amber-300 px-3 py-1.5 text-sm font-medium"
+          >
+            重试加载
+          </button>
+        </div>
+      )}
+
       {/* 筛选无结果（知识库视图且筛选条件生效） */}
-      {!loading && showFilterEmpty && (
+      {!loading && !loadFailure && showFilterEmpty && (
         <motion.div
           className="text-center py-20 bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-700"
           initial={{ opacity: 0, scale: 0.95 }}
@@ -698,7 +728,7 @@ export default function InterviewHistoryPage({
       )}
 
       {/* Empty */}
-      {!loading && showOriginalEmpty && (
+      {!loading && !loadFailure && showOriginalEmpty && (
         <motion.div
           className="text-center py-20 bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-700"
           initial={{ opacity: 0, scale: 0.95 }}
@@ -803,7 +833,7 @@ export default function InterviewHistoryPage({
                           </div>
                           <span className="font-bold text-slate-800 dark:text-white">{item.overallScore}</span>
                         </div>
-                      ) : isVoiceEvaluationRetryable(item) ? (
+                      ) : isEvaluationRetryable(item) ? (
                         <span className="text-amber-600 dark:text-amber-400 text-sm">可重新生成</span>
                       ) : isEvaluating(item) ? (
                         <span className="text-blue-500 dark:text-blue-400 text-sm">生成中...</span>
@@ -881,7 +911,7 @@ export default function InterviewHistoryPage({
                             <RotateCcw className="w-4 h-4" />
                           </button>
                         )}
-                        {isVoiceEvaluationRetryable(item) && item.voiceSessionId && (
+                        {isEvaluationRetryable(item) && item.type === 'voice' && item.voiceSessionId && (
                           <button
                             onClick={(e) => handleRetryVoiceEvaluation(item, e)}
                             disabled={retryingVoiceSessionId === item.voiceSessionId}
@@ -889,6 +919,20 @@ export default function InterviewHistoryPage({
                             title="重新生成评估"
                           >
                             {retryingVoiceSessionId === item.voiceSessionId ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <RefreshCw className="w-4 h-4" />
+                            )}
+                          </button>
+                        )}
+                        {isEvaluationRetryable(item) && item.type === 'text' && (
+                          <button
+                            onClick={(e) => handleRetryTextEvaluation(item, e)}
+                            disabled={retryingTextSessionId === item.sessionId}
+                            className="p-2 text-amber-500 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/30 rounded-lg transition-colors disabled:opacity-50"
+                            title="重新生成评估"
+                          >
+                            {retryingTextSessionId === item.sessionId ? (
                               <Loader2 className="w-4 h-4 animate-spin" />
                             ) : (
                               <RefreshCw className="w-4 h-4" />

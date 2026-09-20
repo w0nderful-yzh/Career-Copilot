@@ -5,11 +5,12 @@ import ScoreProgressBar from './ScoreProgressBar';
 import {formatDateTime} from '../utils/date';
 import {AlertCircle, CheckCircle2, Clock, Download, Loader2, RefreshCw, Target, TrendingUp,} from 'lucide-react';
 import type {AnalyzeStatus} from '../api/history';
+import {classifyPersistedTask} from '../utils/asyncFlow';
 
 interface AnalysisPanelProps {
   analysis: any;
   analyzeStatus?: AnalyzeStatus;
-  analyzeError?: string;
+  analyzeStatusUpdatedAt?: string | null;
   onExport: () => void;
   exporting: boolean;
   onReanalyze?: () => void;
@@ -22,7 +23,7 @@ interface AnalysisPanelProps {
 export default function AnalysisPanel({
   analysis,
   analyzeStatus,
-  analyzeError,
+  analyzeStatusUpdatedAt,
   onExport,
   exporting,
   onReanalyze,
@@ -123,26 +124,18 @@ export default function AnalysisPanel({
     return colors[category] || 'bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300';
   };
 
-  // 检测分析结果是否有效
-  const hasErrorKeywords = analysis?.summary && (
-    analysis.summary.includes('I/O error') ||
-    analysis.summary.includes('分析过程中出现错误') ||
-    analysis.summary.includes('简历分析失败') ||
-    analysis.summary.includes('Remote host terminated') ||
-    analysis.summary.includes('handshake')
-  );
-  const isAnalysisValid = analysis &&
-    analysis.overallScore >= 10 &&
-    analysis.summary &&
-    !hasErrorKeywords;
-
-  // 判断是否为"分析中"状态
-  const isProcessing = analyzeStatus === 'PENDING' ||
-    analyzeStatus === 'PROCESSING' ||
-    (analyzeStatus === undefined && !analysis);
+  // 后端状态是权威；不能再用“分数低于 10”或错误关键词猜失败，否则合法低分会被误判。
+  const analysisState = classifyPersistedTask({
+    status: analyzeStatus,
+    statusUpdatedAt: analyzeStatusUpdatedAt,
+    hasResult: Boolean(analysis),
+    missingStatusMeansLoading: true,
+    failedMessage: '简历分析失败，请稍后重试',
+    timeoutMessage: '简历分析等待超时，请重新发起',
+  });
 
   // 处理分析中状态
-  if (isProcessing) {
+  if (analysisState.phase === 'loading') {
     const isExplicitProcessing = analyzeStatus === 'PROCESSING';
     return (
         <div className="bg-white dark:bg-slate-800 rounded-2xl p-12 text-center">
@@ -168,21 +161,19 @@ export default function AnalysisPanel({
   }
 
   // 处理分析失败状态
-  if (analyzeStatus === 'FAILED' || !isAnalysisValid) {
+  if (analysisState.phase === 'failed') {
     return (
         <div className="bg-white dark:bg-slate-800 rounded-2xl p-12 text-center">
           <div
               className="w-16 h-16 mx-auto mb-6 bg-red-100 dark:bg-red-900/50 rounded-full flex items-center justify-center">
             <AlertCircle className="w-8 h-8 text-red-500 dark:text-red-400"/>
         </div>
-          <h3 className="text-xl font-semibold text-slate-700 dark:text-slate-300 mb-2">分析失败</h3>
-          <p className="text-slate-500 dark:text-slate-400 mb-4">AI 服务暂时不可用，请稍后重试</p>
-        {(analyzeError || analysis?.summary) && (
-            <div
-                className="mt-4 p-4 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-lg text-left mb-4">
-              <p className="text-sm text-red-600 dark:text-red-400">{analyzeError || analysis.summary}</p>
-          </div>
-        )}
+          <h3 className="text-xl font-semibold text-slate-700 dark:text-slate-300 mb-2">
+            {analysisState.failure?.kind === 'timeout' ? '分析等待超时' : '分析失败'}
+          </h3>
+          <p className="text-slate-500 dark:text-slate-400 mb-4">
+            {analysisState.failure?.message ?? '简历分析未成功完成'}
+          </p>
         {onReanalyze && (
           <motion.button
             onClick={onReanalyze}
@@ -194,6 +185,27 @@ export default function AnalysisPanel({
             <RefreshCw className={`w-4 h-4 ${reanalyzing ? 'animate-spin' : ''}`} />
             {reanalyzing ? '重新分析中...' : '重新分析'}
           </motion.button>
+        )}
+      </div>
+    );
+  }
+
+  if (analysisState.phase === 'empty') {
+    return (
+      <div className="bg-white dark:bg-slate-800 rounded-2xl p-12 text-center">
+        <Clock className="mx-auto mb-4 h-10 w-10 text-slate-400" />
+        <h3 className="mb-2 text-xl font-semibold text-slate-700 dark:text-slate-300">暂无分析结果</h3>
+        <p className="mb-4 text-slate-500 dark:text-slate-400">任务已结束，但没有可展示的分析内容。</p>
+        {onReanalyze && (
+          <button
+            type="button"
+            onClick={onReanalyze}
+            disabled={reanalyzing}
+            className="mx-auto flex items-center gap-2 rounded-xl bg-primary-500 px-6 py-2.5 font-medium text-white disabled:opacity-50"
+          >
+            <RefreshCw className={`h-4 w-4 ${reanalyzing ? 'animate-spin' : ''}`} />
+            {reanalyzing ? '重新分析中...' : '重新分析'}
+          </button>
         )}
       </div>
     );

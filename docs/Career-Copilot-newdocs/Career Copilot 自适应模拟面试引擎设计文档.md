@@ -1308,6 +1308,27 @@ Topic 得分
 InterviewReport
 ```
 
+## 34.1 异步评估的可恢复状态
+
+评估状态和状态更新时间由 Java 持久化并对外提供，页面刷新后仍以 Java 事实为准。
+前端不能仅根据本次页面打开后的等待时长猜测任务是否卡住；历史数据缺少时间戳时，
+继续展示等待状态，而不是猜测超时。
+
+```text
+PENDING / PROCESSING + 未超时  -> waiting，继续轮询
+PENDING / PROCESSING + 已超时  -> timeout，停止轮询并提供重试
+FAILED                            -> task_failed，提供重试
+COMPLETED + 有报告               -> completed
+COMPLETED + 无报告               -> empty，不伪装成失败
+```
+
+界面取数失败是 `load_failed`，依赖服务不可用是 `dependency_failed`，用户主动停止是
+`user_stopped`；它们与评估任务本身失败不能共用一个「失败」文案。超时和任务失败可重试，
+用户停止不提供「重新发送」；后端原始错误可能含依赖地址或连接信息，不直接回显。
+
+重试必须复用现有 Java API 的幂等与状态抢占边界：同代次可重投，旧代次丢弃，
+报告已完成后不再领取任务。页面重试只触发该 API，不在前端直接写入业务状态。
+
 ---
 
 # 35. Career Copilot 接入方式

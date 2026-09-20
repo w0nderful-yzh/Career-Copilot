@@ -31,6 +31,14 @@ export interface AsyncFailure {
   retryable: boolean;
 }
 
+export type PersistedTaskStatus = 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
+
+export interface PersistedTaskDecision {
+  phase: AsyncPhase;
+  shouldPoll: boolean;
+  failure: AsyncFailure | null;
+}
+
 /**
  * 「等太久」的统一阈值：各流程默认共用，避免同一类等待在不同页面阈值不同。
  * 需要更宽的流程（如整场报告生成）可显式覆盖，但覆盖要在调用处写清理由。
@@ -69,6 +77,23 @@ export function userStopped(message = '已停止'): AsyncFailure {
   return asyncFailure('user_stopped', message);
 }
 
+/**
+ * API 请求失败分类：7xxx 是 Java 明确返回的 AI 依赖错误；其余请求失败只说明界面未能
+ * 确认业务状态，不能冒充后台任务已经失败。
+ */
+export function requestFailure(
+  error: unknown,
+  loadMessage = '请求失败，当前业务状态未知',
+  dependencyMessage = '依赖服务暂时不可用，请稍后重试',
+): AsyncFailure {
+  const code = typeof error === 'object' && error !== null && 'code' in error
+    ? (error as { code?: unknown }).code
+    : undefined;
+  return typeof code === 'number' && code >= 7000 && code < 8000
+    ? dependencyFailed(dependencyMessage)
+    : loadFailed(loadMessage);
+}
+
 /** 是否处于「还在等」的阶段（前端据此决定要不要继续轮询） */
 export function isWaitingPhase(phase: AsyncPhase): boolean {
   return phase === 'loading';
@@ -87,4 +112,57 @@ export function isStuck(
   if (!updatedAt) return false;
   const updated = new Date(updatedAt).getTime();
   return Number.isFinite(updated) && now - updated >= stuckAfterMs;
+}
+
+/**
+ * 持久化异步任务的共同状态机。
+ *
+ * `statusUpdatedAt` 来自 Java 业务库，因此页面刷新不会重置等待时间；没有时间戳时仍保持
+ * 等待，不凭前端挂载时间猜超时。`missingStatusMeansLoading` 只供迁移前的旧简历数据兼容。
+ */
+export function classifyPersistedTask(params: {
+  status?: PersistedTaskStatus | null;
+  statusUpdatedAt?: string | null;
+  hasResult: boolean;
+  missingStatusMeansLoading?: boolean;
+  now?: number;
+  stuckAfterMs?: number;
+  failedMessage?: string;
+  timeoutMessage?: string;
+}): PersistedTaskDecision {
+  if (params.status === 'COMPLETED') {
+    return {
+      phase: params.hasResult ? 'ready' : 'empty',
+      shouldPoll: false,
+      failure: null,
+    };
+  }
+  if (params.status === 'FAILED') {
+    return {
+      phase: 'failed',
+      shouldPoll: false,
+      failure: taskFailed(params.failedMessage),
+    };
+  }
+  if (params.status === 'PENDING' || params.status === 'PROCESSING') {
+    if (isStuck(
+      params.statusUpdatedAt,
+      params.stuckAfterMs ?? DEFAULT_STUCK_AFTER_MS,
+      params.now ?? Date.now(),
+    )) {
+      return {
+        phase: 'failed',
+        shouldPoll: false,
+        failure: timeoutFailure(params.timeoutMessage),
+      };
+    }
+    return { phase: 'loading', shouldPoll: true, failure: null };
+  }
+  if (params.hasResult) {
+    return { phase: 'ready', shouldPoll: false, failure: null };
+  }
+  if (params.missingStatusMeansLoading) {
+    return { phase: 'loading', shouldPoll: true, failure: null };
+  }
+  return { phase: 'empty', shouldPoll: false, failure: null };
 }

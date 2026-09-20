@@ -75,6 +75,19 @@ export function getVoiceEvaluationPresentation({
     };
   }
 
+  if ((status === 'PENDING' || status === 'PROCESSING')
+      && hasWaitedPastRetryThreshold(statusUpdatedAt, now)) {
+    return {
+      tone: 'warning',
+      label: '评估延迟',
+      title: '评估等待时间较长',
+      description: '任务可能没有成功进入队列，你可以重新生成，已保存的面试记录不会丢失。',
+      retryable: true,
+      shouldPoll: false,
+      failure: timeoutFailure('评估任务等待超时'),
+    };
+  }
+
   if (status === 'PROCESSING') {
     return {
       tone: 'loading',
@@ -84,18 +97,6 @@ export function getVoiceEvaluationPresentation({
       retryable: false,
       shouldPoll: true,
       failure: null,
-    };
-  }
-
-  if (status === 'PENDING' && hasWaitedPastRetryThreshold(statusUpdatedAt, now)) {
-    return {
-      tone: 'warning',
-      label: '评估延迟',
-      title: '评估等待时间较长',
-      description: '任务可能没有成功进入队列，你可以重新生成，已保存的面试记录不会丢失。',
-      retryable: true,
-      shouldPoll: true,
-      failure: timeoutFailure('评估任务等待超时'),
     };
   }
 

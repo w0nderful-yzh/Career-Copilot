@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import type { ChoiceOption, CopilotMessage } from '../../types/copilot';
 import BlockRenderer from './BlockRenderer';
+import {getCopilotTurnFailure} from '../../utils/copilotTurnStatus';
 
 // Copilot 消息列表：气泡渲染 + 流式光标 + 错误/停止状态与重发入口
 
@@ -51,6 +52,7 @@ function AssistantContent({
   onActionSelect: (option: ChoiceOption) => void;
   onRetry?: (messageId: string) => void;
 }) {
+  const turnFailure = getCopilotTurnFailure(message.status, message.error);
   return (
     <div className="space-y-1">
       {message.content && (
@@ -103,8 +105,8 @@ function AssistantContent({
       {message.status === 'error' && (
         <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600 dark:bg-red-900/30 dark:text-red-300">
           <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-          <span className="min-w-0 flex-1">{message.error ?? '处理失败，请稍后重试'}</span>
-          {onRetry && message.retry && (
+          <span className="min-w-0 flex-1">{turnFailure?.message}</span>
+          {turnFailure?.retryable && onRetry && message.retry && (
             <RetryButton disabled={actionDisabled} onClick={() => onRetry(message.id)} />
           )}
         </div>
@@ -116,9 +118,6 @@ function AssistantContent({
           <span className="min-w-0 flex-1">
             {message.content ? '已停止生成，以上为已产出的部分' : '已停止生成，本轮未产出内容'}
           </span>
-          {onRetry && message.retry && (
-            <RetryButton disabled={actionDisabled} onClick={() => onRetry(message.id)} />
-          )}
         </div>
       )}
     </div>

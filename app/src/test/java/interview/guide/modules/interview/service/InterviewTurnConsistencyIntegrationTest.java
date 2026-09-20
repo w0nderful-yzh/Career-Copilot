@@ -175,6 +175,9 @@ class InterviewTurnConsistencyIntegrationTest {
     InterviewSessionEntity after = persistenceService.findBySessionId(sessionId).orElseThrow();
     assertThat(after.getStatus()).isEqualTo(InterviewSessionEntity.SessionStatus.COMPLETED);
     assertThat(after.getEvaluateStatus()).isEqualTo(AsyncTaskStatus.PENDING);
+    assertThat(after.getEvaluateStatusUpdatedAt())
+        .as("评估状态时间与结束提交原子落库，刷新后可判定是否卡住")
+        .isNotNull();
     assertThat(after.getEvaluateEpoch()).isEqualTo(1L);
     assertThat(after.getEndReason())
         .as("候选耗尽必须与「用户结束」可区分（P4-1）")
@@ -228,6 +231,8 @@ class InterviewTurnConsistencyIntegrationTest {
 
     // 当前代次可领取（消费端原子领取）
     assertThat(persistenceService.claimEvaluation(sessionId, 1L)).isTrue();
+    assertThat(persistenceService.findBySessionId(sessionId).orElseThrow()
+        .getEvaluateStatusUpdatedAt()).isNotNull();
     // 同一代次再次投递（失败重试路径）仍可领取：重试是刻意允许的
     assertThat(persistenceService.claimEvaluation(sessionId, 1L)).isTrue();
     // **旧代次的晚到触发被丢弃**：否则一次重试会写出第二份报告

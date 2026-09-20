@@ -37,6 +37,8 @@ test('评估失败立即停止轮询并给出重试说明（不能一直显示�
   assert.equal(decision.phase, 'failed');
   assert.equal(decision.shouldContinue, false);
   assert.match(decision.message, /重试/);
+  assert.equal(decision.failure?.kind, 'task_failed');
+  assert.equal(decision.failure?.retryable, true);
 });
 
 test('失败优先于超时：先失败就不必等到上限', () => {
@@ -60,6 +62,7 @@ test('达到轮询上限仍未出结果按超时处理，并说明作答不会�
   assert.equal(decision.shouldContinue, false);
   assert.match(decision.message, /超时/);
   assert.match(decision.message, /不会丢失/);
+  assert.equal(decision.failure?.kind, 'timeout');
 });
 
 test('未达上限时正常等待（边界：上限前一次仍等待）', () => {

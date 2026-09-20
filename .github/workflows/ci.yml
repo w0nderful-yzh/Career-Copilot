@@ -137,6 +137,7 @@ jobs:
           pnpm run test:interview-turns
           pnpm run test:profile-impact
           pnpm run test:evaluate-polling
+          pnpm run test:voice-evaluation
           pnpm run test:resume-patch-selection
           pnpm run test:resume-content-edit
           pnpm run test:interview-turn-sync

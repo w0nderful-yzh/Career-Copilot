@@ -53,8 +53,9 @@ public interface ResumeMapper {
             latestScore,
             lastAnalyzedAt,
             interviewCount,
-            null,
-            null
+            resume.getAnalyzeStatus(),
+            resume.getAnalyzeError(),
+            resume.getAnalyzeStatusUpdatedAt()
         );
     }
 

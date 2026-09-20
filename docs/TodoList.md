@@ -234,7 +234,7 @@ React 展示本轮结果与下一步
 - [x] **DOC-1 架构与协议同步**（见 7.20）：每批修改同步面试设计、前端协议及相关规则；保留 Java 业务权威与实时循环边界，移除固定题数、固定配额与列表耗尽即结束等过时约束。
 - [x] **契约行为回归**（见 7.20）：随字段落地验证时间预算、节奏动作、版本和请求标识真正影响业务；继续守住简历与 focus 的既有契约。
 - [x] **可靠性回归**（见 7.20）：缓存旧状态、报告失败、重复提交、并发结束、晚到模型结果、历史数据修复及画像重算均有断言；Redis 特定行为用真实 Redis 验证。
-- [ ] **P6-1 异步与失败体验统一**（第一批已完成，见 7.20）：剩余异步流程统一 loading / failed / retry / completed 和超时出口；区分加载失败、空结果、用户停止及依赖失败；跨会话、刷新与重试不丢状态或重复写入。
+- [x] **P6-1 异步与失败体验统一**（见 7.20）：异步流程统一 loading / failed / retry / completed 和超时出口；区分加载失败、空结果、用户停止及依赖失败；跨会话、刷新与重试不丢状态或重复写入。
 
 ### 4.6 面试闭环稳定后：简历闭环与产品收尾
 
@@ -384,24 +384,26 @@ POST /api/profile/repair/skip-semantics     复核「已标记作答但得 0 分
   缓存旧状态 / 报告失败 / 重复提交 / 并发结束 / 历史修复 / 画像重算由既有测试覆盖。
 - [x] **已验证**（2026-09-20，本机）：`:app:test` 全绿（含真实 DB 与真实 Redis 两类集成测试）；
   Python `ruff` / `mypy` / `pytest` 159 通过；前端 `build` + 13 个 `test:*`（76 例）+ `test:e2e` 14 例全绿。
-- [~] **P6-1 异步与失败体验统一（批 1：共享判据 + 三条流程接入）**：
-  审计结论——各异步流程**各自实现状态语义**（约 15 处渲染点），没有共同的失败判据。
-  批 1 落地：
-  - 新增 `utils/asyncFlow.ts` 统一契约：五种失败**彼此不混**（`task_failed` 任务本身失败 /
-    `dependency_failed` 依赖服务不可用 / `timeout` 等待超阈值 / `load_failed` 界面取数失败 /
-    `user_stopped` 用户主动停止），`retryable` 按类别决定（用户停止不给重试），
-    `isStuck` 卡住判据带统一阈值 `DEFAULT_STUCK_AFTER_MS`（2 分钟）且**没有时间戳不猜**。
-  - 三条流程接入并保留原 API：`questionGenerationStatus`（新增等待超时出口：任务卡住从
-    「生成中」转为可重试提示；`FAILED` 带统一判据且**不回显 backend error**——可能含连接串）、
-    `voiceEvaluationStatus`（阈值改用统一常量、失败判据区分「任务失败 vs 等待超时」）、
-    `knowledgeBaseInterviewCompletion`（失败带 retryable + 判据）。
-  - UI 接线：题目生成页的重试出口从「仅 FAILED」改为按统一判据（覆盖等待超时）。
-  - 测试：新增 `asyncFlow.test.ts`（4 例）+ 三处既有断言补判据（共 81 前端单测），
-    脚本 `test:async-flow` 已注册进 CI。
-  - 已验证（2026-09-20，本机）：前端 `build` + 14 个 `test:*`（81 例）+ `test:e2e` 14 例全绿。
-  - 剩余（批 2）：`AnalysisPanel`（简历分析）、`KnowledgeBaseManagePage`（向量化）、
-    `HistoryList` / `InterviewHistoryPage`、`evaluatePolling` 与 copilot 消息态逐处换用共享判据；
-    「跨会话 / 刷新 / 重试不丢状态不重复写入」的断言属各流程既有测试，随批 2 逐处核对。
+- [x] **P6-1 异步与失败体验统一**：
+  - 共享契约：`utils/asyncFlow.ts` 统一 loading / completed / empty / failed / timeout，
+    五种失败**彼此不混**（`task_failed` 任务失败 / `dependency_failed` 依赖不可用 /
+    `timeout` 等待超时 / `load_failed` 界面取数失败 / `user_stopped` 用户停止）；
+    `retryable` 按类别决定，统一阈值为 2 分钟，**无时间戳不猜超时**。
+  - 刷新后仍可判定：新增 V20260927，将简历分析、知识库向量化、文字面试评估的
+    `statusUpdatedAt` 持久化且在每次状态转移刷新；直接 JPQL 抢占 / 重试路径同步更新，
+    前端不再依赖页面内计时器推测后端状态。
+  - 流程收口：题目生成、简历分析 / 历史、知识库向量化、文字 / 语音面试评估、
+    知识库面试收尾、Copilot 消息态均使用共享语义；超时停止轮询并给重试，
+    用户主动停止不伪装成失败且不给「重新发送」。
+  - 可见语义：列表取数失败不再被吞成空列表；已有数据在轮询失败时保留并给警告；
+    依赖故障与业务任务失败分开；完成但无产物显示为空结果；不回显可能含连接信息的后端原始错误。
+    同时移除「分数过低即分析失败」的启发式，低分结果不再被误报。
+  - 重试与幂等：重试仍走原 Java API 及既有幂等 / 状态抢占边界；
+    `InterviewTurnConsistencyIntegrationTest` 覆盖同代次重投可重试、旧代次丢弃和报告完成后不再领取。
+  - 验证（2026-09-20，本机）：Java `:app:test` 注册 617 例、0 失败，47 例按环境条件跳过；
+    与本批相关的真实 DB / Redis 集成测试 8 例全部执行，V20260927 在集成启动中实际迁移。
+    Python `ruff` / `mypy src` / `pytest` 159 例通过；前端 `build` + 15 个 `test:*`（92 例）+
+    `test:e2e` 14 例通过。
 
 ### 7.19 三个闭环：画像可追溯、Copilot 串联、面试 E2E（P5-2 / P5-3 / P6-4）
 

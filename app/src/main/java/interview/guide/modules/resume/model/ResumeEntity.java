@@ -63,11 +63,16 @@ public class ResumeEntity {
     // 分析错误信息（失败时记录）
     @Column(length = 500)
     private String analyzeError;
+
+    // 分析状态最后变化时间：前端刷新后仍可判断任务是否卡住
+    @Column(name = "analyze_status_updated_at")
+    private LocalDateTime analyzeStatusUpdatedAt;
     
     @PrePersist
     protected void onCreate() {
         uploadedAt = LocalDateTime.now();
         lastAccessedAt = LocalDateTime.now();
+        analyzeStatusUpdatedAt = LocalDateTime.now();
         accessCount = 1;
     }
     
@@ -171,6 +176,7 @@ public class ResumeEntity {
 
     public void setAnalyzeStatus(AsyncTaskStatus analyzeStatus) {
         this.analyzeStatus = analyzeStatus;
+        this.analyzeStatusUpdatedAt = LocalDateTime.now();
     }
 
     public String getAnalyzeError() {
@@ -179,5 +185,13 @@ public class ResumeEntity {
 
     public void setAnalyzeError(String analyzeError) {
         this.analyzeError = analyzeError;
+    }
+
+    public LocalDateTime getAnalyzeStatusUpdatedAt() {
+        return analyzeStatusUpdatedAt;
+    }
+
+    public void setAnalyzeStatusUpdatedAt(LocalDateTime analyzeStatusUpdatedAt) {
+        this.analyzeStatusUpdatedAt = analyzeStatusUpdatedAt;
     }
 }

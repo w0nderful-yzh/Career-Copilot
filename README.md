@@ -338,7 +338,7 @@ pnpm dev
 使用 `scripts/dev.sh` 统一管理 Java / Python Agent / React 三个服务（按端口启停，避免残留进程）：
 
 ```bash
-./scripts/dev.sh start      # 启动三个服务（等待 Java 就绪后打印状态）
+./scripts/dev.sh start      # 逐个启动并等待 Java / Agent / Web 全部就绪
 ./scripts/dev.sh stop       # 停止三个服务并释放端口
 ./scripts/dev.sh restart    # 重启
 ./scripts/dev.sh status     # 查看各服务健康状态
@@ -346,7 +346,7 @@ pnpm dev
 ./scripts/dev.sh stop-port 8081   # 忘记端口时按端口兜底清理
 ```
 
-端口默认 `8081 / 8001 / 5173`（本机 8080/8000 常被其他项目占用），可通过 `SERVER_PORT` / `AGENT_PORT` / `WEB_PORT` 环境变量覆盖；前端与 Agent 的代理目标由脚本自动注入，无需手工改 `.env`。日志位于 `.dev-logs/`。
+端口默认 `8081 / 8001 / 5173`（本机 8080/8000 常被其他项目占用），可通过 `SERVER_PORT` / `AGENT_PORT` / `WEB_PORT` 环境变量覆盖；前端与 Agent 的代理目标由脚本自动注入，无需手工改 `.env`。`start` 只有在三个健康端点都通过后才成功；端口冲突、进程退出和「进程存活但未就绪」会分别报错。macOS 使用临时 `launchd` 任务，调用 shell 退出后服务仍继续运行，`stop` 会卸载任务并释放端口。按服务与端口隔离的日志、托管记录位于 `.dev-logs/`。
 
 ---
 

@@ -246,3 +246,124 @@ test('简历 → JD Gap → Patch → 预览 → 确认 → 新版本 → PDF �
   await page.getByRole('button', { name: '导出 PDF' }).first().click();
   await expect.poll(() => exportedVersionId).toBe('6');
 });
+
+test('简历闭环支持取消、刷新恢复，以及 Preview 失败后的显式重试', async ({ page }) => {
+  const conversation = {
+    id: CONVERSATION_ID,
+    title: '待确认的 JD 定向优化',
+    messageCount: 2,
+    isPinned: false,
+    updatedAt: new Date().toISOString(),
+  };
+  let proposalStatus: 'PENDING' | 'REJECTED' = 'PENDING';
+  let previewAttempts = 0;
+  let applyCalls = 0;
+  let rejectCalls = 0;
+
+  await page.route(/\/api\/agent\/conversations(\?.*)?$/, (route) =>
+    route.fulfill(result(200, 'success', [conversation])),
+  );
+  await page.route(`**/api/agent/conversations/${CONVERSATION_ID}`, (route) =>
+    route.fulfill(result(200, 'success', {
+      ...conversation,
+      createdAt: new Date().toISOString(),
+      activeResumeId: RESUME_ID,
+      activeJobId: 42,
+      messages: [
+        {
+          id: 1,
+          role: 'USER',
+          content: '按 JD 优化简历',
+          blocks: null,
+          status: 'COMPLETED',
+          createdAt: new Date().toISOString(),
+        },
+        {
+          id: 2,
+          role: 'ASSISTANT',
+          content: '请核对后决定是否应用。',
+          blocks: JSON.stringify([gapBlock, optimizationBlock]),
+          status: 'COMPLETED',
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    })),
+  );
+  await page.route('**/api/agent/tools/get_skill_profile', (route) =>
+    route.fulfill(result(200, 'success', { tool: 'get_skill_profile', data: { skills: [] } })),
+  );
+  await page.route('**/api/jobs/42', (route) =>
+    route.fulfill(result(200, 'success', { id: 42, title: 'Java 后端实习' })),
+  );
+  await page.route(`**/api/resume-optimization/proposals/${PROPOSAL_ID}`, (route) =>
+    route.fulfill(result(200, 'success', { id: PROPOSAL_ID, status: proposalStatus })),
+  );
+  await page.route(`**/api/resume-optimization/proposals/${PROPOSAL_ID}/reject`, (route) => {
+    rejectCalls += 1;
+    proposalStatus = 'REJECTED';
+    return route.fulfill(result(200, 'success', { id: PROPOSAL_ID, status: proposalStatus }));
+  });
+  await page.route(`**/api/resume-versions/${SOURCE_VERSION_ID}`, (route) =>
+    route.fulfill(result(200, 'success', {
+      id: SOURCE_VERSION_ID,
+      resumeId: RESUME_ID,
+      version: 1,
+      source: 'IMPORT',
+      confirmationStatus: 'ACTIVE',
+      content: {
+        basicInfo: { name: '张三' },
+        projects: [{ name: 'Demo', bullets: ['负责后端开发工作'] }],
+      },
+      missingFields: [],
+      createdAt: new Date().toISOString(),
+      sourceCreatedAt: new Date().toISOString(),
+    })),
+  );
+  await page.route('**/internal/agent/resume/preview', (route) => {
+    previewAttempts += 1;
+    if (previewAttempts === 1) {
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ code: 500, message: 'PDF 渲染服务暂不可用', data: null }),
+      });
+    }
+    return route.fulfill({ status: 200, contentType: 'application/pdf', body: '%PDF-1.4\n%%EOF' });
+  });
+  await page.route('**/api/chat/stream', (route) => {
+    applyCalls += 1;
+    return route.fulfill({
+      status: 200,
+      contentType: 'text/event-stream',
+      body: 'data: {"type":"done","payload":{}}\n\n',
+    });
+  });
+
+  await page.goto('/copilot');
+
+  await expect(page.getByText('预览失败：PDF 渲染服务暂不可用')).toBeVisible();
+  await page.getByRole('button', { name: '重试预览' }).click();
+  await expect(page.getByTitle('简历优化预览')).toBeVisible();
+  expect(previewAttempts).toBe(2);
+
+  // 取消发生在真正的 CONFIRM_WRITE 之前，不得发起应用请求。
+  await page.getByRole('button', { name: '核对并应用（2/2）' }).click();
+  await expect(page.getByText('确认生成新版本？')).toBeVisible();
+  await page.getByRole('button', { name: '取消', exact: true }).click();
+  expect(applyCalls).toBe(0);
+
+  // 刷新后由 Java 的 PENDING 状态恢复同一提案，仍可继续决策。
+  await page.reload();
+  await expect(page.getByText('JD Gap 分析')).toBeVisible();
+  await expect(page.getByRole('button', { name: '核对并应用（2/2）' })).toBeEnabled();
+
+  await page.getByRole('button', { name: '全部忽略' }).click();
+  await expect(page.getByText('已忽略本次优化建议，简历内容未改动')).toBeVisible();
+  expect(rejectCalls).toBe(1);
+  expect(applyCalls).toBe(0);
+
+  // 再刷新仍以权威 REJECTED 状态锁定，不能重复写入。
+  await page.reload();
+  await expect(page.getByText('已忽略本次优化建议，简历内容未改动')).toBeVisible();
+  await expect(page.getByRole('button', { name: '已忽略' })).toBeDisabled();
+});

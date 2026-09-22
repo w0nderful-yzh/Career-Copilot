@@ -3,7 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   ChevronDown, ChevronUp, FileStack, FileText, Loader2, Mic,
-  RefreshCw, Sparkles,
+  RefreshCw, SlidersHorizontal, Sparkles,
 } from 'lucide-react';
 import { type SkillDTO } from '../api/skill';
 import { interviewApi, type TextSessionMeta } from '../api/interview';
@@ -36,6 +36,7 @@ export default function InterviewHubPage() {
   const navigate = useNavigate();
 
   const config = useInterviewConfig({ autoLoad: false });
+  const [showCreatePanel, setShowCreatePanel] = useState(false);
 
   // === 最近面试记录 ===
   const [recentInterviews, setRecentInterviews] = useState<RecentInterviewItem[]>([]);
@@ -134,16 +135,44 @@ export default function InterviewHubPage() {
   return (
     <div className="max-w-5xl mx-auto">
       {/* 页面标题 */}
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-slate-800 dark:text-white flex items-center gap-3">
-          <Sparkles className="w-7 h-7 text-primary-500" />
-          模拟面试
-        </h1>
-        <p className="text-slate-500 dark:text-slate-400 mt-1">选择面试模式和方向，快速开始练习</p>
+      <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-800 dark:text-white flex items-center gap-3">
+            <Sparkles className="w-7 h-7 text-primary-500" />
+            模拟面试
+          </h1>
+          <p className="text-slate-500 dark:text-slate-400 mt-1">
+            先回到最近一场的进展，需要时再发起自定义面试
+          </p>
+        </div>
+        <button
+          type="button"
+          aria-expanded={showCreatePanel}
+          onClick={() => setShowCreatePanel((visible) => !visible)}
+          className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 dark:bg-white dark:text-slate-900 dark:hover:bg-primary-300"
+        >
+          <SlidersHorizontal className="h-4 w-4" />
+          {showCreatePanel ? '收起自定义配置' : '发起自定义面试'}
+        </button>
       </div>
 
       {/* 配置区域 */}
-      <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-700 p-6 mb-8">
+      <AnimatePresence initial={false}>
+        {showCreatePanel && (
+          <motion.section
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.18 }}
+            aria-label="自定义面试配置"
+            className="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-700 p-6 mb-8"
+          >
+        <div className="mb-6 border-b border-slate-100 pb-4 dark:border-slate-700">
+          <p className="text-sm font-bold text-slate-900 dark:text-white">自定义面试配置</p>
+          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+            只有需要新建练习时才配置；已有场次可直接从下方继续或复盘。
+          </p>
+        </div>
         <div className="space-y-6">
           {/* 面试模式 */}
           <div>
@@ -455,7 +484,9 @@ export default function InterviewHubPage() {
             开始{config.mode === 'text' ? '文字' : '语音'}面试
           </motion.button>
         </div>
-      </div>
+          </motion.section>
+        )}
+      </AnimatePresence>
 
       {/* 最近面试记录 */}
       <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-700 p-6">
@@ -475,7 +506,9 @@ export default function InterviewHubPage() {
           </div>
         ) : recentInterviews.length === 0 ? (
           <div className="text-center py-10">
-            <p className="text-slate-400 dark:text-slate-500 text-sm">暂无面试记录，选择方向开始第一次面试吧</p>
+            <p className="text-slate-400 dark:text-slate-500 text-sm">
+              暂无面试记录，点击“发起自定义面试”开始第一次练习
+            </p>
           </div>
         ) : (
           <div className="space-y-2">

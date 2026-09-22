@@ -119,4 +119,35 @@ test.describe('Copilot 加载与错误态', () => {
     await expect(page.getByText('复盘最近面试')).toBeVisible();
     await expect(page.getByText('后端服务不可达')).toHaveCount(0);
   });
+
+  test('画像依赖失败时不展示旧数据，用户重试后恢复 Evidence', async ({ page }) => {
+    let profileFails = true;
+    await page.route(LIST_URL, (route) =>
+      route.fulfill(result(200, 'success', [])),
+    );
+    await page.route('**/api/agent/tools/get_skill_profile', (route) => {
+      if (profileFails) {
+        return route.fulfill(result(500, '画像服务暂不可用', null));
+      }
+      return route.fulfill(result(200, 'success', {
+        tool: 'get_skill_profile',
+        data: {
+          skills: [{ skill: 'JVM', score: 68, evidenceCount: 3, evidences: [] }],
+          declaredSkills: [],
+        },
+      }));
+    });
+
+    await page.goto('/copilot');
+
+    await expect(page.getByText('画像加载失败，当前不展示旧数据')).toBeVisible();
+    await expect(page.getByText('Java 后端求职')).toHaveCount(0);
+    await expect(page.getByText('今日任务 · 示例')).toHaveCount(0);
+
+    profileFails = false;
+    await page.getByRole('button', { name: '重试画像' }).click();
+    await expect(page.getByText('JVM')).toBeVisible();
+    await expect(page.getByText('68', { exact: true })).toBeVisible();
+    await expect(page.getByText('画像加载失败，当前不展示旧数据')).toHaveCount(0);
+  });
 });

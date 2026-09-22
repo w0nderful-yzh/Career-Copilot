@@ -58,10 +58,15 @@ JAVA_PORT="${SERVER_PORT:-8081}"
 AGENT_PORT="${AGENT_PORT:-8001}"
 WEB_PORT="${WEB_PORT:-5173}"
 LOG_DIR="$ROOT_DIR/.dev-logs"
-JAVA_LOG="$LOG_DIR/java.log"
-AGENT_LOG="$LOG_DIR/agent.log"
-WEB_LOG="$LOG_DIR/web.log"
-JAVA_READY_TIMEOUT=90   # Java 启动较慢，最长等待秒数
+JAVA_LOG="$LOG_DIR/java-${JAVA_PORT}.log"
+AGENT_LOG="$LOG_DIR/agent-${AGENT_PORT}.log"
+WEB_LOG="$LOG_DIR/web-${WEB_PORT}.log"
+JAVA_PROCESS_FILE="$LOG_DIR/java-${JAVA_PORT}.job"
+AGENT_PROCESS_FILE="$LOG_DIR/agent-${AGENT_PORT}.job"
+WEB_PROCESS_FILE="$LOG_DIR/web-${WEB_PORT}.job"
+JAVA_READY_TIMEOUT="${JAVA_READY_TIMEOUT:-90}"
+AGENT_READY_TIMEOUT="${AGENT_READY_TIMEOUT:-30}"
+WEB_READY_TIMEOUT="${WEB_READY_TIMEOUT:-30}"
 
 mkdir -p "$LOG_DIR"
 
@@ -73,6 +78,103 @@ error() { printf "[dev][ERROR] %s\n" "$*" >&2; }
 port_pid() { lsof -ti tcp:"$1" 2>/dev/null | head -1; }
 
 port_busy() { [ -n "$(port_pid "$1")" ]; }
+
+tracked_pid() {
+  local file="$1" value label info pid
+  [ -f "$file" ] || return 1
+  value="$(head -1 "$file")"
+  case "$value" in
+    launchd:*)
+      label="${value#launchd:}"
+      info="$(launchctl print "gui/$(id -u)/$label" 2>/dev/null)" || return 1
+      printf "%s\n" "$info" | grep -q "state = running" || return 1
+      pid="$(printf "%s\n" "$info" | awk '/pid = / { print $3; exit }')"
+      [ -n "$pid" ] || return 1
+      printf "%s" "$pid"
+      ;;
+    pid:*)
+      pid="${value#pid:}"
+      [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 1
+      printf "%s" "$pid"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+start_detached() {
+  local process_file="$1" label="$2" log_file="$3" work_dir="$4"
+  shift 4
+  : > "$log_file"
+  if [ "$(uname -s)" = "Darwin" ] && command -v launchctl >/dev/null 2>&1; then
+    local command_line
+    printf -v command_line 'cd %q && exec' "$work_dir"
+    local arg
+    for arg in "$@"; do
+      printf -v command_line '%s %q' "$command_line" "$arg"
+    done
+    # launchd 脱离当前调用 shell 的进程组；submit 适合本地开发期临时任务，
+    # remove 后不会留下登录项或系统级配置。
+    launchctl remove "$label" 2>/dev/null || true
+    launchctl submit -l "$label" -o "$log_file" -e "$log_file" -- \
+      /bin/bash -c "$command_line"
+    printf "launchd:%s\n" "$label" > "$process_file"
+    return 0
+  fi
+
+  (
+    cd "$work_dir"
+    # 非 macOS 回退：stdin 与 SIGHUP 都脱离调用 shell，进程记录用于未绑定端口时停止。
+    nohup "$@" </dev/null >"$log_file" 2>&1 &
+    printf "pid:%s\n" "$!" > "$process_file"
+  )
+}
+
+stop_tracked_process() {
+  local process_file="$1" value pid label
+  [ -f "$process_file" ] || return 0
+  value="$(head -1 "$process_file")"
+  case "$value" in
+    launchd:*)
+      label="${value#launchd:}"
+      launchctl remove "$label" 2>/dev/null || true
+      ;;
+    pid:*)
+      pid="${value#pid:}"
+      [ -z "$pid" ] || kill "$pid" 2>/dev/null || true
+      ;;
+  esac
+  rm -f "$process_file"
+}
+
+wait_service_ready() {
+  local name="$1" port="$2" path="$3" timeout="$4" process_file="$5" log_file="$6"
+  local elapsed=0 pid=""
+  while [ "$elapsed" -lt "$timeout" ]; do
+    if curl -sf -m 2 -o /dev/null "http://127.0.0.1:$port$path" 2>/dev/null; then
+      log "$name :$port 已就绪"
+      return 0
+    fi
+    pid="$(tracked_pid "$process_file")" || true
+    if [ -f "$process_file" ] && [ -z "$pid" ] && [ "$elapsed" -ge 3 ]; then
+      error "$name 启动失败：托管进程未运行（日志见 $log_file）"
+      return 1
+    fi
+    # 端口由非本脚本进程占用，且健康端点不匹配：这是端口冲突，不是「启动中」。
+    if [ -z "$pid" ] && port_busy "$port"; then
+      error "$name 启动失败：端口 $port 已被占用，但健康检查 $path 未通过"
+      return 1
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  pid="$(tracked_pid "$process_file")" || true
+  if [ -n "$pid" ]; then
+    error "$name 未就绪：进程 $pid 仍在运行，但 ${timeout}s 内健康检查未通过"
+  else
+    error "$name 启动失败：${timeout}s 内未就绪，且启动进程已退出"
+  fi
+  return 1
+}
 
 # 按端口停止服务（无法区分归属，但端口即服务的约定足够可靠）
 stop_port() {
@@ -98,17 +200,6 @@ stop_port() {
   fi
 }
 
-wait_java() {
-  for _ in $(seq 1 "$JAVA_READY_TIMEOUT"); do
-    # -m 2：端口半开（进程僵死未释放监听）时 curl 可能长时间挂起，必须带超时
-    if curl -sf -m 2 -o /dev/null "http://127.0.0.1:$JAVA_PORT/api/agent/tools" 2>/dev/null; then
-      return 0
-    fi
-    sleep 2
-  done
-  return 1
-}
-
 # ===== 子命令 =====
 
 start_java() {
@@ -124,9 +215,10 @@ start_java() {
     export JAVA_HOME="${sdkman_java%/}"
     export PATH="$JAVA_HOME/bin:$PATH"
   fi
-  cd "$ROOT_DIR"
-  SERVER_PORT="$JAVA_PORT" nohup ./gradlew :app:bootRun --no-daemon >"$JAVA_LOG" 2>&1 &
-  cd - >/dev/null
+  start_detached "$JAVA_PROCESS_FILE" "com.careercopilot.dev.java.$JAVA_PORT" \
+    "$JAVA_LOG" "$ROOT_DIR" \
+    env JAVA_HOME="$JAVA_HOME" PATH="$PATH" SERVER_PORT="$JAVA_PORT" \
+    ./gradlew :app:bootRun --no-daemon
 }
 
 start_python() {
@@ -139,12 +231,12 @@ start_python() {
     exit 1
   fi
   log "启动 Python Agent :${AGENT_PORT}（日志 ${AGENT_LOG}）"
-  cd "$ROOT_DIR/agent-service"
-  source .venv/bin/activate
   # 环境变量优先于 .env，确保指向当前 Java 端口
-  BACKEND_BASE_URL="http://127.0.0.1:$JAVA_PORT" \
-    nohup uvicorn career_copilot.main:app --reload --port "$AGENT_PORT" >"$AGENT_LOG" 2>&1 &
-  cd - >/dev/null
+  start_detached "$AGENT_PROCESS_FILE" "com.careercopilot.dev.agent.$AGENT_PORT" \
+    "$AGENT_LOG" "$ROOT_DIR/agent-service" \
+    env PATH="$PATH" BACKEND_BASE_URL="http://127.0.0.1:$JAVA_PORT" \
+    "$ROOT_DIR/agent-service/.venv/bin/uvicorn" career_copilot.main:app \
+    --reload --port "$AGENT_PORT"
 }
 
 start_web() {
@@ -153,12 +245,14 @@ start_web() {
     return 0
   fi
   log "启动 React 前端 :${WEB_PORT}（日志 ${WEB_LOG}）"
-  cd "$ROOT_DIR/frontend"
+  local pnpm_bin
+  pnpm_bin="$(command -v pnpm)"
   # 环境变量覆盖 .env.development，确保代理指向当前端口
-  VITE_API_PROXY_TARGET="http://127.0.0.1:$JAVA_PORT" \
-  VITE_AGENT_PROXY_TARGET="http://127.0.0.1:$AGENT_PORT" \
-    nohup pnpm dev --port "$WEB_PORT" >"$WEB_LOG" 2>&1 &
-  cd - >/dev/null
+  start_detached "$WEB_PROCESS_FILE" "com.careercopilot.dev.web.$WEB_PORT" \
+    "$WEB_LOG" "$ROOT_DIR/frontend" \
+    env PATH="$PATH" VITE_API_PROXY_TARGET="http://127.0.0.1:$JAVA_PORT" \
+    VITE_AGENT_PROXY_TARGET="http://127.0.0.1:$AGENT_PORT" \
+    "$pnpm_bin" dev --port "$WEB_PORT"
 }
 
 cmd_start() {
@@ -166,18 +260,26 @@ cmd_start() {
   # 先等 Java 就绪再启动 Agent：Agent 启动时会从 Java 同步 Agent 模型配置，
   # Java 未就绪会导致同步失败（虽有惰性重试兜底，但首次请求前多一次告警与重试）。
   log "等待 Java 就绪（最长 ${JAVA_READY_TIMEOUT}s）..."
-  if ! wait_java; then
-    error "Java 启动超时，查看日志: tail -f $JAVA_LOG"
-  fi
+  wait_service_ready "Java" "$JAVA_PORT" "/api/agent/tools" \
+    "$JAVA_READY_TIMEOUT" "$JAVA_PROCESS_FILE" "$JAVA_LOG" || return 1
   start_python
+  log "等待 Agent 就绪（最长 ${AGENT_READY_TIMEOUT}s）..."
+  wait_service_ready "Agent" "$AGENT_PORT" "/health" \
+    "$AGENT_READY_TIMEOUT" "$AGENT_PROCESS_FILE" "$AGENT_LOG" || return 1
   start_web
-  log "三个服务已启动，访问 http://localhost:${WEB_PORT}（默认入口 /copilot）"
+  log "等待 Web 就绪（最长 ${WEB_READY_TIMEOUT}s）..."
+  wait_service_ready "Web" "$WEB_PORT" "/" \
+    "$WEB_READY_TIMEOUT" "$WEB_PROCESS_FILE" "$WEB_LOG" || return 1
+  log "三个服务均已就绪，访问 http://localhost:${WEB_PORT}（默认入口 /copilot）"
   cmd_status
 }
 
 cmd_stop() {
+  stop_tracked_process "$WEB_PROCESS_FILE"
   stop_port "$WEB_PORT"
+  stop_tracked_process "$AGENT_PROCESS_FILE"
   stop_port "$AGENT_PORT"
+  stop_tracked_process "$JAVA_PROCESS_FILE"
   stop_port "$JAVA_PORT"
   log "全部服务已停止，端口已释放"
 }
@@ -190,14 +292,20 @@ cmd_restart() {
 
 cmd_status() {
   echo "===== 服务状态 ====="
-  for entry in "Java:$JAVA_PORT:/api/agent/tools" "Agent:$AGENT_PORT:/health" "Web:$WEB_PORT:/"; do
+  for entry in \
+    "Java:$JAVA_PORT:/api/agent/tools:$JAVA_PROCESS_FILE" \
+    "Agent:$AGENT_PORT:/health:$AGENT_PROCESS_FILE" \
+    "Web:$WEB_PORT:/:$WEB_PROCESS_FILE"; do
     name="${entry%%:*}"
     rest="${entry#*:}"
     port="${rest%%:*}"
-    path="${rest#*:}"
-    if port_busy "$port"; then
-      code="$(curl -sf -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port$path" 2>/dev/null || echo '未就绪')"
-      log "$name :$port 运行中 (HTTP $code)"
+    rest="${rest#*:}"
+    path="${rest%%:*}"
+    pid_file="${rest#*:}"
+    if curl -sf -m 2 -o /dev/null "http://127.0.0.1:$port$path" 2>/dev/null; then
+      log "$name :$port 已就绪"
+    elif port_busy "$port" || tracked_pid "$pid_file" >/dev/null; then
+      log "$name :$port 进程运行但未就绪"
     else
       log "$name :$port 未运行"
     fi

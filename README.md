@@ -19,7 +19,7 @@
 
 Career Copilot 是一个 **Agent 驱动的求职准备平台**，由开源项目 InterviewGuide 演进而来。
 
-与传统求职辅助系统不同，Career Copilot 不再要求用户主动寻找"简历分析""模拟面试""知识库""学习计划"等功能入口，而是以 **AI Agent 作为统一交互入口**：首页即对话工作台，用户只需要描述自己的目标：
+与传统求职辅助系统不同，Career Copilot 不再要求用户主动寻找"简历分析""模拟面试""知识库"等功能入口，而是以 **AI Agent 作为统一交互入口**：首页即对话工作台，用户只需要描述自己的目标：
 
 ```text
 我准备找 Java 后端实习，帮我看看应该怎么准备。
@@ -28,7 +28,7 @@ Career Copilot 是一个 **Agent 驱动的求职准备平台**，由开源项目
 给我来一场 Redis 专项模拟面试。
 ```
 
-Career Copilot 结合用户简历、目标岗位、长期能力画像、历史模拟面试、学习进度与 RAG 知识库，自动理解用户意图并决定下一步动作：直接回答、查询业务数据、调用业务 Tool、展示结构化卡片、创建学习计划、发起模拟面试，或请求用户确认。
+Career Copilot 结合用户简历、目标岗位、长期能力画像、历史模拟面试与 RAG 知识库，自动理解用户意图并决定下一步动作：直接回答、查询业务数据、调用业务 Tool、展示结构化卡片、生成简历优化提案、发起模拟面试、建议页面导航，或请求用户确认。
 
 系统从 **Function Driven**（用户寻找功能）转变为 **Intent Driven**（用户表达意图），形成一个围绕求职目标持续工作的 Career Agent。
 
@@ -36,26 +36,28 @@ Career Copilot 结合用户简历、目标岗位、长期能力画像、历史�
 
 ## 核心特性
 
+> 状态（2026-09-21）：四核心（Copilot 主入口、简历优化、长期能力画像、自适应模拟面试）已按本轮停止标准收口，三条产品闭环在真实模型下走通。待办与验收口径见 [docs/TodoList.md](docs/TodoList.md)。
+
 ### Career Agent 统一交互入口
 
-- **意图识别**：识别普通问答、简历分析、岗位分析、学习计划、模拟面试、画像查询等意图，路由到对应能力。
-- **结构化 Action**：Agent 消息不仅包含文本，还支持返回结构化动作，前端渲染真实业务组件：
-  - `NAVIGATION`：跳转到业务页面并携带参数
-  - `TOOL_CONFIRMATION`：具有业务副作用的操作请求用户确认（Human-in-the-loop）
-  - `BUSINESS_CARD`：嵌入学习进度、能力画像等业务卡片
-  - `CHART`：返回图表数据，由前端渲染
-  - `TASK_LIST`：返回今日学习任务
-  - `INTERRUPT`：缺少关键信息时暂停执行，等待用户选择后恢复
-- **Tool 权限分级**：`READ` 直接调用、`SAFE_WRITE` 自动执行并记录审计、`CONFIRM_WRITE` 必须人工确认。
+- **意图识别**：识别普通问答、简历 / 岗位取数、画像查询、模拟面试、简历优化、知识库问答与页面导航等意图，路由到对应能力。
+- **结构化 Block**：Agent 消息不仅包含文本，还返回受控结构化 Block，由前端按已知类型渲染真实业务组件：
+  - `text` / `action` / `choice`：文本、受控操作按钮与候选项
+  - `navigation`：建议跳转业务页面（只返回路由 key 与受控参数，不接受任意 URL，导航由用户点击触发）
+  - `interview_proposal` / `interview_session`：面试提案与面试会话入口
+  - `skill_profile`：能力画像与可追溯 Evidence
+  - `resume_summary` / `resume_gap_analysis` / `resume_optimization`：简历摘要、JD Gap 分析与优化提案
+  - `knowledge_citations` / `interview_summary`：RAG 引用与面试轻量摘要
+- **Tool 权限分级**：`READ`（`get_resume_list`、`get_skill_profile`、`get_interview_progress`、`search_knowledge` 等）由 Agent 直接调用；`CONFIRM_WRITE`（`create_interview`、`apply_resume_patches`）必须先经用户确认（Human-in-the-loop）。工具契约由 Java 侧 `AgentToolRequests` 导出为 [docs/contracts/agent-tools.json](docs/contracts/agent-tools.json)，两侧有漂移校验。
 
 ### 简历与岗位分析
 
 - **简历管理**：多格式解析（PDF/DOCX/TXT）、异步分析（Redis Stream）、失败重试与重复检测、PDF 分析报告导出。
 - **岗位分析**：JD 智能解析，简历与目标岗位的能力匹配，输出能力差距报告。
 
-### 自适应模拟面试引擎 🚧 规划中
+### 自适应模拟面试引擎
 
-将模拟面试从固定题目列表升级为 **状态驱动、覆盖度感知、画像感知、难度自适应** 的实时面试引擎：
+模拟面试已从固定题目列表升级为 **状态驱动、覆盖度感知、画像感知、难度自适应** 的实时面试引擎：
 
 - **Question Graph**：主问题 + 候选追问 + 难度 + 知识点，形成候选问题集合而非固定执行路径。
 - **Turn Evaluation**：每轮回答只做轻量级评分与结构化抽取（低延迟模型 + 结构化输出），为下一题决策提供信息。
@@ -64,18 +66,20 @@ Career Copilot 结合用户简历、目标岗位、长期能力画像、历史�
 - **Question Pool + Lookahead**：优先从题目池中选择（选择优先于生成），利用用户作答时间后台预生成后续问题，动态生成仅作兜底。
 - **画像联动**：面试创建时按长期画像分配 Topic 权重（弱项更高考察权重），结束后异步完整评估并反哺画像。
 
-> 现状：当前代码库为固定题目列表模式，正在按上述设计分阶段演进（见[路线图](#路线图)）。
+> 现状：实时循环由 Java Interview Engine 持有（React → Java → 一次逐轮语义调用 → 校验并持久化），模型只判断语义，时间预算、必要覆盖、追问上限、难度范围、去重与状态流转由代码约束；逐轮提交幂等、会话可刷新恢复，结束后异步生成报告并回流 Evidence / 画像。设计口径见 `docs/Career-Copilot-newdocs/`。
 
-### 学习计划 Preparation 🚧 规划中
+### 学习计划 Preparation 🚧 未实现（本轮范围外）
 
-- 根据目标岗位与能力差距自动生成备考计划（任务 / 截止时间 / 状态流转）。
+- 设计目标：根据目标岗位与能力差距自动生成备考计划（任务 / 截止时间 / 状态流转）。
 - 计划随模拟面试结果与画像演化自动 **Replan**：Plan → Act → Observe → Evaluate → Replan。
+- 目前没有 Preparation 模块，前端也不展示示例任务；仅在实际闭环需要时进入待办（见 TodoList「五、范围外与暂缓」）。
 
-### 长期能力画像 Profile 🚧 规划中
+### 长期能力画像 Profile
 
-- 持续演化的结构化用户模型：目标岗位、技能评分、优势劣势、学习偏好。
-- 每个技能评分都有 **Evidence**（简历、面试轮次、学习任务），画像不依赖 LLM 主观生成。
-- 三层 Memory：Working Memory（单次 Agent Run）、Episodic Memory（用户经历）、Semantic Profile（长期画像），不把全部历史塞入上下文。
+- 持续演化的结构化用户模型：技能评分、可追溯证据来源，以及区分「简历声明」与「实际考察」的语义。
+- 每个技能评分都有 **Evidence**（模拟面试逐题表现、简历声明、画像差分），分数由证据聚合而来，不依赖 LLM 主观生成；简历声明只作为声明型证据，不参与数值聚合。
+- 画像被三处消费：面试创建时的重点推荐与出题范围、简历优化的描述强度约束、Copilot 的下一步建议与「定向补强」提案；每场面试还提供画像差分与场次追溯。
+- Memory 现状：Agent Run 的工作上下文与长期画像（Semantic）已落地；Episodic 记忆未单独建设，按当前任务相关性取用上下文，不把全部历史塞入 Prompt。
 
 ### 知识库与 RAG
 
@@ -109,7 +113,7 @@ Career Copilot 结合用户简历、目标岗位、长期能力画像、历史�
             │              │              │
           Resume           Job        Interview
             │              │              │
-       KnowledgeBase     Profile      Preparation
+       KnowledgeBase     Profile      Conversation
             │              │              │
             └──────────────┼──────────────┘
                            │
@@ -122,7 +126,7 @@ Career Copilot 结合用户简历、目标岗位、长期能力画像、历史�
                            │
         ┌───────────────────┼───────────────────┐
         │                   │                   │
-     Planner              Tools               Memory
+     Routing              Tools             Context
         │                   │                   │
         └───────────────────┼───────────────────┘
                             │
@@ -132,21 +136,22 @@ Career Copilot 结合用户简历、目标岗位、长期能力画像、历史�
 
 ### Java 与 Python 职责边界
 
-**Spring Boot（System of Record）** 负责全部真实业务数据：用户、简历、岗位、模拟面试、面试报告、知识库、学习计划、长期画像、文件存储、事务与数据一致性，以及 Tool 权限校验。
+**Spring Boot（System of Record）** 负责全部真实业务数据：用户、简历与简历版本、岗位 JD、模拟面试会话与轨迹、面试报告、知识库、长期画像、会话与消息、文件存储、事务与数据一致性，以及 Tool 权限校验。
 
-**Python Agent Service** 只负责 Agent 编排：意图理解、Agent State、Planning、Tool Selection、Tool Calling、Checkpoint、Human-in-the-loop、Memory Context 构建与 Replan。Python 不直接修改核心业务数据库，一切数据变更通过 Spring Boot API：
+**Python Agent Service** 只负责 Agent 编排：意图理解、Agent State、路由、上下文装载、Tool Selection、Tool Calling、Checkpoint、Human-in-the-loop 与结果解释。Python 不直接修改核心业务数据库，一切数据变更通过 Spring Boot API：
 
 ```text
 Agent → Tool → Spring Boot API → Service → Repository → PostgreSQL
 ```
 
-> 🚧 当前代码库尚未引入 Python Agent Service，Agent 编排层正在规划中。
+> 现状：`agent-service/` 已落地（FastAPI + LangGraph + PostgreSQL Checkpoint），负责意图路由、上下文装载、Tool 调用与流式响应；业务读写全部经 Java Tool API，Python 不直连业务库。
 
 ### 核心业务闭环
 
 ```text
-User Goal → Career Agent → Resume + Job → Gap Analysis → Preparation Plan
-    → Learning / RAG → Mock Interview → Evaluation → Long-term Profile → Replan
+User Goal → Career Agent → Resume + JD + Profile + Interview History
+    → Gap Analysis → Resume Optimization / Mock Interview（自适应）
+    → RAG Learning → Evaluation → Evidence / Profile Update → Replan
 ```
 
 ---
@@ -171,7 +176,8 @@ User Goal → Career Agent → Resume + Job → Gap Analysis → Preparation Pla
 | AWS S3 SDK            | 2.29.51 | S3 兼容对象存储（MinIO/RustFS）|
 | WebSocket             | -     | 语音面试实时双向通信          |
 | Gradle                | 9.6.1 | 构建工具                      |
-| Python / LangGraph    | -     | Agent 编排运行时 🚧 规划中     |
+| Python / FastAPI      | 3.12 / 0.115 | Agent 编排运行时（Tool 调用 Java API）|
+| LangGraph             | 0.4   | Agent State / Routing / Checkpoint（PostgreSQL）|
 
 技术选型说明：
 
@@ -219,31 +225,46 @@ career-copilot/
 │   │   │   ├── mapper/               # MapStruct 映射器
 │   │   │   └── redis/                # RedisService、面试会话缓存
 │   │   └── modules/                  # 业务模块
-│   │       ├── interview/            # 模拟面试模块（自适应面试引擎演进中）
+│   │       ├── agenttool/            # Agent Tool 契约与 Controller（Java 是业务权威）
+│   │       ├── conversation/         # Copilot 会话与消息
+│   │       ├── interview/            # 模拟面试（自适应面试引擎、报告、Evidence）
 │   │       ├── interviewschedule/    # 面试安排模块
+│   │       ├── job/                  # 岗位 JD 模块
 │   │       ├── knowledgebase/        # 知识库模块（RAG）
 │   │       ├── llmprovider/          # 多模型 Provider 与语音配置
-│   │       ├── resume/               # 简历模块
+│   │       ├── profile/              # 长期能力画像与证据
+│   │       ├── resume/               # 简历模块（含 JD 定向优化、版本与 PDF）
 │   │       └── voiceinterview/       # 语音面试模块
 │   └── src/main/resources/
 │       ├── application.yml           # 应用配置
-│       ├── prompts/                  # AI 提示词模板（StringTemplate）
+│       ├── db/migration/             # Flyway 迁移
+│       ├── prompts/                  # AI 提示词模板（StringTemplate，带 ID / 版本）
 │       ├── scripts/                  # Redis Lua 脚本
 │       ├── skills/                   # 面试 Skill 定义和参考题库
 │       └── voice-interview-opening.yml # 语音面试开场白配置
 │
 ├── frontend/                         # 前端应用
 │   ├── src/
-│   │   ├── api/                      # API 接口
-│   │   ├── components/               # 公共组件
+│   │   ├── api/                      # API 接口（复用 request.ts 实例）
+│   │   ├── components/               # 公共组件（含 copilot/ 受控 Block 渲染器）
+│   │   ├── constants/                # 路由与 Action 白名单
 │   │   ├── hooks/                    # 业务 Hooks
-│   │   ├── pages/                    # 页面组件
+│   │   ├── pages/                    # 页面组件（CopilotPage / InterviewHubPage 等）
 │   │   ├── types/                    # 类型定义
 │   │   └── utils/                    # 工具函数
+│   ├── e2e/                          # Playwright 端到端测试（三条闭环 + 失败恢复矩阵）
 │   ├── package.json
 │   └── vite.config.ts
 │
-├── agent/                            # Python Agent Service 🚧 规划中
+├── agent-service/                    # Python Agent Runtime（FastAPI + LangGraph）
+│   ├── src/career_copilot/
+│   │   ├── agent/                    # 主图、路由、节点、Prompt、Checkpoint
+│   │   ├── api/                      # /chat 流式接口
+│   │   ├── clients/                  # Java Tool API 客户端
+│   │   ├── contracts/                # Tool 契约同步产物
+│   │   └── schemas/                  # Block / Action / Patch 协议
+│   ├── tests/                        # pytest
+│   └── pyproject.toml
 │
 ├── docker-compose.yml                # 完整部署：前端 + 后端 + PostgreSQL + Redis + MinIO
 ├── docker-compose.dev.yml            # 本地开发依赖：PostgreSQL + Redis + RustFS
@@ -263,6 +284,8 @@ career-copilot/
 | JDK           | 25   | 是   | 开发语言                                 |
 | Node.js       | 18+  | 是   | 前端构建                                 |
 | pnpm          | 10+  | 推荐 | 前端包管理器（项目 packageManager 指定 10.26）|
+| Python        | 3.12 | 是   | Agent Runtime（Copilot / 面试模式必需） |
+| uv            | 0.5+ | 是   | Python 依赖与虚拟环境管理                 |
 | Docker        | -    | 推荐 | 一键启动依赖服务（PostgreSQL/Redis/RustFS）|
 
 > 如果不用 Docker，需要自行安装 PostgreSQL 14+（含 pgvector 扩展）、Redis 6+ 和 S3 兼容存储。
@@ -333,6 +356,16 @@ pnpm dev
 
 前端服务启动于 `http://localhost:5173`
 
+**Agent Service：**
+
+```bash
+cd agent-service
+uv sync
+uv run uvicorn career_copilot.main:app --reload   # 默认 http://localhost:8000
+```
+
+Agent 需要能访问 Java 后端（`BACKEND_BASE_URL`）与 LLM（`LLM_API_KEY`），配置见 `agent-service/.env.example`。Copilot 工作台（`/copilot`）依赖该服务与 Java 后端同时运行。
+
 ### 5. 一键启停三个服务
 
 使用 `scripts/dev.sh` 统一管理 Java / Python Agent / React 三个服务（按端口启停，避免残留进程）：
@@ -353,6 +386,8 @@ pnpm dev
 ## Docker 快速部署
 
 Docker Compose 编排了 6 个服务：PostgreSQL（pgvector）、Redis、MinIO（S3 兼容存储）、MinIO Bucket 初始化、Spring Boot 后端、React 前端（Nginx）。数据通过 Docker 命名卷持久化，`docker-compose down` 不会丢失数据。
+
+> 注意：当前 compose 未包含 Agent Service，因此容器化部署下简历分析、面试、知识库等传统功能可用，`/copilot` 工作台需额外按 [第 4 步](#4-启动应用) 启动 `agent-service`，并将 `BACKEND_BASE_URL` 指向容器外的后端地址。
 
 ### 1. 前置准备
 
@@ -408,23 +443,33 @@ docker-compose down
 
 ## 路线图
 
-### 自适应模拟面试引擎（Phase 1-6）
+### 已完成（本轮四核心）
 
-- [ ] Phase 1：固定题目列表 → Question Graph（主问题 + 候选追问 + 难度 + 知识点）
-- [ ] Phase 2：Turn Evaluator（回答轻量评估 → 追问 / 下一题）
-- [ ] Phase 3：Coverage Tracker + Difficulty Policy + Time Policy（实现真正的自适应面试）
-- [ ] Phase 4：Lookahead（利用作答时间后台预生成问题）
-- [ ] Phase 5：Dynamic Question Generator（仅作兜底）
-- [ ] Phase 6：与长期画像打通（Profile → Interview → Profile 闭环）
+自适应模拟面试引擎：
 
-### Agent 能力
+- [x] Phase 1：固定题目列表 → Question Graph（主问题 + 候选追问 + 难度 + 知识点）
+- [x] Phase 2：Turn Evaluator（回答轻量评估 → 追问 / 下一题）
+- [x] Phase 3：Coverage Tracker + Difficulty Policy + Time Policy
+- [x] Phase 4：Lookahead（利用作答时间后台预备候选）
+- [x] Phase 5：Dynamic Question Generator（受限生成，仅作兜底）
+- [x] Phase 6：与长期画像打通（Profile → Interview → Profile 闭环）
 
-- [ ] Career Agent 统一交互入口与意图路由（/copilot 工作台）
-- [ ] 结构化 Action 协议（NAVIGATION / TOOL_CONFIRMATION / BUSINESS_CARD / CHART / INTERRUPT）
-- [ ] Python Agent Service（LangGraph：State / Planning / Tool Calling / Checkpoint / Human-in-the-loop）
-- [ ] 长期能力画像 Profile（Evidence 驱动，三层 Memory）
+Agent 与业务能力：
+
+- [x] Career Agent 统一交互入口与意图路由（`/copilot` 工作台）
+- [x] Python Agent Service（LangGraph：State / Routing / Tool Calling / PostgreSQL Checkpoint / Human-in-the-loop）
+- [x] 结构化 Block 协议与受控导航（前端只渲染已知类型，导航由用户点击触发）
+- [x] 长期能力画像 Profile（Evidence 驱动，可追溯到具体面试轮次）
+- [x] 简历闭环：JD Gap 分析 → 优化 Patch → Diff / PDF 预览 → 确认 → 新版本 → 导出
+- [x] RAG 接入 Agent Tool（`search_knowledge` 按需调用）
+- [x] 三条产品闭环的成功 / 取消 / 刷新恢复 / 依赖失败 / 重试矩阵与 E2E 覆盖
+
+### 后续（未进入本轮范围）
+
 - [ ] 学习计划 Preparation（生成 / 进度 / 自动 Replan）
-- [ ] RAG 接入 Agent Tool（search_knowledge 按需调用）
+- [ ] COMPLEX_GOAL 与受限 Goal 循环（多步长任务编排）
+- [ ] 语音 Interview Focus Mode（现有语音面试保持可用）
+- [ ] Docker 一键部署纳入 Agent Service（当前 compose 只编排前端、后端与依赖服务）
 
 ---
 

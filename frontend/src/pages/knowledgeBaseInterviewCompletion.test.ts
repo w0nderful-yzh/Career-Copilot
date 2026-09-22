@@ -29,6 +29,10 @@ test('评估完成后进入本次知识库面试详情', () => {
 test('评估失败后停留在等待页并显示失败状态', () => {
   assert.deepEqual(
     resolveKnowledgeBaseInterviewCompletion('FAILED', 1, 'session-1'),
-    { kind: 'failed' },
+    {
+      kind: 'failed',
+      retryable: true,
+      failure: { kind: 'task_failed', message: '评估报告生成失败', retryable: true },
+    },
   );
 });

@@ -19,10 +19,32 @@ export default defineConfig(({ mode }) => {
     build: {
       rollupOptions: {
         output: {
-          manualChunks: {
-            'react-vendor': ['react', 'react-dom', 'react-router-dom'],
-            'ui-vendor': ['framer-motion', 'lucide-react'],
-            'syntax-highlighter': ['react-syntax-highlighter'],
+          // 用函数形式按「包路径」分组，而不是对象形式列出包名：
+          // 对象形式只能捕获包的入口与其静态依赖，而代码高亮的语言语法是
+          // 按需 import() 的独立模块，会各自切出一个 0.1KB 的碎片 chunk（实测 25 个）。
+          manualChunks(id) {
+            if (!id.includes('node_modules')) {
+              return undefined;
+            }
+            // 语法高亮全家桶：prism-light + 各语言语法 + 底层 refractor/prismjs
+            if (
+              /node_modules[\\/](?:react-syntax-highlighter|refractor|prismjs|highlight\.js|lowlight|highlightjs-vue)[\\/]/.test(
+                id
+              )
+            ) {
+              return 'syntax-highlighter';
+            }
+            if (
+              /node_modules[\\/](?:react|react-dom|react-router|react-router-dom|scheduler)[\\/]/.test(
+                id
+              )
+            ) {
+              return 'react-vendor';
+            }
+            if (/node_modules[\\/](?:framer-motion|lucide-react)[\\/]/.test(id)) {
+              return 'ui-vendor';
+            }
+            return undefined;
           },
         },
       },

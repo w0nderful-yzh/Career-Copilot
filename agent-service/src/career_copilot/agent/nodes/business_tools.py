@@ -25,6 +25,7 @@ from career_copilot.schemas.message import ActionBlock, ChoiceBlock, ChoiceOptio
 from career_copilot.tools import (
     format_history,
     format_resume_content,
+    summarize_interview_progress,
     summarize_interviews,
     summarize_resume_analysis,
 )
@@ -56,6 +57,48 @@ async def business_tools(state: CareerAgentState, deps: GraphDeps) -> dict[str, 
                 "学习计划功能正在建设中，暂时无法查看。"
                 "你可以先查看简历或模拟面试记录。"
             )
+        )
+    }
+
+
+async def _plan_live_interview_progress(
+    state: CareerAgentState, backend: Any, deps: GraphDeps, session_id: str
+) -> dict[str, Any]:
+    """面试进行中：读实时进展，回答「现在考到哪、已经说了什么、还剩什么」（P4-10）。
+
+    <p>为什么单独一条路：用户在进行中的面试里问「现在考到哪了」，答案在**当前状态**里，
+    不在结束后的报告里——此前这条读路径不存在，Agent 只能等面试结束才说得上话。
+    进展由 Java 复用会话读取与逐轮评估同一套推导（覆盖 / 预算 / 合法候选），
+    Python 只做裁剪与措辞，不做业务判断。
+
+    <p>读取是**按需**的：只有前端带上了进行中的会话 ID 才走这条路，
+    面试逐轮循环本身不依赖 Graph（不把每轮接回主 Graph）。
+    """
+    message = state.get("message") or ""
+    history = format_history(
+        state.get("history") or [],
+        state.get("history_summary"),
+        snapshot=state.get("user_snapshot"),
+    )
+    emit_tool_started("interview_progress")
+    try:
+        progress = await backend.call_tool("get_interview_progress", {"sessionId": session_id})
+    except BusinessToolError as exc:
+        emit_tool_completed("interview_progress")
+        # 读不到就说清楚（会话可能刚结束或不存在），不要静默降级成「你还没有面试记录」
+        return {
+            "plan": StreamPlan(
+                text=static_text(
+                    f"这场面试的进展暂时读不到（{exc}）。"
+                    "你可以在面试页继续作答，稍后再让我看看。"
+                )
+            )
+        }
+    emit_tool_completed("interview_progress")
+    context = summarize_interview_progress(cast(dict[str, Any], progress))
+    return {
+        "plan": StreamPlan(
+            text=deps.answerer.answer_stream(message, context, history or None)
         )
     }
 
@@ -297,7 +340,11 @@ def _attachment_filename(state: CareerAgentState) -> str | None:
 async def _plan_interview_review(
     state: CareerAgentState, backend: Any, deps: GraphDeps
 ) -> dict[str, Any]:
-    """面试回顾：先产出 interview_summary 块，再基于摘要流式回答。"""
+    """面试回顾：进行中读实时进展，已结束才读历史与报告（P4-10）。"""
+    active_session_id = state.get("active_interview_session_id")
+    if active_session_id:
+        return await _plan_live_interview_progress(state, backend, deps, active_session_id)
+
     message = state.get("message") or ""
     history = format_history(
         state.get("history") or [],

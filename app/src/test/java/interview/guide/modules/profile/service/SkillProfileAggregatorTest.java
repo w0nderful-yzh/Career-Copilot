@@ -175,4 +175,90 @@ class SkillProfileAggregatorTest {
       verify(profileRepository, never()).save(any());
     }
   }
+
+  /**
+   * P3 待收口：简历来源以声明型证据（无分）入表。
+   *
+   * <p>关键是「无分 ≠ 0 分」——声明不参与均值，否则画像分就不能再由有分证据逐条还原。
+   */
+  @Nested
+  @DisplayName("简历声明型证据")
+  class ResumeDeclarations {
+
+    private SkillEvidenceEntity scored(String skill, String sourceId, int score) {
+      return new SkillEvidenceEntity(
+          ProfileConstants.DEFAULT_USER_ID, skill, EvidenceSourceType.INTERVIEW_TURN, sourceId,
+          score, LocalDateTime.of(2026, 9, 15, 10, 0));
+    }
+
+    private SkillEvidenceEntity declared(String skill, Long resumeId) {
+      return new SkillEvidenceEntity(
+          ProfileConstants.DEFAULT_USER_ID, skill, EvidenceSourceType.RESUME,
+          String.valueOf(resumeId), null, LocalDateTime.of(2026, 9, 15, 10, 0));
+    }
+
+    @Test
+    @DisplayName("均值只取有分证据：混入简历声明后分数与条数都不变")
+    void declaredEvidenceDoesNotAffectAverage() {
+      when(evidenceRepository.findByUserIdAndSkill(ProfileConstants.DEFAULT_USER_ID, "Java"))
+          .thenReturn(List.of(
+              scored("Java", "s1:0", 80),
+              scored("Java", "s1:1", 60),
+              declared("Java", 7L)));
+      when(profileRepository.findByUserIdAndSkill(ProfileConstants.DEFAULT_USER_ID, "Java"))
+          .thenReturn(Optional.of(new SkillProfileEntity()));
+
+      aggregator.reaggregateSkill("Java");
+
+      ArgumentCaptor<SkillProfileEntity> captor = ArgumentCaptor.forClass(SkillProfileEntity.class);
+      verify(profileRepository).save(captor.capture());
+      assertThat(captor.getValue().getScore()).isEqualTo(70);
+      assertThat(captor.getValue().getEvidenceCount()).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("只剩声明证据时删除画像行：从未考过的技能不该有分数条目")
+    void deletesProfileWhenOnlyDeclarationsRemain() {
+      when(evidenceRepository.findByUserIdAndSkill(ProfileConstants.DEFAULT_USER_ID, "Kafka"))
+          .thenReturn(List.of(declared("Kafka", 7L)));
+      SkillProfileEntity profile = new SkillProfileEntity();
+      profile.setSkill("Kafka");
+      when(profileRepository.findByUserIdAndSkill(ProfileConstants.DEFAULT_USER_ID, "Kafka"))
+          .thenReturn(Optional.of(profile));
+
+      aggregator.reaggregateSkill("Kafka");
+
+      verify(profileRepository).delete(profile);
+      verify(profileRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("写入新声明前先清旧声明：重新解析后不留幽灵技能")
+    void replacesOldDeclarationsBeforeInsert() {
+      SkillEvidenceEntity stale = declared("旧技能", 7L);
+      when(evidenceRepository.findBySourceTypeAndSourceId(EvidenceSourceType.RESUME, "7"))
+          .thenReturn(List.of(stale));
+      when(evidenceRepository.findByUserIdAndSkill(ProfileConstants.DEFAULT_USER_ID, "旧技能"))
+          .thenReturn(List.of());
+      when(evidenceRepository.findByUserIdAndSkill(ProfileConstants.DEFAULT_USER_ID, "新技能"))
+          .thenReturn(List.of());
+
+      aggregator.replaceResumeDeclarations(7L, List.of(declared("新技能", 7L)));
+
+      verify(evidenceRepository).deleteAll(List.of(stale));
+      verify(evidenceRepository).saveAll(any());
+    }
+
+    @Test
+    @DisplayName("无旧声明时清理为空操作")
+    void removeResumeEvidenceIsNoopWhenEmpty() {
+      when(evidenceRepository.findBySourceTypeAndSourceId(EvidenceSourceType.RESUME, "8"))
+          .thenReturn(List.of());
+
+      aggregator.removeResumeEvidence(8L);
+
+      verify(evidenceRepository, never()).deleteAll(any());
+      verify(profileRepository, never()).save(any());
+    }
+  }
 }

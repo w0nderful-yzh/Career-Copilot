@@ -617,7 +617,8 @@ export default function KnowledgeBaseInterviewQuestionsPage() {
               {generationActive && <Loader2 className="w-4 h-4 animate-spin" />}
               {generationNotice.text}
             </span>
-            {generationStatus?.questionGenStatus === 'FAILED' && (
+            {/* 统一判据（P6-1）：任务失败与等待超时都给出口，纯等待不给 */}
+            {generationNotice.retryable && (
               <button
                 type="button"
                 onClick={() => {

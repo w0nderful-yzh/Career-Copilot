@@ -33,6 +33,7 @@ public class ResumeVersionService {
   private final ResumePreviewService.TypstTemplateLoader templateLoader;
   private final TypstCompiler typstCompiler;
   private final interview.guide.infrastructure.file.FileStorageService fileStorageService;
+  private final interview.guide.modules.profile.service.ResumeProfileSyncService profileSyncService;
 
   /**
    * 创建原始导入版本（V1）：评分分析成功后由异步链路调用。
@@ -93,7 +94,29 @@ public class ResumeVersionService {
       version.setMissingFieldsJson(null);
     }
     version.setConfirmationStatus(ResumeVersionEntity.ConfirmationStatus.ACTIVE);
-    return versionRepository.save(version);
+    ResumeVersionEntity saved = versionRepository.save(version);
+
+    // P3 待收口：确认后把技能条目同步为画像的声明型证据（整体替换）。
+    // 用「保存后的版本内容」而非入参，保证无补录（correctedContent 为 null）时也同步；
+    // 内容损坏（正常不应发生）时跳过同步保留旧声明，绝不阻断确认流程。
+    ResumeContentJson content = deserialize(saved.getContentJson());
+    if (content != null) {
+      profileSyncService.syncDeclarations(saved.getResumeId(), content);
+    }
+    return saved;
+  }
+
+  /** 反序列化结构化简历；内容损坏时返回 null（跳过同步，保留既有声明） */
+  private ResumeContentJson deserialize(String contentJson) {
+    if (contentJson == null || contentJson.isBlank()) {
+      return null;
+    }
+    try {
+      return objectMapper.readValue(contentJson, ResumeContentJson.class);
+    } catch (JacksonException e) {
+      log.warn("结构化简历反序列化失败，跳过技能声明同步: {}", e.getMessage());
+      return null;
+    }
   }
 
   /** 简历的全部版本（新在前） */

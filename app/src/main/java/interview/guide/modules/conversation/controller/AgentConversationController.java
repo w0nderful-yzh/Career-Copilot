@@ -43,10 +43,16 @@ public class AgentConversationController {
     return Result.success(conversationService.createConversation(request));
   }
 
+  /**
+   * 会话列表。
+   *
+   * @param status ACTIVE（默认，活跃会话）/ ARCHIVED（已归档会话）
+   */
   @GetMapping
   @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 60)
-  public Result<List<ConversationListItemDTO>> listConversations() {
-    return Result.success(conversationService.listConversations());
+  public Result<List<ConversationListItemDTO>> listConversations(
+      @RequestParam(defaultValue = "ACTIVE") String status) {
+    return Result.success(conversationService.listConversations(status));
   }
 
   @GetMapping("/{conversationId}")
@@ -121,6 +127,26 @@ public class AgentConversationController {
   @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 10)
   public Result<Void> togglePin(@PathVariable Long conversationId) {
     conversationService.togglePin(conversationId);
+    return Result.success();
+  }
+
+  /**
+   * 归档会话：从活跃列表收起但保留记录，可从归档列表恢复。
+   *
+   * <p>与 {@link #deleteConversation} 的硬删除语义区分：归档可恢复，删除不可恢复。
+   */
+  @PutMapping("/{conversationId}/archive")
+  @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 20)
+  public Result<Void> archiveConversation(@PathVariable Long conversationId) {
+    conversationService.archiveConversation(conversationId);
+    return Result.success();
+  }
+
+  /** 恢复已归档会话，回到活跃列表 */
+  @PutMapping("/{conversationId}/restore")
+  @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 20)
+  public Result<Void> restoreConversation(@PathVariable Long conversationId) {
+    conversationService.restoreConversation(conversationId);
     return Result.success();
   }
 

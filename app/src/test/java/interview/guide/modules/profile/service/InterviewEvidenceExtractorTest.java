@@ -51,7 +51,7 @@ class InterviewEvidenceExtractorTest {
   class Extraction {
 
     @Test
-    @DisplayName("真实作答的题目提取为 INTERVIEW_TURN 证据，sourceId 为 sessionId:idx")
+    @DisplayName("真实作答提取为 INTERVIEW_TURN 证据，旧题号归一为 legacy 标识")
     void extractsAnsweredTurns() {
       LocalDateTime completedAt = LocalDateTime.of(2026, 8, 28, 12, 0);
       when(sessionRepository.findBySessionId("abc123")).thenReturn(Optional.of(
@@ -65,7 +65,7 @@ class InterviewEvidenceExtractorTest {
       SkillEvidenceEntity first = evidences.get(0);
       assertThat(first.getSkill()).isEqualTo("MySQL");
       assertThat(first.getSourceType()).isEqualTo(EvidenceSourceType.INTERVIEW_TURN);
-      assertThat(first.getSourceId()).isEqualTo("abc123:0");
+      assertThat(first.getSourceId()).isEqualTo("abc123:legacy-0");
       assertThat(first.getScore()).isEqualTo(88);
       assertThat(first.getOccurredAt()).isEqualTo(completedAt);
     }
@@ -99,6 +99,40 @@ class InterviewEvidenceExtractorTest {
       when(sessionRepository.findBySessionId("missing")).thenReturn(Optional.empty());
 
       assertThat(extractor.extract("missing")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("兼容历史分类后缀：追问题并入主问题技能，不产出伪技能（P4Q-6）")
+    void normalizesLegacyFollowUpCategorySuffix() {
+      when(sessionRepository.findBySessionId("abc123")).thenReturn(Optional.of(
+          sessionWithAnswers(List.of(
+              answered(0, "Java", "主问题回答", 70),
+              answered(1, "Java（追问1）", "追问回答", 52),
+              answered(2, "系统设计/场景题（追问2）", "又是追问", 82)), null)));
+
+      List<SkillEvidenceEntity> evidences = extractor.extract("abc123");
+
+      assertThat(evidences)
+          .extracting(SkillEvidenceEntity::getSkill)
+          .containsExactly("Java", "Java", "系统设计/场景题");
+      assertThat(evidences).noneMatch(e -> e.getSkill().contains("追问"));
+    }
+
+    @Test
+    @DisplayName("历史后缀归一化后与主问题技能同名，但来源不同不受影响")
+    void normalizedFollowUpKeepsDistinctSources() {
+      when(sessionRepository.findBySessionId("abc123")).thenReturn(Optional.of(
+          sessionWithAnswers(List.of(
+              answered(0, "Java", "主问题回答", 70),
+              answered(1, "Java（追问1）", "追问回答", 52)), null)));
+
+      List<SkillEvidenceEntity> evidences = extractor.extract("abc123");
+
+      assertThat(evidences)
+          .extracting(SkillEvidenceEntity::getSourceId)
+          .containsExactly("abc123:legacy-0", "abc123:legacy-1");
+      assertThat(evidences)
+          .allSatisfy(e -> assertThat(e.getSkill()).isEqualTo("Java"));
     }
   }
 }

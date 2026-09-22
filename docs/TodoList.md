@@ -1,265 +1,739 @@
 # Career Copilot TodoList
 
-> **范围基线**：`Career-Copilot-newdocs/Career-Copilot-Core-4-Features-Scope.md`
-> 只做 4 个核心功能：**Copilot Agent 主入口 / 简历优化 / 长期用户能力画像 / 自适应模拟面试**，
-> 以及 3 条产品闭环。其他需求一律问「是否直接服务这四个」——不是则暂缓。
->
-> **声明：项目不做多用户功能，无需设计用户数据分离。**
-> `user_id` 字段仅作架构预留，恒为 `default`，所有相关 TODO 已删除。
->
-> 详细设计见：`Career-Copilot-Agent-Graph-Design.md`（Graph）、`Career-Copilot-Resume-Optimization-Requirement.md`（简历优化）、`Career Copilot 自适应模拟面试引擎设计文档.md`（自适应面试）、`Career-Copilot-Inline-Interview-Design.md`（内嵌面试交互）。
+> 更新：2026-09-21。
+> 本文只维护目标形态、架构边界、待办与已完成能力；不记录排障过程、临时方案和历史测试数量。
+> 待办按执行优先级排列，已完成事项统一放在文末。目标描述不代表已经实现，完成状态以清单为准。
 
----
+## 一、产品范围与目标形态
 
-## 开发工具
+只做四个核心能力：**Copilot Agent 主入口、简历优化、长期用户能力画像、自适应模拟面试**，以三条产品闭环验收。
 
-```bash
-./scripts/dev.sh start|stop|restart|status    # 三服务一键启停（8081 / 8001 / 5173）
-./scripts/dev.sh logs [java|agent|web]
-```
+| 能力 | 目标形态 |
+|---|---|
+| Copilot | 用户用 Text / File / Action 表达目标；Agent 读取相关业务上下文，返回回答、证据、受控操作或确认。推荐有依据，操作有回执，失败可恢复。 |
+| 简历优化 | 简历与可选 JD、画像 → 差距与优化建议 → JSON-path Patch → Diff / PDF 预览 → 用户确认 → 新版本 → 手动导出 PDF；原版本保留，经历事实不编造。 |
+| 能力画像 | 由可追溯 Evidence 聚合技能表现，区分「简历声明」与「实际考察」；画像参与简历描述强度、面试重点和后续建议。 |
+| 模拟面试 | **以经历为主线，以考察覆盖为目标，以时间为预算，由 AI 决定下一步，用户随时调整节奏。** 面试在 Copilot 的 Interview Mode 中完成，结束后回流报告、画像变化与下一步建议。 |
 
-⚠️ 已知问题：bash 会话被杀会连带杀掉后台子进程（建议启动用 `setsid`/`start_new_session` 脱离进程组）。`wait_java` 的 curl 无超时会挂起与「Agent 先于 Java 启动导致配置同步失败」两问题已修复（curl 加 `-m 2`；启动顺序改为 Java 就绪后再启动 Agent，2026-08-31）。
+项目定位个人使用，`user_id` 仅作预留、恒为 `default`；不新增多用户功能与用户数据分离建设。
 
----
+## 二、目标架构与责任边界
 
-## 里程碑（已完成）
+### 2.1 三层职责
 
-- [x] **Copilot Workspace MVP**：/copilot 工作台、SSE 流式、受控 Block 渲染（text/action/resume_summary/interview_summary/knowledge_citations）、Action 白名单导航
-- [x] **对话持久化**：Java conversation 模块 + 流式后保存 + 前端会话侧栏
-- [x] **Agent 模型统一管理**：Java Provider 配置 → Python 启动同步 + 首个请求惰性重试
-- [x] **主 Graph（Copilot Turn Graph）**：LangGraph `normalize_input → load_history → resolve_context → route_intent → 分支 → build_response`；plan 式执行（API 层 SSE）；意图短路；ATTACHMENT / ACTION 确定性路由；ChoiceBlock + execute_action 注册表（Python 侧协议完成）
-- [x] **简历上传附件**：Composer 拖入 PDF → 直传 Java 简历库 → Agent 如实确认（含 duplicate 提示）
-- [x] **简历 Tool 链**：`get_resume_list` / `get_resume_analysis` / `get_resume`（完整文本 + maxChars 截断）；定向简历查询**内容感知**（注入全文 8000 字符截断）
-- [x] **目标简历解析（§26）**：附件 > 消息中文件名 > 唯一自动锁定 > 默认最近一份并说明
-- [x] **短期记忆（Conversation Memory）**：Java `context/summary` 端点、`load_history` 注入意图分类与回答、滚动摘要写回、PG Checkpoint（独立库 `agent_checkpoint`，剥离瞬时字段，流式兼容）
-- [x] **P1-1 前端 ChoiceBlock 渲染 + Action 提交**：BlockRenderer 白名单渲染 choice 块、ACTION_SELECTED 回传、RESUME_DETAIL 受控路由（`ba15bbe`）
+| 层次 | 负责 | 边界 |
+|---|---|---|
+| React | Copilot / Interview Mode、消息流、受控 Block、节奏动作、确认、状态与恢复交互 | 不做 Agent 推理；不执行任意模型生成的代码、组件名或 URL；导航由用户触发。 |
+| Java 业务后端 | 业务事实、简历与版本、JD、面试状态与轨迹、报告、Evidence、Profile、权限、校验、幂等、事务和异步任务 | 是 System of Record；Redis 是可恢复缓存，不是持久生命周期状态的权威；LLM / HTTP / S3 不在数据库事务内执行。 |
+| Python Agent Runtime | 用户意图、目标理解、上下文相关性、业务 Tool 编排、提案与结果解释、Agent 工作状态及恢复 | 经 Java Tool 读写业务数据；不复制 Repository、画像数学、事务或 RAG；主 Agent Graph 不处理每轮面试问答。 |
 
----
+面试的语义决策集中在一个具备完整相关上下文的逐轮能力中。**Java Engine 保留实时循环和硬边界，通过单次语义调用获取本轮建议，再校验、持久化和返回。** 主 Career Agent 负责发起、推荐、按需了解进展及复盘。
 
-# 核心一：Copilot Agent 主入口（收尾）—— 优先级 P1
+语义能力的语言部署位置不构成业务契约：当前复用 Java 的面试与 LLM 基础设施，不以迁移为交付目标；若未来有质量、延迟和维护成本证据支持集中到 Python，可在相同契约下替换调用实现，无需让前端改走主 Agent Graph。
 
-> 目标：/copilot 成为统一入口，稳定处理 Text / File / Action 并结构化返回。Graph 与记忆已完成，剩前端协议打通与少量真实分支。
-
-- [x] **P1-1 前端 ChoiceBlock 渲染 + Action 提交**
-  - `types/copilot.ts` 增加 `choice` 块类型 + BlockRenderer 白名单渲染
-  - ChoiceOption 点击 → 发送 `{action: {type:"ACTION_SELECTED", action, payload}}`（复用 streamChat）
-  - `RESUME_DETAIL` 加入 ACTION_ROUTE_MAP（带 params.resumeId 跳转）
-  - 已补齐重复点击锁定、Action 可读历史气泡、非法动态路由参数拒绝与前端单元测试
-  - 已实测：ChoiceBlock「分析简历」→ ACTION_SELECTED → Graph execute_action → RESUME_DETAIL → `/history/:resumeId`
-  - UI 占位说明：右侧目标/能力画像/今日任务目前为明确标注的预览数据，不进入 Agent Context 或持久化；P1-3/P3 接入真实数据后替换
-- [x] **P1-2 SSE Tool / Run 事件**
-  - Graph 执行期经 LangGraph custom stream（`get_stream_writer`）实时转发节点埋点事件
-  - `tool_started` / `tool_completed` 成对（load_history/resume_query/resume_insight/interview_review/knowledge_search + 中文 label）；run_status RUNNING / WAITING_USER / COMPLETED / FAILED
-  - 前端消息气泡内轻量状态行（spinner + label），首个 block/delta 后清除；WAITING_USER 显示「等待你的选择…」
-  - `/chat` 同步入口与单测 ainvoke 路径无 writer 时静默丢弃，行为不变
-- [x] **P1-3 Conversation 绑定活动资源**（Conversation Memory 的 Active Resume）
-  - Java：`agent_conversations.active_resume_id` 迁移 + `PUT /{id}/active-resume`（null 解绑）+ context/detail 响应透出
-  - Python：定向简历分析后自动回写绑定；`resolve_context` 优先级 附件 > 会话绑定（`bound_resume_id`），无附件追问跨轮锁定同一目标
-  - 已实测：轮1 带附件分析 → 绑定落库；轮2 无附件追问 → 恢复 resume 1 且内容感知继续生效
-- [x] **P1-4 面试发起 Agent 化**（交互终态见 `Career-Copilot-Inline-Interview-Design.md`）
-  - 意图命中模拟面试时不再直接跳页：Agent 读 Resume / `list_skills` → 推导方向/难度/focus → 输出面试提案确认块（[按推荐开始] / [调整配置]，调整走 ChoiceBlock 再推荐）
-  - `CREATE_INTERVIEW` action → `create_interview` 写 Tool（Java interview 引擎已有创建能力，薄封装，权限 CONFIRM_WRITE）
-  - **过渡方案**：创建成功先用 NavigationBlock 进入现有面试会话页；P4-0 的 InterviewSessionBlock 就绪后原地内嵌替换（Inline 文档 Case 2：不强制跳 /interview-hub）
-  - 已实测：自然语言「来一场模拟面试」→ 提案块（Java 后端 · 校招 · PROJECT/JAVA/MYSQL）→ CREATE_INTERVIEW → 创建成功 → NavigationBlock（INTERVIEW_SESSION → /interview/session/:id）；无简历回落默认推荐；缺失 direction 拒绝创建
-- [x] **P1-5 KNOWLEDGE_QA 保持 Tool 化**（已通，回归验证即可）
-  - 已回归：意图「JVM GC 是什么」→ KNOWLEDGE_QA → knowledge_tool 节点（未裸答）；本地知识库为空时如实兜底；search_knowledge → RAG 答案 → knowledge_citations 引用块由既有单测覆盖（test_chat_api）
-- [ ] **P1-6 打磨（非闭环必需，穿插做）**
-  - 流式中断消息标记（Java message status「已停止」）
-  - 会话重命名 / 归档 UI（API 已有）
-  - Composer 移除 window.alert，改内联错误提示
-
-**验收**：Text/File/Action 三类输入稳定可用；Tool 调用有可见状态；附件→确认→选择→跳转全链路在前端真实可点。
-
----
-
-# 实施顺序（2026-08 重构）
-
-> 依据画像依赖关系与价值释放节奏确定：**P3 画像基础 → P2 简历优化 → P4 自适应面试**。
-> P3 基础（存储 + 聚合 + 查询）是 P2 与 P4 的共同地基且规模最小，先做可让 P2 一次性原生消费画像（描述强度约束）、P4 一次接入（低分技能 → focus）；P3-3「Profile 参与决策」不单独成项，拆进 P2-1 与 P4-3 两个消费点。
-> 简历优化方案重设计见：`career_copilot_resume_optimization_design.md`（JSON-first Patch + Typst 导出）与 `career_copilot_resume_optimization_interaction_design.md`（Preview PDF / 自评审 / Clarification）。
-> 已确认决策：只做 PDF 导出（Typst，XeLaTeX/DOCX 不做）；HITL 用提案持久化 + ACTION_SELECTED（不用 LangGraph interrupt）；自评审循环预留节点、循环次数配置化、一期默认最小，文档如实记录；Preview PDF「勾选即重渲」；正式 PDF 手动导出；REORDER 一期 schema 保留、校验器拒绝。
-
----
-
-# 核心三（先行）：长期用户能力画像（基础）—— 优先级 P3
-
-> 目标：Evidence-driven Skill Profile，评分可追溯（Resume / Interview Session / Turn），并真正参与后续决策。
-> 数据现状就绪：简历分析（关键词/技能条目）与现有面试报告（categoryScores）已可聚合，P3 建成即有真实数据；画像必须在 P4 之前（自适应面试要消费画像定重点）。
-
-- [x] **P3-1 Java SkillProfile + Evidence 存储**
-  - `skill_profiles`（skill / score / evidenceCount / updatedAt）与 `skill_evidence`（sourceType: RESUME/INTERVIEW_SESSION/INTERVIEW_TURN、sourceId、scoreContribution、timestamp）
-  - Aggregator：简历分析关键词/技能条目 + 面试题评分为输入聚合出分；每次新 Evidence 触发增量更新
-  - 已落地：`modules/profile`（entity/repository/Aggregator/Extractor/Constants）+ `V20260829` 迁移；聚合 = 等权均值（可由 evidence 逐条还原），`(user_id, skill, source_type, source_id)` 唯一保证评估重放幂等；评估完成钩子（EvaluateStreamConsumer）+ 会话/简历删除级联清理已接；未作答题（「未考」）不计证据
-  - 一期证据输入只有面试逐题分（category=技能名）；RESUME 类型待 P2-0 结构化解析后接入，INTERVIEW_SESSION 为冗余证据暂不写入
-  - 已验证：13 个单测 + 真库集成测试（提取→聚合→级联全链路，.env 不可用时自动跳过）+ 全量 `:app:test` 通过
-- [x] **P3-2 Profile 查询链路**
-  - `get_skill_profile` Agent Tool + `/internal/agent/profile/skills`
-  - Graph：`load_profile` 节点（PROFILE_QUERY / 简历优化 / 面试创建前使用）；`SkillProfileBlock` 前端渲染
-  - PROFILE_QUERY 占位分支替换为真实数据；Copilot 右侧画像面板从 P1-1 预览假数据切换为真实数据
-  - 已落地：Java `GET_SKILL_PROFILE` READ Tool（画像 + 证据明细一次取全，双层信封）；Python `profile_query` 节点（无数据时引导面试，SkillProfileBlock + `summarize_skill_profile` 上下文）；前端 `SkillProfileBlockView`（分数条 + 点击展开证据来源）+ 侧栏 `ProfileSection`（真实 API、loading/error/empty 态）
-  - 已实测（真实链路）：「我的技能水平怎么样」→ PROFILE_QUERY → 读取技能画像 → 画像卡（MySQL 83 绿条 / JVM 55 橙条）→ 点开 JVM 展开证据「模拟面试答题（sessionId:2）· 55 分」→ LLM 引用证据解读并如实说明样本量少；侧栏同步显示真实数据；空库时如实告知并引导面试
-- [x] **P3-4 用户快照**：新会话首轮注入 top 技能 + 最近面试概要（低成本跨会话感知，复用 get_skill_profile/get_interview_history）
-  - 已落地：`load_snapshot` 节点（仅首轮拉取，两 READ Tool 并行，失败静默降级）；快照经 `format_history(snapshot=...)` 注入 direct_answer / business_tools / profile_query 的回答上下文；PREPARATION_QUERY 占位分支升级为基于快照的真实回答（无快照时保持占位）
-  - 已实测（真实链路）：新会话「帮我看看最近复习得怎么样」→「了解你的近期表现」Tool 轨迹 → LLM 综合技能画像（MySQL 83 / JVM 55）+ 最近面试状态给出针对性复习建议，数值全部来自 Evidence；已有历史的会话不重复注入（Token 纪律）
-- [ ] P3-3 已拆分：「低分技能 → focus」并入 P4-3，「描述强度约束」并入 P2-1（没有这两个消费点，画像就没有意义）
-
-**验收**：能看到有数据来源的技能分列表；任一分数能点出其 Evidence 来源；「我 JVM 水平怎么样」返回真实 Evidence 驱动回答。
-
----
-
-# 核心二：简历优化 —— 优先级 P2
-
-> 目标：Resume（+可选 JD +画像）→ JSON-first Patch → Diff + Preview PDF → 确认 → 新版本 → 导出 PDF。不做整份重写，不覆盖原简历，不做 DOCX。
-> 详细需求：`Career-Copilot-Resume-Optimization-Requirement.md`；方案设计：`career_copilot_resume_optimization_design.md`（JSON/版本/Typst）+ `career_copilot_resume_optimization_interaction_design.md`（Preview/自评审/Clarification）
-
-- [x] **P2-0 Java 简历结构化地基**（一切的前置：Preview 质量上限 = 解析质量）
-  - `resume_versions` 表（id/resumeId/version/sourceVersionId/optimizationType/targetJobId/contentJson/source/sourceCreatedAt）
-  - ResumeParse：现有 Tika raw_text → LLM 结构化解析（StructuredOutputInvoker + prompts/*.st）→ Resume JSON（basicInfo/education/experience/projects/skills + **customSections 兜底**，解析 prompt 明确要求非标准段完整保留，防静默丢内容）
-  - 解析失败/字段缺失标 NEED_USER_INFO，不猜测；解析结果需用户确认（确认端点 + 状态流转）
-  - `get_resume_version` READ Tool（Python 子图取数路径）
-  - 已落地：`V20260830` 迁移（含 confirmation_status 状态机 PENDING_CONFIRMATION/ACTIVE/NEED_USER_INFO）；`ResumeContentJson` schema（record 树）；`ResumeParseStructuredService`（不猜测原则 + 缺失字段汇总，姓名缺失=NEED_USER_INFO）；`ResumeVersionService`（V1 幂等创建/确认流转/ACTIVE 取数）；触发挂 AnalyzeStreamConsumer（评分分析成功后，解析失败不影响评分）；端点：versions 列表/详情/confirm（可携修正内容）；`get_resume_version` READ Tool（默认最新 ACTIVE，可按版本号定位）
-  - 已验证：13 个新单测 + 全量 `:app:test` 通过；真实链路 reanalyze 触发分析→解析→V1 落库（真实 LLM）
-- [x] **P2-1 Python 优化子图**（替换现 `stub.resume_optimization` 占位）
-  - 流程：resolve_resume（复用 §26）→ determine_mode（GENERAL/TARGET_DIRECTION/JD_TARGETED）→ load_resume_version → load_jd/load_profile（桩位可空：JD 待 P2-5、画像已在 P3 就绪）→ context_check（信息不足才 Clarification，ChoiceBlock 确定性问询，只问影响方向的问题）→ generate_patch（JSON-path 结构化输出）→ validate_patch（代码校验）→ 提案落库 → ResumeOptimizationBlock + WAITING_USER
-  - ResumePatch schema：`{id, type: REPLACE|ADD|DELETE|REORDER, path: "projects[0].bullets[0]", oldValue, newValue, reason, status}`；REORDER schema 保留、校验器一期直接拒绝
-  - **真实性双保险（原 P2-5 融入此处）**：Prompt 层禁止虚构清单（量化数字/QPS/经历/奖项不得新增）+ 代码校验器（newValue 引入原文没有的量化数字/技术栈 → 拒绝或标 NEED_USER_INFO），单测覆盖需求文档 Case 4
-  - 自评审循环：`review_resume` 节点留位，循环次数走配置（默认最小/关闭）；真实性由代码校验器兜底，不依赖 LLM review；简历长度代码可算，review 只负责匹配度/表达/冗余
-  - HITL：提案持久化到 Java（含全部 patch 与状态，审计追溯）+ ACTION_SELECTED 新回合应用（P1-1/P1-4 已验证的无状态模式），**不用 LangGraph interrupt**
-  - **P3 接入点**：generate_patches 注入 Skill Profile 描述强度约束（JVM 低分 → 避免「深入掌握」）
-  - 已落地（含 P2-1a/c 的 Java 支撑）：`resume_optimization_proposals` 表（V20260831）+ ProposalService（创建/查询/PENDING→APPLIED·REJECTED 幂等流转）；Python `resume_optimization` 节点（resume_version → profile_query → generate_patch → patch_validator → save_proposal → ResumeOptimizationBlock + WAITING_USER）；`patch_validator`（REORDER 拒绝/path 白名单/oldValue 必填/newValue 新增数字拒绝——真实性代码兜底）；OPTIMIZE_RESUME action 接入子图；`apply_resume_patches` CONFIRM_WRITE Tool（第 12 个，JSON path 应用 + oldValue 一致性校验 + 新版本 AI_OPTIMIZE）+ APPLY_RESUME_PATCHES action → NavigationBlock；自评审循环未实现（一期默认最小，TodoList 决策如实记录——校验器已兜底真实性）
-  - 已实测（真实 LLM 链路）：「优化简历」→ 5 条建议落库（oldValue 精确摘录原文）→ apply patch_1 → V2 生成（改写生效、其余 bullet 未动）→ 提案 APPLIED；重复应用被拒（幂等保护）
-- [x] **P2-2 Java Patch 应用 + 版本生成**（CONFIRM_WRITE）
-  - `apply_resume_patches` Agent Tool（挂现有 /api/agent/tools/ 统一入口，同 create_interview 模式）：按 proposalId 校验提案存在 → 逐条按 JSON path 应用（oldValue 一致性校验）→ 生成新版本（source=AI_OPTIMIZE），原版本不动
-  - Patch 提案持久化（proposal + patches + 状态 PENDING/ACCEPTED/REJECTED/APPLIED）
-  - APPLY_RESUME_PATCHES action（payload 只带 proposalId + patchIds）→ 应用成功 → NavigationBlock 跳版本详情
-  - 已落地（提前并入 P2-1a/c，依赖顺序：Python 子图需要提案落库）：`resume_optimization_proposals` 表 + ProposalService + apply_resume_patches Tool（JSON path 白名单 + oldValue 一致性，漂移→PATCH_CONFLICT）+ APPLY_RESUME_PATCHES action → NavigationBlock
-  - 与原计划的两处偏差：状态机三态 PENDING/APPLIED/REJECTED（无状态 HITL 下勾选发生在应用瞬间，不存在「已接受未应用」中间态，ACCEPTED 省略）；NavigationBlock 跳简历详情页（版本列表在其「简历版本」tab 内可见，不单开版本详情页）
-  - 已实测：apply patch_1 → V2 生成（AI_OPTIMIZE，未勾选 bullet 原样）→ 提案 APPLIED → 重复应用被拒（幂等）
-- [x] **P2-3 前端：解析确认 + Diff + Preview**
-  - 解析结果确认/补录视图（解析错则全错，确认是必要门槛）
-  - ResumeOptimizationBlock：Patch 卡片（oldValue/newValue/reason + [接受][忽略]）+ 全部操作 + [应用选中修改]（ACTION_SELECTED 回传）
-  - **Preview PDF「勾选即重渲」**：勾选变化防抖调预览端点，`<iframe>` + blob URL 内嵌；桌面左 Diff 右预览分栏，移动端折叠；预览内容 = 已勾选 patch 的合成结果；附「排版不满意？原始上传件仍在你手里」退路说明
-  - 已落地：`ResumeVersionPanel`（简历详情页第三个 tab：版本列表 + source/状态徽标 + 内容展开 + 解析确认卡片——missingFields 可读提示 + 确认按钮）；`ResumeOptimizationBlockView`（Diff 卡片：patch 类型徽标 + old 删除线/new 新增 Diff + reason + 勾选（默认全选/全不选切换）+ [应用勾选修改] → APPLY_RESUME_PATCHES action）；confirm 端点请求体包装修复（axios null body 触发 Content-Type 拒绝 + 空对象歧义误覆盖双重隐患）
-  - 已验证：build + 前端 6 单测 + 后端全量通过；浏览器验证解析确认全流程（渲染→确认→ACTIVE）；优化后端链路三次真实落库 + 应用生成 V2；**Diff 卡片视觉验证待 LLM 网关恢复后补做**（验证期间网关持续间歇故障：意图分类/结构化输出多处 APIConnectionError 与 JSON 解析失败，均为外部依赖问题；为此把 generate_patch 的模型解析失败从整轮 error 修正为诚实回落「无建议」回复）
-- [x] **P2-4 Typst 导出**（只做 PDF；渲染归 Java，Python/前端不参与排版）
-  - Spike：本机装 Typst + 真实解析 JSON 调通 classic-zh 中文模板（typst watch 迭代）
-  - `TypstCompiler` 薄组件（ProcessBuilder + 超时 + stderr 入日志不透传 + `--root` 限定临时目录）；单测 stub 化，真实编译走集成测试 + golden 测试（fixture JSON 含 `* _ $` 等字符 → %PDF 头 + 体积断言）
-  - 正式导出：版本表 content_json → 渲染 → RustFS → [导出 PDF] 按钮（详情页手动导出，不自动渲染）；字体 Noto Sans CJK 随 resources 打包；Dockerfile 拷贝 typst 二进制（~40MB）
-  - Preview 端点：`POST /internal/agent/resume/preview`（原版 JSON + 已选 patch + templateId → 内存 apply → 渲染 → PDF 字节直返，**不入库不落存储**；Preview ≠ 正式版本）
-  - 已落地：`typst/resume-classic-zh.typ` 模板（防御性 `.at(key, default:"")` 取值，缺字段静默留空不炸编译；原生 list 做 bullets 修 grid 行高塌陷；空段 `.len() > 0` 判断）+ `TypstCompiler`（临时目录 + `--root` 限定 + 10s 超时 + stderr 只进日志；两参重载自动走 `TypstFontExtractor` 解包字体）+ `TypstFontExtractor`（classpath 字体懒解包到临时目录，无打包字体回退系统字体）+ `ResumePreviewService`（`TypstTemplateLoader` 模板白名单防任意 classpath 读取；apply 与正式应用共用 `applyPatchesToTree` 保证「预览内容 = 应用后内容」）+ Preview/导出端点 + 前端「生成预览/勾选防抖 600ms 重渲 iframe」与版本卡 [导出 PDF] 按钮
-  - 字体决策：打包 Noto Sans CJK SC Regular 单字重（16MB），bold 由 typst synthetic embolden 合成（真实 Bold 多源下载均断链，视觉验证可接受）；模板字体回退链 `"Noto Sans CJK SC", "PingFang SC"`
-  - 下载代理：RustFS bucket 非 public-read（既有简历直链同样 403，非本次引入），`GET /api/resume-exports/download?fileKey=` 后端流式代理（fileKey 限 `resume-exports/` 前缀），RustFS 仍留档可追溯
-  - 已验证：golden 测试（特殊字符 `*Test_*` `$100 QPS` `C:\Users\test` `^[a-z]+$` 字面渲染 + %PDF 头）+ 9 个测试类全绿 + 本机编译 0.15-0.27s（勾选即重渲可行）+ 两页视觉验证（教育/项目/技能/自定义段渲染正常，空段不出现）+ Preview 端点实测（patch 应用后 24KB PDF）+ 导出实测（102880 字节 → RustFS → 代理下载回真 PDF，非法 fileKey 拒绝）
-- [x] **P2-5 JD 接入**（点亮 JD_TARGETED + context_check 真实分支）
-  - JD 作为第二类附件（`AttachmentRef.kind="job_description"`），复用 Tika 解析并单独存储（不动简历库 hash/去重语义）
-  - Java：JD 上传/查询端点 + `get_job` Tool；会话绑定 `active_job_id`（对称 P1-3）
-  - Python attachment_flow 扩展 JOB_DESCRIPTION 分支（ChoiceBlock：「JD 匹配 / 生成准备建议」）
-  - 前端 Composer 附件类型标记（简历/JD 切换 tag）
-  - 已落地：`job` 模块（job_descriptions 表 V20260901 + 上传 Tika 解析/文本创建/查询/删除，无去重语义——JD 迭代频繁按条目管理）+ `GET_JOB` READ Tool（第 13 个）+ 会话 `active_job_id`（PUT active-job + context/detail DTO 透出）；Python `AttachmentRef.kind` 扩展 + `attachment_flow` JD 分支（确认块：优化/匹配/面试三选项，自动 `bind_active_job` 失败不阻断）+ `resolve_context` 识别 JD 附件与会话绑定 + 优化子图 `active_job_id` 存在时注入 JD 全文（4000 字符截断）点亮 JD_TARGETED（真实性铁律仍兜底：禁止编造经历凑匹配度）+ `get_job` client；前端 Composer 附件类型切换 tag（简历/JD，上传前可改）+ JD 上传走 `/api/jobs/upload` + ContextPanel「JD 资源将在 P2-1 接入」占位替换为真实绑定 JD（Conversation Memory 优先，附件名回落）+ CopilotPage JD 上传分支
-  - 删除不级联清会话绑定（与简历删除行为对称）：悬挂 active_job_id 由取数失败兜底
-
-**验收**：「按这份 JD 优化我的简历」→ 解析确认 → JSON-path Patch Diff + 勾选实时 PDF 预览 → 部分接受 → 应用 → 新版本可查（原版不变）→ 手动导出 PDF → 全程停留在 /copilot。无编造内容（Case 4 校验器兜底）。
-
-**已知衔接**：优化新版本后，模拟面试一期仍用 resumeId 绑定的原始 resumeText（V1），版本选择后续再做，不阻塞 P2。
-
----
-
-# 核心四：内嵌自适应模拟面试 —— 优先级 P4
-
-> 目标：交互与引擎双升级——面试在 Copilot 内发起并内嵌执行（不再跳配置页），由固定题单升级为动态追问。
-> 交互设计：`Career-Copilot-Inline-Interview-Design.md`；引擎设计：`Career Copilot 自适应模拟面试引擎设计文档.md`（Selection Before Generation）
-> 边界（Inline §3/§23-26）：Agent 管发起/配置推荐/结果解释；Java Engine 管实时执行（状态机 + Turn Evaluation + Decision Policy）；React InterviewSessionBlock 管展示。**答题直连 Java API，不过 Agent Graph**。
-
-- [ ] **P4-0 InterviewSessionBlock 前端基线**（Inline §11-14、§19）
-  - 协议 `interview_session`（interviewId / status: READY|RUNNING|COMPLETED / direction / difficulty / mode / focus）加入受控 Block 白名单
-  - 组件树：Header / Progress / CurrentQuestion / AnswerComposer / Timer / Result
-  - 面试运行期隐藏或禁用普通 Composer（避免回答入口歧义）；ContextPanel 切换 Interview Context（进度 / 当前 Topic / 已覆盖·待覆盖 / 剩余时间，复用 P1-1 的面板）
-  - 面试过程集中在 Block 内，不写入 Conversation Message；结束折叠为结果卡（综合分 + per-skill 分数 + [查看详细报告]）
-  - 答题请求 React → Java Interview API 直连（语音面试暂沿用现有页面，Focus Mode 暂缓）
-- [ ] **P4-1 Question Pool 结构化**
-  - 每 Topic 预置 Main / Follow-up / Depth / Scenario 四类题目入库（题库生成走现有异步链路）
-- [ ] **P4-2 轻量 Turn Evaluation**
-  - 每轮回答 → 结构化输出（score / coverage / missingPoints / answerState / recommendedAction），低延迟模型；不复用整场报告
-- [ ] **P4-3 Decision Policy（代码控边界，LLM 只判语义）**
-  - 最大追问数 / Topic 时间预算 / 剩余总时长 / 难度上下限 / 话题覆盖率 / 出题去重
-  - **P3 接入点（原 P3-3 拆入）**：面试推荐时低分技能作为 focus 传入 create_interview——升级 P1-4 已上线的 interview_proposal 节点，从「LLM 猜 focus」变「Evidence 驱动」
-- [ ] **P4-4 动态行为集**
-  - FOLLOW_UP / NEXT_QUESTION / NEXT_TOPIC / UPGRADE / DOWNGRADE / SKIP / END_INTERVIEW
-  - Selection before Generation：优先 Pool 选题，无合适候选才 LLM 动态生题（fallback）
-- [ ] **P4-5 Interview Report 增强 → Evidence**
-  - 报告增加 per-skill 评分与关键 Turn 引用，落库后调用 Profile Aggregator 更新画像（闭环二右半段，依赖核心三）
-- [ ] **P4-6 面试完成后回流 Copilot**（Inline §22）
-  - 完成后 Agent 解释结果：强弱项对比（含画像变化 JVM 54→61 这类）+ 下一步 Action（[专项复习][再来一场][查看报告]）
-  - 用 InterviewSessionBlock 替换 P1-4 的过渡跳转方案，会话创建后原地内嵌展示
-- [ ] **P4-7 /interview-hub 重定位**（Inline §9，可选收尾）
-  - 默认展示最近面试与分数，仅点「创建自定义面试」才展开完整配置；Agent 成为默认入口
-
-**验收**（对齐 Inline §28 MVP 十项 + §30 四个 Case）：自然语言发起 → 推荐 → 确认创建 → 内嵌答题 → 同主题追问不重复、难度可升降 → 结果卡 → Evidence 更新画像 → Copilot 给出下一步建议；全程停留在 /copilot。
-
----
-
-# Phase 5：三条产品闭环贯通（验收主线）—— 优先级 P5
-
-- [ ] **闭环一（简历→JD→优化）**：Resume + JD → Gap 分析 → Patch → 确认 → 新版本
-- [ ] **闭环二（画像→面试→新画像）**：低分技能 → 定向自适应面试 → Evidence → 分数回升可查
-- [ ] **闭环三（Copilot 串全场）**：「根据我的简历和画像来场 JVM 面试」一条消息串联 读简历+读画像→create_interview→报告→画像更新→Copilot 返回下一步建议
-- [ ] **Demo 主链**（Core-4 §7）：进 /copilot → 传简历 → 传 JD → 定向优化 → 确认 → 新版本 → 按 Profile 开面试 → 动态追问 → Report → Evidence → Profile 更新 → 回 Copilot 给建议
-- [ ] **停止标准自查**（Core-4 §15 十项全绿后停止加功能）
-
----
-
-# 暂缓 / 明确不做
-
-**明确不做**（Core-4 §8 + 项目声明；除非四核心全部完成）：
+### 2.2 面试实时调用边界
 
 ```text
-Multi-Agent / Agent Marketplace / 插件系统 / MCP Server·UI
-自动投递 / Offer 管理 / 招聘爬虫 / 复杂 Job 推荐
-复杂 Preparation Planner / 学习管理系统 / 复杂 Calendar
-Voice Agent 重构（现有语音面试保留原样）
-在线 Word 编辑器 / 大量简历模板 / 复杂 Dashboard
-复杂 Observability / Agent Evaluation 平台
-多用户隔离与用户数据分离（已明确移除，userId 恒为 default）
-全聊天历史向量化 / 复杂 Episodic Memory / 自动 Memory Reflection
+React 提交回答 / 节奏动作
+    ↓
+Java 校验请求、会话版本与业务边界
+    ├─ 显式跳过 / 结束：确定性推进，不等待模型
+    └─ 普通回答：构造相关上下文与合法候选集
+          ↓
+       一次逐轮语义调用
+       理解回答 + 识别节奏要求 + 提取覆盖证据 + 建议下一步及表达
+          ↓
+Java 校验建议、选择或接纳受限追问、持久化实际轮次
+    ↓
+React 展示本轮结果与下一步
+
+面试结束 → Java 异步报告 → Evidence / Profile → Copilot 复盘与建议
 ```
 
-**暂缓**（有桩位、待依赖就绪）：
+- 业务事实不因模型输出而改变；LLM 判断语义，代码控制时间、覆盖约束、追问次数、难度、去重及状态转换。
+- 每轮只规划下一步，不重新规划整场；评估、候选语义选择、受限追问和简短承接共用一次模型调用。
+- 面试轨迹由 Java 持久化，Agent 可按需读取当前进展或指定场次详情；不把所有逐题问答复制进普通 Conversation，也不为「看得见」而每轮运行主 Graph。
+- 面试创建等业务写操作仍遵守确认契约；已开始面试中的答题与节奏动作按用户操作直接执行。
 
-- [ ] COMPLEX_GOAL / Goal Execution Subgraph —— 四核心不含此项，保持现有占位回复；受限 ReAct 循环只在真正出现复杂多步 Goal 时随此进入
-- [ ] Preparation 最小能力（简单计划/任务/进度）—— 仅当 Agent 下一步建议需要时再补，不建复杂 Planner
-- [ ] 语音 Interview Focus Mode（Inline §27 的全屏语音交互 UI）—— 第一阶段文字面试优先，现有语音面试页保留
-- [ ] Replay 型 Knowledge 复习卡片等衍生 —— 不做
+### 2.3 上下文与契约
 
-**定位原则**（摘自 Core-4）：RAG 仅作为 Agent Tool 保留；Memory 一期只做 Conversation Memory + Skill Profile 两层；主 Graph 不默认 ReAct。
+- **事实上下文由 Java 解析**：创建时根据简历 ID / 明确版本、JD、画像生成带来源和版本的面试快照；Python 传入本次目标、关注点及相关会话意图。
+- 简历优先使用已确认的 ACTIVE 结构化版本，无可用版本时可使用已有原文并标明来源；指定简历无法读取时返回可见原因，不静默变成通用面试。用户主动选择通用面试时正常执行。
+- 每轮只注入相关经历片段、当前题与回答、最近相关问答、覆盖摘要、预算和合法候选；不重复搬运整份简历、完整画像和全部聊天历史。
+- 由类型化请求模型产生正式 JSON Schema / OpenAPI 契约，再生成 Python 参数模型；Tool 描述、运行时校验和客户端共用契约，CI 检查漂移。
+- 契约一致性之外，验证业务语义：只传合法 `resumeId` 也必须取得正确简历；可选字段不能掩盖上下文缺失；未知字段、非法类型和缺失必要上下文必须有明确处理结果。
+- LLM 执行规则统一模型配置版本、结构化校验、错误分类、超时、重试和观测；允许使用不同 SDK，但不得各自形成不受控的重试链。
+- Prompt 资源集中管理并可追踪版本；复用 Java Provider、Structured Output、RAG 和异步基础设施，不新增一套并行业务实现。
 
----
+### 2.4 其他长期约束
 
-## 架构决策记录
+- 对话与消息由 Java 持久化；Checkpoint 保存 Agent 工作状态，独立于业务数据，不携带不可序列化的瞬时流对象。
+- 主 Graph 采用明确路由；简单查询不进入复杂规划，RAG 仅在知识证据相关时经 Tool 使用。
+- 简历优化坚持 JSON-first、代码事实校验和用户确认；优化模式为 `GENERAL / TARGET_DIRECTION / JD_TARGETED`，模式及目标随提案和版本保存。
+- 简历解析先纠错再确认；提案持久化后通过 Action 确认应用或拒绝；预览不是正式版本，预览、应用与导出使用同一组选中 Patch。
+- PDF 排版与导出归 Java / Typst；自评审默认关闭，开启时仅可淘汰建议，不绕过事实校验新增或改写建议。
+- Profile 数值必须由证据与确定性聚合规则还原；简历声明不编分，LLM 不直接覆盖技能分。
 
-| 决策 | 理由 |
+## 三、面试目标形态
+
+### 3.1 面试前：约定时间与重点
+
+用户提供大致时长、目标方向及关注点，例如「约 20 分钟，重点聊实习和项目」。AI 结合简历与画像提出简短计划，经用户确认后开始。
+
+- 不要求用户预先选择固定题数，不为实习、项目或八股分配固定题数配额。
+- 题数是实际面试轨迹的统计结果；内部轮次上限仅用于防止失控，不作为必须完成的目标。
+- 开场说明预计时间、主要话题以及用户可随时换话题、调整难度或结束。
+- 默认优先实习与项目，顺序可随用户目标和回答调整；技术原理、场景与工程习惯优先从经历自然展开，时间允许再补充岗位相关的未覆盖知识。
+
+### 3.2 必要覆盖与停止条件
+
+| 约束 | 目标行为 |
 |---|---|
-| Java 是 System of Record，Python 只编排 | 业务规则/事务留 Java，Agent 服务无库 |
-| 对话数据由 Java 持久化；blocks 用 JSON TEXT 列 | 与 Python MessageBlock 判别联合对齐，前端受控渲染 |
-| Python 流式结束后一次性保存 | Java 无需 prepare/complete 两阶段 |
-| 前端显式建会话，首条消息规则生成标题 | 不调 LLM |
-| Agent 模型配置由 Java Provider 统一管理 + 请求期惰性重试 | 配置事实留 Java；解决启动顺序竞态 |
-| 主 Graph 单程路由，不做无限 Agent Loop | §64；LLM 判语义、代码控边界 |
-| 主 Graph 不默认 ReAct；受限循环只在未来 Goal 子图内 | Core-4 §12；当前四功能不依赖 |
-| 短期记忆权威来源是 Java 历史；Checkpoint 持久化工作状态 | SoR 原则 + 跨轮恢复/HITL 地基 |
-| Checkpoint 用独立 PG 库 `agent_checkpoint` 并剥离瞬时字段 | 流式 StreamPlan 含 AsyncIterator 不可序列化；避免污染业务库 |
-| 简历内容经 `get_resume` Tool 按 maxChars 截断注入 | Token 纪律；与简历优化共用取数路径 |
-| **不做多用户 / 用户数据分离** | 项目定位个人简历项目；userId 仅作字段预留 |
-| 目标简历解析：附件 > 文件名指名 > 唯一锁定 > 默认最近 | 设计文档 §26；多份场景显式说明所选目标 |
-| 自适应面试循环留在 Java Engine | Selection Before Generation；代码控制策略边界 |
-| 面试发起 Agent 化、执行引擎化、结果回流 Copilot（Inline §3/§32） | Agent 管意图/推荐/解释，Java 管实时状态机；体验停留 /copilot 而架构解耦 |
-| InterviewSessionBlock 答题直连 Java Interview API，不过 Agent Graph | 实时轮次不进 LLM 路由；低延迟、可控、可测试 |
-| 面试过程集中在 InterviewSessionBlock，不写入 Conversation Message | 十题十答+追问会灌爆会话历史；Copilot 只保留结果 Artifact |
-| **实施顺序 P3 → P2 → P4**（2026-08） | P3 基础是 P2/P4 共同地基且规模最小；先建画像使 P2 原生消费（描述强度）、P4 一次接入（低分→focus），无返工 |
-| **简历优化 JSON-first**：Tika→LLM→Resume JSON，Patch 打 JSON path | before 文本精确匹配纯文本易因空白/换行失败；JSON path 精确无歧义、REORDER 可行、Diff/模板消费同一数据 |
-| **customSections 兜底段**进 Resume Schema | 真实简历有证书/奖项/链接等非标准段；无处安放会被静默丢弃，违反「不虚构、不丢失」 |
-| **解析结果需用户确认** | 解析错则后续 Patch/Preview/导出全错；确认是必要门槛 |
-| **只做 PDF 导出，用 Typst（不做 XeLaTeX/DOCX）** | 单 ~40MB 二进制、中文内建、100ms 级编译支撑「勾选即重渲」；字符串按字面渲染免转义层与注入面；DOCX 后续走 Java docx4j/POI 不硬套 Typst |
-| **HITL 用提案持久化 + ACTION_SELECTED，不用 LangGraph interrupt** | 提案本就必须落 Java（审计）；无状态回合是 P1-1/P1-4 已验证模式，不改流式协议、重启不丢 |
-| **自评审循环预留节点、配置化、一期默认最小** | 每轮 2 次 LLM 调用 + 20-40s 等待；真实性靠代码校验器（确定性）而非 LLM review；有实测证据再开多轮 |
-| **Preview PDF 勾选即重渲；Preview ≠ 正式版本** | Typst 性能撑得起实时预览；确认前零持久化（临时 JSON 直渲 PDF 字节） |
-| **正式 PDF 手动导出** | 避免用户不导出时的浪费渲染；完成回执给导航，按钮放版本详情页 |
+| 实习 / 项目覆盖 | 简历确有对应经历时，默认至少触及一个相关经历；不要求逐一问完全部经历。无该类经历时跳过，不编造。 |
+| 覆盖依据 | 从用户回答提取个人职责、技术取舍、问题与结果等证据；一句完整回答可以覆盖多个要点。覆盖表示已有考察材料，不表示答对。 |
+| 用户选择 | 用户明确不想聊某经历可跳过并记录未考察；用户要求结束时立即结束，不被「必问」阻塞。 |
+| 时间边界 | 预计时长指导节奏，代码配置硬上限与连续追问预算；未覆盖的重点获得时间预留，可选话题优先压缩。 |
+| 无新增信息 | 连续追问没有获得新信息时转场；回答已充分时不为凑题数继续问。 |
+| 自然结束 | 必要覆盖充分且继续问收益低时可提前收尾；达到预算时收束；保存覆盖完成、预算到达或用户结束等真实原因。 |
+
+时间统计区分用户思考 / 作答、暂停和系统等待，模型或网络等待不消耗用户答题预算。用户说「只剩五分钟」时更新剩余可用预算；延长时间仍受代码配置的上限约束。
+
+### 3.3 AI 主导节奏，用户通过回答调整
+
+| 回答或信号 | 下一步 |
+|---|---|
+| 已完整说明关键取舍 | 转场，不机械追加追问。 |
+| 提到具体故障、争议或亲历事件 | 沿用户原话追问定位过程、取舍或结果。 |
+| 个人贡献不明确 | 澄清负责范围，不把团队成果直接当成个人能力。 |
+| 只缺一个关键知识点 | 有针对性地追问一次，避免重复完整主问题。 |
+| 「不会」「换个方向」「这个项目先聊到这」 | 停止当前深挖，保留已经提供的技术证据。 |
+| 「太简单了」「能浅一点吗」 | 在允许范围内调整难度。 |
+| 「只剩五分钟」「今天先到这里」 | 压缩可选话题或直接结束。 |
+
+- 显式节奏指令优先于 AI 对情绪和偏好的推测；不因回答短就认定用户不耐烦，也不把本场调整写成长期偏好。
+- 同一消息可同时包含答案与节奏指令，分别保存与处理；控制用语不作为错误答案评分。
+- 「跳过」是一等动作，提供按钮；自然语言识别避免简单关键词包含匹配，不能把「不会发生死锁」误判成不会作答。
+- 追问必须能关联回答中的具体信息或待验证点；两种回答暴露不同关键缺口时，应产生相应差异，不要求任意两种表述都得到不同题目。
+
+### 3.4 候选池、生成与自然表达
+
+- 候选池是素材，不是必须消费完的执行清单；候选数量与实际追问次数分离。
+- 候选覆盖澄清、原理、取舍、场景、故障与个人贡献等目的；Java 先按预算、话题、难度和去重过滤，模型在同一次评估中判断语义适配。
+- **Selection Before Generation**：有合适候选时选择；没有时允许基于回答提出一条短追问，携带考察点与来源，校验后写入实际面试轨迹和可恢复状态。
+- 不以自由文本字符串匹配代替语义判断，也不额外串联一次模型调用只为排序候选。
+- 可按需预备后续话题候选；未提交回答不能被当作既成事实用于生成针对性追问，过期候选不得驱动状态。
+- 承接语简短、可选、引用用户刚说过的事实；避免每题固定赞美，不提前泄露标准答案或评分。
+- 阶段过渡与最终执行决策一致；Java 否决追问后，不展示仍承诺继续深挖的文案。
+
+### 3.5 速度、可靠性与展示
+
+- 实时调用具备端到端预算，限制输入 / 输出长度；本地校验与有限修复优先，不因解析失败反复完整生成。
+- 模型失败或超时标记本轮评估不可用，按代码规则换主问题、转场或收尾；未知质量不默认追问，不伪造评估成功或评分。
+- 回答提交绑定本轮请求标识与会话版本；重试不得重复评分或推进，晚到的模型结果不得覆盖已经推进的会话。
+- 下一题经校验与持久化后才成为正式结果；前端可即时展示提交状态，但不提前展示未获接纳的模型决策。
+- 顶栏展示当前话题、覆盖状态和已用时间，不以候选题总数计算「第 N / M 题」或虚假完成百分比。
+- 刷新与切会话恢复实际问答、节奏偏好和覆盖进度；结束后显示轻量摘要、报告入口及返回 Copilot 的操作。
+- 报告、证据与画像更新异步执行，状态有完成、失败、重试和超时出口。
+
+**性能验收目标（需要实测，不是现有性能承诺）**：点击后 100ms 内出现交互反馈；显式跳过接口 P95 < 300ms；普通回答至下一题可作答 P95 争取 ≤ 3s。统计模型正常与故障时的端到端耗时、调用次数及降级率，不能用大量降级换取表面达标。
+
+### 3.6 报告与画像
+
+- 持久化轻量逐轮评估、回答证据、实际决策和原因，复盘可解释「为什么追问这个」。
+- 实时评估服务节奏控制；正式报告服务完整评价，两者用途明确且差异可追溯，失败回落值不作为真实评分证据。
+- 跳过、未问到、明确不会和实际答错分别表达；跳过及未考察不进入技能数值证据，明确不会可记录为诊断信息，不把控制文本当技术答案打分。
+- 主问与追问使用稳定的技能标识；追问身份独立表达，不产生「Java（追问1）」等伪技能。
+- 可变路线下，同一主题的主问与追问共同构成评估材料；总分不能仅因某主题追问多就被该主题支配。聚合规则明确、可重算，并展示未考察范围，避免宣称不同覆盖面会话的总分完全可比。
+- Copilot 复盘读取指定场次的事实、画像变化及证据，给出下一步建议；无提升时如实说明，不预设「面试后分数必涨」。
+
+## 四、待办：按四批开发顺序推进
+
+> 当前主线：在已有简历上下文、Tool 契约和面试基础能力上，交付覆盖与时间驱动的动态面试。
+> 第一批先保证每轮推进可靠、等待有界；第二批交付可用的动态主循环；第三批深化追问；第四批完成复盘与闭环。
+> 各批都带回归与验收，不把测试留到最后。已完成能力统一见第七节。
+
+### 4.1 第一批：逐轮提交一致性与实时预算
+
+> P4-9a 与 ARCH-2b 已完成，见 7.8 / 7.9。本批无剩余待办。
+
+**本批交付标准**：现有面试在重复提交、结束并发和模型失败下仍能可靠推进，不依赖动态出题才能验收。
+
+### 4.2 第二批：覆盖与时间驱动的动态面试主循环
+
+> P4-1、P4Q-2、P4Q-1、P4Q-3b 与 P4-8a 已完成，见 7.10-7.13。本批无剩余待办。
+> 可以按数据模型 → 决策 → 前端接入拆分改动，但字段必须有真实生产者与消费者，不把空壳字段视为功能完成。
+
+- [x] **P4Q-2 覆盖与时间驱动的计划和状态**
+  - [x] 提案与创建契约采用预计时长、必要覆盖、方向及重点，取消默认固定题数与阶段题数配额。
+  - [x] 保存覆盖证据、当前话题、剩余预算和结束原因；覆盖关联实际回答，不只保存模型给出的「已完成」。
+  - [x] 必要话题预留时间；充分回答可转场，无新增信息可收束；用户明确跳过某经历或要求结束时尊重其选择。
+  - [x] 区分用户作答、暂停和系统等待，模型 / 网络等待不扣用户答题预算；用户剩余时间调整当轮生效。
+  - [x] 验收：同一计划产生不同题数；无实习经历时不强行问实习；覆盖目标完成、预算到达及用户结束分别有真实原因。
+- [x] **P4Q-1 剩余项：覆盖与预算进入逐轮上下文**（见 7.12）
+  - 复用已完成的简历解析、来源快照和三类参照物；不重复建设取数链路。
+  - 随 P4Q-2 接入有真实数据的覆盖摘要、剩余时间及追问预算，并提供本轮合法候选。
+  - 验收：修改覆盖状态或时间预算会改变传入决策的上下文；没有数据时明确标注，不以空字段宣称生效。
+- [x] **P4Q-3b 一次逐轮语义调用控制节奏**（见 7.13）
+  - 合并回答理解、节奏识别、覆盖证据提取、候选语义选择和可选承接语；消费 recommendedFocus / missingPoints 等语义信号。
+  - 返回明确的动作建议、候选标识和依据，Java 校验时间、次数、难度、覆盖与重复约束后执行并持久化。
+  - 主 Agent Graph 不进入逐题循环；每轮只决定下一步，不重生成整场计划。
+  - 验收：充分回答直接转场；有关键缺口才针对性追问；没有新信息时不为消费候选继续问；失败路径沿用第一批边界。
+- [x] **P4-8a Agent 契约与 Interview Mode 最小接入**（见 7.13）
+  - Agent 提案、Tool / API 契约与前端配置一起改为时间、重点和考察范围；沿用 ARCH-1 生成、校验与漂移检查。
+  - 顶栏展示话题、覆盖与已用时间，移除依赖预生成题数的进度；先打通换话题、缩短时间和结束。
+  - 刷新恢复实际轮次、覆盖、预算与节奏偏好；旧会话不强行转换成新计划，保留兼容路径。
+  - 验收：参数不只显示在 UI，而是真正影响 Java 决策；刷新、切会话和重新进入后状态一致。
+
+**本批产品验收**：同样选择「约 20 分钟、实习和项目优先」，不同回答产生不同题数；用户说「只剩五分钟」后压缩可选话题；刷新后继续原有节奏与进度。前端与引擎共同验收，不等全部引擎功能完成才接 UI。
+
+### 4.3 第三批：针对回答的追问与完整节奏控制
+
+> P4-4b、P4Q-3c / P4-8b 与 P4-9b 均已完成，见 7.14、7.15。第三批已用固定简历、成对回答和真实模型
+> 验证「有关键缺口才追问、回答充分即转场」，并同时记录正常 / 故障链路的 P95、实际请求数与降级比例。
+
+- [x] **P4-4b 候选多样性与受限生成**（见 7.14）
+  - 候选覆盖澄清、原理、取舍、场景、故障及个人贡献；组内候选池容量与运行期追问预算解耦，
+    预算用尽不再消费本组未问候选。
+  - 有合适候选时选择；没有时在同一次语义调用中生成一条短追问，携带考察点与逐字引用的回答依据。
+  - 生成题经 Java 校验（预算 / 去重 / 依据 / 长度）并**与推进同一短事务追加进候选池落库**后
+    才展示，走相同的恢复、报告和证据链路。
+  - 候选带来源（预生成 / 受限生成 / 后台预备）与代次；后台预备复用 Redis Stream，回写前有代次闸门，
+    晚到/过期结果不驱动状态；预备失败由实时生成兜底。
+- [x] **P4Q-3c / P4-8b 语义追问与自然交互深化**（见 7.14）
+  - 追问关联用户原话或具体待验证点，连续没有新增信息时转场；不同关键缺口对应不同追问。
+  - 显式难度调整走 `/pace` 确定性端点（只改本场偏好、不推进轮次），自然语言里的换话题 / 停深挖
+    随普通提交由语义识别处理；技术答案与节奏指令分开判定，不丢失有效证据。
+  - 承接语简短且可选，不固定赞美或泄露标准答案；Java 否决建议后文案与最终动作一致。
+  - 验收用例：泛泛描述与提到亲历乱序回填分别落到不同缺口→不同追问；「不会发生死锁」不误判为跳过；
+    明确停止深挖当轮软转场、保留证据、不计 NO_ANSWER。
+- [x] **P4-9b 面试质量与响应速度联合验收**（见 7.15）
+  - 固定简历与 10 组「关键缺口 / 充分回答」成对样例，经真实 HTTP → 模型 → Java 决策 → 短事务落库 →
+    下一题响应链路验证；正常模式质量通过率 100%，P95 2876ms，20 个样例对应 20 次实际模型请求，降级 0%。
+  - 故障模式将实时预算压到 100ms：P95 154ms，20 个样例对应 20 次实际模型请求，降级 100%，均安全转入
+    下一主问题且没有隐藏重试；该数据只验证失败边界，不拿降级结果冒充正常性能。
+
+
+### 4.4 第四批：报告、画像、Agent 复盘与面试闭环
+
+- [x] **P4-5 报告与可变路线评价**（见 7.16）
+  - 将实际轮次、覆盖证据、题目难度、考察点及决策依据与最终报告关联，解释实时判断与报告差异。
+  - 明确主题内主问 / 追问及跨主题聚合口径，避免追问题量左右总分；提供规则版本和可重算验证。
+  - 报告标明覆盖范围、未考察项、跳过项和证据不足，不把缺失评价补成 0 分。
+- [x] **P4-10 面试上下文对 Agent 可见**（见 7.17）
+  - Java 提供按需读取当前进展、覆盖证据和指定轮次详情的受控能力，复用可用接口。
+  - 验收：Agent 能解释当前话题与已发生内容，不必等结束才有信息，也不把每轮接回主 Graph。
+- [x] **P4-6b / P6-3 画像驱动建议**（见 7.18）
+  - 画像低分项支持一键发起定向提案，配置展示推荐依据；验证报告完成后的侧栏画像刷新。
+  - Copilot 消费已有画像差分与 Evidence 给出下一步建议；声明型技能与已验证技能区分展示，无依据时不宣称提升。
+- [x] **P5-2 画像与面试闭环**（见 7.19）：画像重点 → 定向提案 → 动态面试 → 报告 → Evidence → 新画像，变化可追溯。
+- [x] **P5-3 Copilot 闭环**（见 7.19）：一句自然语言串起相关简历 / 画像读取、提案、创建、面试、指定场次复盘和下一步建议。
+- [x] **P6-4 面试闭环 E2E**（见 7.19）：覆盖成功、用户取消、提前结束、刷新恢复、依赖失败与重试；验证从创建到报告 / 画像 / 复盘的完整流程。
+
+### 4.5 贯穿各批的文档与可靠性验收
+
+- [x] **DOC-1 架构与协议同步**（见 7.20）：每批修改同步面试设计、前端协议及相关规则；保留 Java 业务权威与实时循环边界，移除固定题数、固定配额与列表耗尽即结束等过时约束。
+- [x] **契约行为回归**（见 7.20）：随字段落地验证时间预算、节奏动作、版本和请求标识真正影响业务；继续守住简历与 focus 的既有契约。
+- [x] **可靠性回归**（见 7.20）：缓存旧状态、报告失败、重复提交、并发结束、晚到模型结果、历史数据修复及画像重算均有断言；Redis 特定行为用真实 Redis 验证。
+- [x] **P6-1 异步与失败体验统一**（见 7.20）：异步流程统一 loading / failed / retry / completed 和超时出口；区分加载失败、空结果、用户停止及依赖失败；跨会话、刷新与重试不丢状态或重复写入。
+
+### 4.6 面试闭环稳定后：简历闭环与产品收尾
+
+- [x] **P5-1 简历闭环**（见 7.21）：补齐独立 JD Gap 分析，串起简历 → JD → Gap / Patch → 预览 → 确认 → 新版本 → PDF；在面试闭环稳定后推进。
+- [x] **P2 / P6-2 优化建议可解释性**（见 7.21）：每条 Patch 展示原因、依据、影响范围与需核实事实；调用失败不冒充「无需优化」。完成真实模型下 Diff / Preview 视觉验收，以及选中项、应用、版本、导出的一致性验证。
+- [x] **P6-4 简历与画像 E2E 补齐**（见 7.22）：三条产品闭环均覆盖成功、取消、刷新恢复、依赖失败和重试后，再整体标记 P5 完成。
+- [x] **Demo 与停止标准**（见 7.22）：四核心无已知严重主流程缺陷；三条闭环稳定通过；推荐依据、写操作确认和 Evidence 可解释；Demo 无需手工改库或绕过异常。
+- [x] **P4-7 面试入口（见 7.22）**：`/interview-hub` 默认展示最近面试，仅在主动创建自定义面试时展开配置，保留现有可运行入口。
+- [x] **DEV-1 开发服务生命周期（见 7.22）**：启动进程不随调用 shell 退出被意外回收；服务就绪后再报告状态，启动失败和未就绪有明确区分。
+
+## 五、范围外与暂缓
+
+- COMPLEX_GOAL、受限 Goal 循环、最小 Preparation 计划 / 任务 / 进度，仅在四核心的实际闭环需要时进入待办。
+- 语音 Interview Focus Mode 暂缓，现有语音面试保持可用；本轮以文字面试为验收主线。
+- 不建设 Multi-Agent、Agent Marketplace、插件系统、MCP Server / UI、自动投递、招聘爬虫、Offer 管理、复杂岗位推荐、复杂 Planner / Calendar / 学习管理系统。
+- 不建设在线 Word 编辑器、大量简历模板、复杂 Dashboard、复杂观测 / 评测平台、全聊天历史向量化或自动 Memory Reflection。
+- 不以整体迁移面试引擎到 Python、重写已有 Java RAG 或重构现有语音引擎作为本轮目标；知识复习卡片等衍生功能不进入四核心范围。
+
+## 六、开发与验收入口
+
+```bash
+./scripts/dev.sh start|stop|restart|status
+./scripts/dev.sh logs [java|agent|web]
+./gradlew :app:compileJava
+./gradlew :app:test --no-daemon
+cd agent-service && uv run ruff check src tests
+cd agent-service && uv run mypy src
+cd agent-service && uv run pytest
+cd frontend && pnpm run build
+cd frontend && pnpm run test:e2e
+```
+
+命令中的 `cd` 项各自从仓库根目录执行。Java 使用项目要求的 JDK 25；开发脚本加载根目录 `.env`，显式导出的环境变量优先。按变更范围执行相关前端单元测试和集成验证；真实数据库、Redis 或模型依赖的覆盖范围须如实说明，不能用跳过的用例宣称已经验证。
+
+画像历史数据维护端点（幂等，可重复执行；都属于「不新增业务能力」的修复动作）：
+
+```text
+POST /api/profile/repair/follow-up-skills   合并「（追问N）」伪技能证据并重算画像
+POST /api/profile/repair/skip-semantics     复核「已标记作答但得 0 分」的答案是否为跳过/明确不会，
+                                            作废其证据并重算（会调用模型复核，候选集很小）
+```
+
+两个端点都返回实际改动条数（`merged` / `droppedDuplicates` / `voidedEvidences` / `recalculatedSkills` 等）供核对；第二次调用应为空操作。调用后请对照 `skill_profiles` 与 `skill_evidence` 确认分数与证据逐条对得上。
+
+设计入口：
+
+- [四核心范围](Career-Copilot-newdocs/Career-Copilot-Core-4-Features-Scope.md)
+- [Agent Graph](Career-Copilot-newdocs/Career-Copilot-Agent-Graph-Design.md)
+- [简历优化需求](Career-Copilot-newdocs/Career-Copilot-Resume-Optimization-Requirement.md)
+- [自适应面试引擎](<Career-Copilot-newdocs/Career Copilot 自适应模拟面试引擎设计文档.md>)
+- [内嵌面试交互](Career-Copilot-newdocs/Career-Copilot-Inline-Interview-Design.md)
+
+## 七、已完成能力
+
+> 以下承接原清单中已完成且未被后续问题否定的能力，不代表新的目标形态全部达成，也不代表当前提交已重新运行测试。剩余质量缺口与新能力只列在前面的待办中。
+
+### 7.1 Copilot 主入口与对话
+
+- [x] **P1-1 / P1-2** Copilot Workspace、Text / File / Action 输入、受控 Block / ChoiceBlock、Action 白名单导航及 SSE token / Tool / Run 事件。
+- [x] Java Conversation API、消息持久化、会话侧栏、活动简历 / JD 绑定与相关历史加载。
+- [x] LangGraph 主路由、意图短路、附件与 Action 路由、真实业务分支和 PostgreSQL Checkpoint；流式瞬时对象不进入 Checkpoint。
+- [x] 简历上传、重复提示、简历查询与原文读取；附件 / 指名 / 会话绑定等目标解析路径。
+- [x] Java Provider 配置向 Python 同步，支持启动同步与请求期惰性重试。
+- [x] **P1-4** 面试提案、方向 / 难度 / focus 推荐、用户确认与 `create_interview` 接入。
+- [x] **P1-5** 知识问答经既有 Java RAG Tool，返回引用与知识不足说明。
+- [x] **P1-6** 停止消息状态持久化、内联错误与重新发送、加载失败与空态区分。
+- [x] 会话重命名、置顶、归档 / 恢复和删除；会话管理与 Copilot 错误 / 停止态已有 E2E 覆盖。
+
+### 7.2 简历优化
+
+- [x] **P2-0** 结构化 Resume Version、解析状态、缺失信息提示、纠错 / 补录与 ACTIVE 确认。
+- [x] **P2-1** 读取简历版本 / Profile / JD 的优化流程、模式判定、必要澄清、JSON-path Patch、代码真实性校验及提案保存。
+- [x] **P2-2** Java Patch 应用、旧值一致性校验、确认后生成新版本、幂等保护与原版本保留。
+- [x] **P2-3** Patch 勾选、全选 / 全不选、Diff、选中项变化后的 PDF 预览及确认应用。
+- [x] **P2-4** Java / Typst PDF 预览与正式导出、字体与存储下载链路。
+- [x] **P2-5** JD 上传 / 文本创建 / 查询 / 删除、会话绑定、读取 Tool 与 JD 定向优化上下文。
+- [x] 优化模式及 `targetJobId / targetDirection` 随提案与版本持久化并在前端展示。
+- [x] 新增数字、技术栈、公司与经历事实的确定性校验；身份字段和整段经历修改限制。
+- [x] Proposal 拒绝入口、状态回显与审计；self-review 可配置、默认关闭且仅允许淘汰建议。
+
+### 7.3 能力画像
+
+- [x] **P3-1** Skill Profile / Evidence 存储、面试证据提取、幂等聚合、删除后清理与重算基础链路。
+- [x] **P3-2** Profile 查询 API / Tool、Agent 解读、前端画像与证据明细展示。
+- [x] **P3-4** 新会话加载相关技能与最近面试概要，支持跨会话上下文。
+- [x] 已确认简历的声明型技能证据同步，声明不参与数值聚合；简历删除时清理。
+- [x] 画像参与面试 focus 推荐并透传 Java 出题范围，也用于简历优化的描述强度约束。
+- [x] 指定场次画像差分 API、结果卡前后分与证据展示、时间和面试来源追溯入口。
+
+### 7.4 面试基础能力
+
+- [x] **P4-0** Copilot Interview Mode、内联配置、问答消息流、结束操作与轻量结果展示。
+- [x] 面试问答独立于普通 Conversation；Java 持久化会话，完成后向对话写入轻量摘要。
+- [x] 题目 difficulty / expectedPoints / followUpType 元数据及合并保留逻辑。
+- [x] **P4-2 / P4-3** 轻量 Turn Evaluation、结构化结果归一化、基础自适应选题和 `submitAnswer` 接入。
+- [x] 异步整场报告及报告完成后的 Evidence / Profile 更新基础链路。
+- [x] 按实际作答恢复消息、过滤未问候选追问、切会话 / 刷新恢复及主动退出防重入。
+- [x] **P4-6a** 完成后返回 Copilot，前端可通过 `REVIEW_INTERVIEW` 复盘指定场次。
+- [x] 题目合并、跳过候选追问、恢复与提前结束的基础回归测试。
+
+### 7.5 工程基础
+
+- [x] Java、Python lint / typecheck / tests、Frontend build / unit / E2E 的质量门禁已接入 CI。
+- [x] CI 使用真实 PostgreSQL 验证空库迁移与数据库集成链路；本地数据库不可用的预期跳过有明确判据。
+- [x] 前端 CSS 构建警告修复、代码高亮按需加载与大包拆分。
+- [x] 开发脚本加载 `.env` 并保留显式环境变量优先级，Java 就绪后再启动 Agent，健康探测具备超时。
+
+### 7.6 面试质量修复与上下文供给
+
+- [x] **P4Q-3a 评估不可用时保守推进**：模型失败或缺失评估返回 UNKNOWN，分数与覆盖率为空；跳过当前追问组，换主问题或正常收尾。真实回答保留为 ANSWERED，正式报告前不写占位评分，不产生虚假画像证据；正常评估、跳过和明确不会保留各自语义，相关回归已覆盖。
+- [x] **P4Q-4 评估状态闭环**：评估完成同步缓存，读取旧完成状态时回源自愈；DTO 提供 evaluateStatus / evaluateError，支持报告重试和前端轮询失败 / 超时出口，终态会话索引可清理。
+- [x] **P4Q-5 跳过与答案语义分离**：独立 skip 端点与按钮；ANSWERED / SKIPPED / DECLINED / UNANSWERED 状态落库与恢复，只有 ANSWERED 参与评分和画像证据；历史跳过证据修正与重算已完成。
+- [x] **P4Q-6 稳定技能归属**：followUpIndex 独立表达追问序号，技能名保持稳定；兼容历史后缀并合并伪技能证据，同源证据不重复计分，历史修复可幂等重跑。
+- [x] **P4Q-1a 简历统一取数与快照**：InterviewResumeContextResolver 统一明确版本、ACTIVE 版本、原文及显式文本入口；指定但不可读时返回可见原因。会话保存 resume_source / resume_version / resume_context_text，DTO 与缓存保留来源。
+- [x] **P4Q-1b 逐轮三类参照物**：TurnEvaluationRequest 接入本场相关简历片段、最近相关已作答问答和轻量画像参照，具备裁剪与缺失说明。覆盖摘要、预算和合法候选仍由第二批补齐。
+
+### 7.7 Tool 契约与 Python LLM 执行器
+
+- [x] **ARCH-1 契约单一事实源**：AgentToolRequests 类型化请求导出正式 Schema，Java / Python 两侧校验未知参数、类型与约束；Java 导出产物、文档 golden 和 Python 包内副本由漂移测试校验。
+  - 契约产物：`docs/contracts/agent-tools.json` 与 `agent-service/src/career_copilot/contracts/agent-tools.json`。
+  - 再生成：`AGENT_TOOLS_SCHEMA_WRITE=true ./gradlew :app:test --tests "*AgentToolContractTest*"`，再将文档产物同步到 Python 包内副本并运行两侧契约测试。
+  - 已接入简历、focus 等参数行为测试；时间 / 节奏相关参数随第二批补测（逐轮幂等由前端直连 Java、不经 Agent Tool，见 7.8）。
+- [x] **创建面试请求幂等透传**：前端确认流程生成稳定 requestId，Python 传至 Java；配置变化换新标识。此项仅覆盖创建，逐轮提交一致性见 P4-9a。
+- [x] **ARCH-2a Python 执行器与 Prompt 治理**：模型调用收敛到 LlmExecutor，结构化解析与契约校验、错误分类、结果状态、逻辑尝试次数和耗时可观测；Prompt 资源具有 ID 与版本，流式不由执行器重放。
+  - 每操作共享截止时间、底层 SDK 重试配置及 Java 实时评估治理已在 ARCH-2b 收口（见 7.9）；端到端延迟是否达标仍需实测，见 P4-9b，不能据此宣称延迟已满足目标。
+
+### 7.20 文档同步与可靠性回归（DOC-1 / 契约行为回归 / 可靠性回归）
+
+- [x] **DOC-1 文档同步**：设计文档三处过时约束改为落地口径——
+  §4 稳定性边界去掉「题目数量」，补齐追问预算 / 必要覆盖 / 「模型等待不计时间」；
+  §38 会话状态示例换成真实字段（plannedDurationMinutes / consumedSeconds / requiredTopics /
+  focusCategories / candidateVersion），并写明「候选素材与实际轮次分离、计数与覆盖实时推导」；
+  追问上限伪代码补上「运行期预算 = min(组内未问候选, 上限 − 已问)」。
+  另按 `固定题数 / 题数配额 / 列表耗尽 / currentQuestionIndex / questions_json / totalQuestions`
+  全量扫描 docs 与 `.claude/rules/`，除 TodoList 的历史记录外无残留。
+- [x] **契约行为回归（字段真的影响业务）**：新增 `InterviewPlanBoundaryTest` 5 例——
+  预算用尽按 `BUDGET_EXHAUSTED` 收束且不再出下一题、**覆盖达标且模型建议收束**才按
+  `COVERAGE_SATISFIED` 结束、覆盖达标但模型没建议收束时继续推进（覆盖不单独掐断面试）、
+  覆盖未完成正常推进、旧会话无计划不被新边界误伤。
+  顺带确认了收束语义的真实形状：**模型建议 + Java 覆盖校验**是「与」关系，不是覆盖单独触发。
+- [x] **可靠性回归**：新增 `RedisSessionCacheIntegrationTest`（真实 Redis，3 例）——
+  候选 / 轨迹 / 计划 / 耗时穿过 Redisson 编解码往返（P4-1、P4Q-2、P5-2 新增字段一漏就丢）、
+  会话键有 TTL、缓存缺失返回空而非抛错；配套新增 `LocalRedisGate`（Redis 不可达整类跳过，
+  与 LocalDatabaseGate 同一套判据；@SpringBootTest 启动仍需数据库，故判据是二者同时可用）。
+  晚到模型结果补上断言（`InterviewTurnConsistencyIntegrationTest` 新增 1 例）：
+  当前代次可领取（同代次重投＝重试路径仍允许）、**旧代次被丢弃**、报告已完成后不再领取。
+  缓存旧状态 / 报告失败 / 重复提交 / 并发结束 / 历史修复 / 画像重算由既有测试覆盖。
+- [x] **已验证**（2026-09-20，本机）：`:app:test` 全绿（含真实 DB 与真实 Redis 两类集成测试）；
+  Python `ruff` / `mypy` / `pytest` 159 通过；前端 `build` + 13 个 `test:*`（76 例）+ `test:e2e` 14 例全绿。
+- [x] **P6-1 异步与失败体验统一**：
+  - 共享契约：`utils/asyncFlow.ts` 统一 loading / completed / empty / failed / timeout，
+    五种失败**彼此不混**（`task_failed` 任务失败 / `dependency_failed` 依赖不可用 /
+    `timeout` 等待超时 / `load_failed` 界面取数失败 / `user_stopped` 用户停止）；
+    `retryable` 按类别决定，统一阈值为 2 分钟，**无时间戳不猜超时**。
+  - 刷新后仍可判定：新增 V20260927，将简历分析、知识库向量化、文字面试评估的
+    `statusUpdatedAt` 持久化且在每次状态转移刷新；直接 JPQL 抢占 / 重试路径同步更新，
+    前端不再依赖页面内计时器推测后端状态。
+  - 流程收口：题目生成、简历分析 / 历史、知识库向量化、文字 / 语音面试评估、
+    知识库面试收尾、Copilot 消息态均使用共享语义；超时停止轮询并给重试，
+    用户主动停止不伪装成失败且不给「重新发送」。
+  - 可见语义：列表取数失败不再被吞成空列表；已有数据在轮询失败时保留并给警告；
+    依赖故障与业务任务失败分开；完成但无产物显示为空结果；不回显可能含连接信息的后端原始错误。
+    同时移除「分数过低即分析失败」的启发式，低分结果不再被误报。
+  - 重试与幂等：重试仍走原 Java API 及既有幂等 / 状态抢占边界；
+    `InterviewTurnConsistencyIntegrationTest` 覆盖同代次重投可重试、旧代次丢弃和报告完成后不再领取。
+  - 验证（2026-09-20，本机）：Java `:app:test` 注册 617 例、0 失败，47 例按环境条件跳过；
+    与本批相关的真实 DB / Redis 集成测试 8 例全部执行，V20260927 在集成启动中实际迁移。
+    Python `ruff` / `mypy src` / `pytest` 159 例通过；前端 `build` + 15 个 `test:*`（92 例）+
+    `test:e2e` 14 例通过。
+
+### 7.22 产品收尾与停止标准（P6-4 / P4-7 / DEV-1）
+
+- [x] **三条闭环的恢复与失败矩阵补齐**：简历闭环新增「确认前取消不写入、PENDING / REJECTED
+  刷新回放、Preview 依赖失败与显式重试」；画像侧栏新增失败时不展示旧数据及「重试画像」，成功后回到
+  Java Evidence。结合既有面试成功 / 取消 / 提前结束 / 刷新恢复 / 报告失败重试，以及 Copilot 会话
+  停止态、历史加载失败重试，三条 P5 闭环已覆盖成功、取消、刷新恢复、依赖失败和重试。
+- [x] **真实数据 UI 收口**：求职上下文删除示例目标、虚假 `72%` 与「今日任务 · 示例」，只展示会话绑定的
+  简历 / JD 和 Java 权威画像；未绑定资源使用真实空态。推荐依据、Patch 写确认、报告覆盖和逐题 Evidence
+  均可从 UI 直接核对。
+- [x] **P4-7 面试入口**：`/interview-hub` 首屏只展示最近文字 / 语音面试；「发起自定义面试」由用户主动展开，
+  可再次收起，原文字 / 语音创建路径保持可用。新增浏览器回归固定默认折叠、展开、收起和最近场次跳转。
+- [x] **DEV-1 生命周期**：macOS 用临时 `launchd` 任务托管三个开发服务，调用 shell 结束后仍存活；其他平台
+  保留 stdin + `nohup` / PID 回退。托管记录和日志按服务 + 端口隔离；`start` 逐个等待 Java / Agent / Web
+  健康端点，端口冲突报「启动失败」，进程存活但超时报「未就绪」，`stop` 同时卸载托管任务与释放端口。
+- [x] **真实模型 + Redis Stream Demo**（2026-09-21，`deepseek-v4-flash`，无手工改库）：Copilot 从真实画像
+  读到 MySQL 44、Spring 59 及未验证技能，给出依据与 20 分钟配置；用户确认后创建会话
+  `5220887ae7444425`，真实模型评估线程池回答并从 Java 路由到 MySQL。提前交卷后评估任务进入 Redis
+  Stream（messageId `1789956441760-0`），消费者生成 78 分报告，页面如实标明 MySQL / Spring 未考察，
+  Java Evidence 写入画像并可追溯到第 1 题，Copilot 基于同一场次完成复盘。7.21 的真实简历 → JD →
+  Gap / Patch → V2 → PDF 与本次画像 / 面试 / 复盘共同满足三条闭环演示；全程从 UI 操作。
+- [x] **停止标准结论**：四核心当前无已知严重主流程缺陷；自动化失败 / 恢复矩阵与真实三闭环均通过，
+  写操作均保留用户确认，推荐、Gap、报告和画像均有依据。后续需求进入新阶段，不再以扩建 Planner、
+  Preparation 或附加平台能力阻塞当前四核心收口。
+
+### 7.21 简历闭环与优化建议可解释性（P5-1 / P2 / P6-2）
+
+- [x] **独立 JD Gap**：JD 定向优化必须先成功读取目标 JD，并产出独立的 `resume_gap_analysis`；
+  每条要求区分已匹配 / 部分匹配 / 缺失 / 无法确认，携带简历原文证据、投递影响和待核实事实。
+  Gap 快照与提案一起由 Java 持久化；JD 读取失败或模型未返回 Gap 时不保存伪定向提案。
+- [x] **Patch 可解释且失败诚实**：每条 Patch 展示修改原因、依据、影响范围与待核实事实；旧模型缺字段时
+  只从原值 / 新值和 path 补齐可证明的信息，不编造业务事实。模型调用或结构化解析失败时明确显示
+  「未得到可验证 Gap / Patch，简历未修改」，不再落成「无需优化」。真实模型把单条数组字段返回字符串时
+  在协议边界归一；Prompt 明确数组字段不能使用布尔值。
+- [x] **选择、预览、确认和版本同源**：同一组选中 Patch 驱动 Diff 与 PDF Preview；写入前有独立二次确认，
+  明确原版本不覆盖。确认后仅应用选中项生成新版本，版本保留优化类型与目标 JD，可从版本列表导出 PDF。
+  前端 JD 附件补齐 `jobId → job_id` 协议映射，避免上传成功但 Agent 取不到 JD。
+- [x] **真实模型与视觉验收**（2026-09-20，本机，`deepseek-v4-flash`）：真实简历 + 独立验收 JD 生成
+  6 条 Gap 对照与 4 条安全 Patch，另有 3 条不合规建议被校验器剔除；页面实际展示证据、影响和待核实事实，
+  两页 PDF Preview 排版正常。取消 1 条后，预览请求只包含其余 3 条；二次确认与应用保持 3/4，生成 V2，
+  三条选中修改进入新版本，未选中的工程能力修改保持原文，V1 保留，V2 PDF 导出成功。
+- [x] **自动化回归**：Java `:app:test`、Python `ruff` / `mypy src` / `pytest`、前端 `build` / 全部 `test:*` /
+  `test:e2e` 全绿；新增 E2E 固定验证 Gap → Patch → 选择 → Preview → 二次确认 → V2 → PDF 闭环，
+  并新增 JD 附件协议与真实模型单值数组归一测试。
+
+### 7.19 三个闭环：画像可追溯、Copilot 串联、面试 E2E（P5-2 / P5-3 / P6-4）
+
+- [x] **P5-2 变化可追溯**：提案重点（focus）此前只在出题那一刻被消费、不落库，
+  面试结束后没人说得清「为什么这场重点考了这些」。新增 `focus_categories_json`（V20260926）
+  与计划同批写入，会话 DTO 一并暴露。
+  新增 `ProfileDrivenInterviewLoopIntegrationTest`（真实 DB）把整条链路一次性钉住：
+  计划快照（focus / 必要覆盖 / 时长）→ 两轮推进（含收束与 `endReason`）→ 报告 → 证据
+  （`sourceId = sessionId:questionId`，逐轮可追）→ 画像差分（首次考到无假涨幅）。
+  测试用探针技能名与真实数据隔离；报告为等价载荷、证据显式保存，链路验证不依赖模型输出质量。
+- [x] **P5-3 Copilot 闭环**：新增 `tests/test_copilot_loop.py` 四例，验证「串起来之后仍然成立」：
+  画像读取的回答给出可执行下一步（并区分已验证 / 仅声明）→ 下一轮自然语言点名能把该技能
+  变成提案的重点与必要覆盖（模型没给 focus 时由画像候选兜底）→ 创建得到的 sessionId 能带着去复盘
+  → 缺 sessionId 时明确要求指定场次而不是随机复盘。
+  顺带补齐：提案依据改为解释**实际推荐的重点**（用户指定优先，否则用推导后的首个重点），
+  否则「建议补强 X」到提案卡上只剩一句泛泛推荐理由。
+- [x] **P6-4 面试闭环 E2E**：新增 `e2e/interview-loop.spec.ts` 三例——
+  **成功**（逐轮作答 → 末题自动收束 → 报告卡）、**用户取消**（调整配置后取消：面板收起、
+  提案仍在、**一次创建请求都不发**）、**依赖失败与重试**（报告失败给出原因与
+  「重新生成报告」入口，点后重新入队并拿到结果，不停在「评估中」）。
+  提前结束、刷新恢复、复盘与画像刷新已由 `interview-restore.spec.ts` 覆盖。
+- [x] **已验证**（2026-09-20，本机）：`:app:test` 全绿（新增真实 DB 闭环测试）；
+  Python `ruff` / `mypy` / `pytest` **159 通过**；前端 `build` + 13 个 `test:*`（76 例）
+  + `test:e2e` **14 例**全绿。
+- 尚未验证：整条闭环在**真实模型 + 真实 Redis 流**下的端到端演示（现有 E2E 用桩驱动，
+  真实链路的一次完整演示属 Demo 停止标准的范畴）。
+
+### 7.18 画像驱动建议（P4-6b / P6-3）
+
+- [x] **画像低分项一键定向**：侧栏画像里每个已评分技能可「定向补强」，待验证技能直接可点；
+  触发 `START_INTERVIEW` 动作并带 `focusSkill` 载荷 → 提案节点把它是**用户的明确选择**处理：
+  对得上本方向分类就置顶进「重点 + 必要覆盖」（Java 的覆盖硬边界据此真正考察它），
+  对不上则如实说明「不在推荐方向的考察分类里」，**不悄悄换一个考不到的重点**。
+- [x] **配置展示推荐依据**：提案块新增 `reasons`，由 `profile_reasons_for` 从画像数据
+  确定性拼装（分数 / 证据条数 / 最近考察时间 / 仅声明未验证 / 用户指定），**没有依据时为空列表、
+  前端整节不渲染**——空标题会被误读成「没理由也推荐」。
+- [x] **报告完成后侧栏画像刷新**：报告完成（status → completed，证据此刻已落库）时
+  CopilotPage 让刷新令牌 +1，侧栏画像随之重取。用户刚看到「本场画像变化」而旁边画像纹丝不动，
+  是最容易让人不信任的一类不一致。
+- [x] **Copilot 建议消费差分与 Evidence（P6-3）**：`profile_query` 从画像证据里取最近一场面试的
+  sessionId，再读 Java 已经算好的 `/profile-impact`（前端结果卡用的是同一端点，不新增 Tool）；
+  上下文按「可宣称的事实」组织：已评分技能给分数与证据数、仅声明技能标为未验证、
+  差分只取 Java 的 before/after/delta。首次考到（无历史基线）明确「不谈涨幅」，
+  差分读不到时退化为画像事实、不编造。
+- [x] **无依据不宣称**：上下文里显式写明「没有证据的技能不要描述其水平或提升（仅简历声明 ≠ 已验证）」；
+  待验证技能与已验证技能在侧栏、画像块、建议素材里都分开呈现。
+- [x] **已验证**（2026-09-20，本机）：Python `ruff` / `mypy` / `pytest` **155 通过**
+  （新增 `tests/test_profile_driven_advice.py` 10 例：依据只陈述事实、声明型不出现分数、
+  定向技能置顶进必要覆盖、方向不匹配时如实说明、差分呈现与降级、无数据如实说明）；
+  `:app:test` 全绿（本批未改 Java）；前端 `build` + 13 个 `test:*`（76 例）+ `test:e2e` 11 例全绿。
+- 尚未验证：**真实链路**一次「侧栏点定向 → 提案 → 创建 → 面试 → 报告 → 侧栏画像刷新」端到端
+  （需要真实 Java + Redis + 一场面试），属 P6-4 / P5-2 的口径。
+
+### 7.17 面试上下文对 Agent 可见（P4-10）
+
+- [x] **Java 侧新读路径 `get_interview_progress`（READ）**：入参 `sessionId` + 可选 `questionId`，
+  返回当前话题、必要覆盖逐项状态、剩余时间与追问预算、已发生轮次摘要、下一步合法候选，
+  指定 `questionId` 时额外给该轮完整问答与评估。
+- [x] **复用而非另起一份事实源**：进展由 `InterviewSessionService.getSession`（P4-1 候选/轨迹、
+  P4Q-2 计划与预算）+ `TurnEvaluationService` 的覆盖/预算/合法候选推导函数（与逐轮评估、
+  收束硬边界同源）组装；Python 只做裁剪与措辞，业务判断仍在 Java。
+  覆盖与预算以多行摘要给出，因此 Agent 说的「还差什么」与 Java 是否按覆盖收束不会分叉。
+- [x] **只读且按需**：不推进会话、不写缓存、不触发评估；Agent 需要时才调，
+  面试逐轮循环本身不依赖 Graph（不把每轮接回主 Graph）。
+- [x] **前端→后端的新通道**：`ChatRequest.active_interview_session_id`（Interview Mode 里随消息带上）
+  → Graph 初始状态 → `INTERVIEW_REVIEW` 意图：带会话时读实时进展，不带时仍走原「历史 + 报告」路径。
+  读取失败时明说原因（会话可能刚结束），不静默降级成「你还没有面试记录」。
+- [x] **契约同步**：新增 Tool 后按 7.7 的方式重导出，`docs/contracts/agent-tools.json` 与
+  Python 包内副本一致（14 个 Tool），两侧契约测试与漂移检查通过。
+- [x] **已验证**（2026-09-20，本机）：`:app:test` 全绿（新增 `InterviewProgressServiceTest` 4 例、
+  工具注册表 14 项断言）；Python `ruff` / `mypy` / `pytest` 145 通过（新增
+  `tests/test_interview_progress.py` 6 例，覆盖摘要渲染、缺数据标注、实时分支、失败说明、
+  不带会话时不误读进展）；前端 `build` + 13 个 `test:*` + `test:e2e` 11 例全绿。
+- [x] **顺带修掉的红基线**：第三批与 P4-5 之后，`interview-restore` 的 3 个用例仍用旧的报告桩
+  （只有 overallScore / categoryScores），而结果卡已改读覆盖明细、评分规则版本与聚合说明，
+  渲染时抛错导致页面空白。桩已按新契约补齐——**这是测试夹具欠账，不是应用缺陷**。
+
+### 7.11 覆盖与时间驱动的计划状态（P4Q-2 批 2a）
+
+- [x] **创建契约改为「时长 + 必要覆盖」**：`CreateInterviewRequest` 新增
+  `plannedDurationMinutes`（5-120 分钟，缺省 20）与 `requiredTopics`；
+  `questionCount` 降级为兼容字段（按每主问题 4 分钟折算成时长，Agent 等旧调用方在 P4-8a 前不掉规模意图）。
+  主问题规模 = `时长 / 4`（夹取 3-12），同一计划因此产生不同题数。
+- [x] **覆盖状态不落库，由实际轨迹推导**：候选池（P4-1 素材）× 实际轮次已足以还原
+  「每个话题问没问、怎么答的」，再存一份覆盖快照只会与轨迹漂移。
+  会话只保存计划（`planned_duration_minutes` / `required_topics_json`）。
+  「无实习经历不强行问实习」由结构性事实保证：候选池里没有的话题不会生成题目。
+- [x] **时间记账以服务端为准**：`question_presented_at` 记「当前题展示时刻」，
+  提交时在**同一次条件更新**里累计 `consumed_seconds += 展示→提交的墙钟 − 本轮模型评估耗时`，
+  并刷新下一题展示时刻；收束后清空展示时刻。模型/网络等待与暂停不扣用户预算。
+  预算随推进响应载荷带回，前端刷新顶栏不再多发会话请求。
+- [x] **结束原因补齐两种真实来源**：`COVERAGE_SATISFIED`（必要覆盖完成）与
+  `BUDGET_EXHAUSTED`（预算用尽，只算答题时间），连同既有的 CANDIDATES_EXHAUSTED / USER_FINISHED，
+  本轮 `decidedAction` 与会话 `endReason` 一一对应，复盘说得出「这场为什么结束」。
+  未声明必要覆盖的场次不以「覆盖完成」收束（避免主问题问完就掐掉追问深挖）。
+- [x] **用户调整剩余时间当轮生效**：`POST /sessions/{id}/budget`（planned = 已用 + 用户声明的剩余），
+  数据库与缓存一起更新，下一轮提交的收束判定立即按新预算执行。
+- [x] **前端顶栏**：有计划的场次显示「剩余 N 分钟」（本地秒级递减、每轮从服务端权威值重起算）
+  与调整入口；无计划的旧会话保留原墙钟展示，不编造预算。
+- [x] **已验证**（2026-09-18，本机）：`:app:test` 全绿（含迁移 V20260922 真跑）、
+  前端 `build` + 13 个 `test:*` + `test:e2e` 11 例全绿。
+  尚未验证：多轮真实链路下的时间累计精度（依赖 2b 与实测，属 P4-9b 口径）。
+
+### 7.12 覆盖 / 预算 / 合法候选进入逐轮决策上下文（P4Q-2 批 2b，P4Q-1 收尾）
+
+- [x] **`TurnEvaluationRequest` 新增三类决策上下文**：`coverageSummary`、`budgetSummary`、
+  `legalCandidates`。全部由 Java 从**计划 × 候选池 × 实际轨迹**确定性推导，不接收模型自述；
+  修复等无会话上下文场景保持空值，由提示词给可读占位（「没有提供覆盖上下文」等），
+  不以空字段宣称已接入。
+- [x] **覆盖摘要不落库、实时推导**：必要覆盖逐项给出 `已覆盖 / 本轮正在考察 / 未覆盖`；
+  已问话题带轮次与未作答数（「问过」与「答了」分开）；尚未问的话题直接对应可转场去处。
+  与 Java 收束硬边界共用 `InterviewQuestionDTO.matchesTopic`，模型看到的覆盖状态与
+  是否按 `COVERAGE_SATISFIED` 收束不会分叉。
+- [x] **时间与追问预算有真实来源**：评估时刻剩余时间 = 计划 − 已提交用时 − 当前题已展示墙钟
+  （不预估本轮模型耗时，模型等待不扣预算，只会略保守）；追问预算 = 当前追问组剩余未问题数
+  （与 `AdaptiveInterviewPolicy` 同口径，其他组的预置追问不计入）。
+  追问预算为 0 或旧会话无计划时明确说明，不编造默认额度。
+- [x] **合法候选与策略对齐**：本组剩余追问 + 尚未问过的主问题，带稳定标识 / 类型 / 话题 / 难度；
+  其他追问组的预置追问不在列（策略到不了），截断时说明剩余条数。
+- [x] **提示词消费上下文**：user prompt 新增三个 section；system prompt 要求
+  `recommendedFocus` 落在合法候选内、预算为 0 / 时间不足时转向尚未覆盖的话题，
+  并禁止编造缺失的覆盖 / 预算 / 候选。
+- [x] **已验证**（2026-09-18，本机）：`./gradlew :app:test --no-daemon` 全绿；
+  新增 `TurnEvaluationContextTest` 覆盖摘要 / 预算 / 合法候选 15 例与占位渲染，
+  `InterviewSessionAdaptiveTest` 新增真实数据接线断言（计划 + 用时 + 必要覆盖 →
+  上下文出现对应内容）。未做真实模型链路：本轮只改上下文构造，端到端质量与延迟影响属 P4-9b。
+
+### 7.13 动态主循环与 Interview Mode 最小闭环（P4Q-2 / P4Q-3b / P4-8a）
+
+- [x] **一次逐轮语义调用给出可执行建议**：Turn Evaluation 在既有质量、覆盖与缺口之外，
+  同时返回 `recommendedAction`、候选题目标识、决策依据和可选承接语。充分回答可直接转场，
+  只有存在关键缺口才追问；必要覆盖完成且没有继续提问收益时才允许语义收束。
+- [x] **Java 保留最终决定权**：校验候选归属、稳定标识、去重、回答状态、必要覆盖与时间预算；
+  非法建议退回确定性选题，预算等硬边界改写动作时丢弃不一致承接语。必要话题进入预留窗口后，
+  优先选择尚未覆盖的主问题；覆盖完成不再机械掐断仍有价值的追问。
+- [x] **逐轮决定可恢复、可审计**：`interview_answers` 保存实际下一题、最终依据和实际展示的承接语；
+  Session 轨迹、历史详情与前端刷新恢复消费同一事实。未被 Java 接纳的模型说法不落库。
+- [x] **Agent 创建契约完成迁移**：提案、结构化 Block、Python BackendClient、Java Tool 与生成 Schema
+  统一使用预计时长、重点和必要覆盖，不再向 Agent 暴露固定题数；分类 key 与展示名共用覆盖匹配，
+  候选池不存在的话题在创建后剔除。
+- [x] **Interview Mode 展示真实状态**：顶栏显示当前话题、实际轮次、已用 / 剩余时间与必要覆盖；
+  覆盖明细逐项显示已覆盖 / 待覆盖，并打通换话题、调整剩余时间和结束。提交响应与刷新都能恢复承接语、
+  覆盖、预算和实际轨迹，旧会话无计划时不编造覆盖与预算。
+- [x] **已验证**（2026-09-18，本机）：Java `:app:test` 全绿；Python `ruff` / `mypy` / `pytest`
+  全绿（139 例）；Frontend build、13 组 `test:*` 与 Playwright E2E 全绿。Tool Schema 已由 Java 重新导出并
+  同步至 Python 包内副本。真实模型下的成对质量样例与 P95 延迟仍属于 P4-9b，不在本批虚报。
+
+### 7.9 实时调用治理收口（ARCH-2b）
+
+- [x] **重试责任只有一层**：Python 侧 `ChatOpenAI(max_retries=0)`、Java 侧 `spring.ai.retry.max-attempts=1`
+  都是显式配置；Java 实时档禁用 schema advisor 内部模型修复，改为单次响应后本地解析 / 引号修复，
+  因而 `LlmResult.requests` 与实时 `StructuredOutputInvoker.attempts` 都是实际模型请求数。后台档仍允许 schema
+  validation，其 attempts 只表示本封装的逻辑尝试次数，不作为上游计费口径。
+- [x] **一次操作共享一个截止时间**：Python `LlmExecutor` 用 operation deadline，解析重试只能用剩余预算，
+  剩余低于 `llm_min_attempt_ms` 时不再发起（该下限不超过预算的一半，小预算不会被下限吃光）；
+  Java `StructuredCallPolicy` 承载同一语义，逐题评估按 `structured-realtime-*` 的预算执行，超时即降级为 UNKNOWN。
+- [x] **失败按类别降级**：Python TIMEOUT / RATE_LIMITED / PARSE_FAILED / UPSTREAM；
+  Java TIMEOUT / PARSE_FAILED / UPSTREAM 进日志与指标 tag（`kind`），并把「预算用尽」与
+  「模型不合契约」分开表达（含 `budget_exhausted` / 错误信息后缀）。
+- [x] **输入输出长度有上限**：Python 输入超上限时截断最后一条消息并留可读标记、结构化输出 `max_tokens` 封顶
+  （自由文本与流式不截断用户可见答案）；Java 逐轮上下文沿用既有裁剪（回答 3000 / 简历片段 800 / 最近 2 轮）。
+- [x] **实时与后台不同预算**：实时档（意图分类、面试逐轮评估）`structured-realtime-budget-ms` 默认 8s、
+  尝试上限 2；后台档默认不限（异步任务允许慢，由 HTTP 超时兜底），并可通过配置收紧。
+- [x] **流式不自动重放**：执行器不重试流式调用（既有行为，本次在两侧文档与测试中固化）。
+- [x] **已验证**（2026-09-18，本机）：
+  - Python：`ruff` / `mypy` / `pytest`（139 通过）。新增用例覆盖「首次尝试吃掉大半预算后不再重试」
+    「预算充足时仍按剩余额度重试」「输入截断与输出封顶」「SDK 重试为 0 的断言」。
+  - Java：`:app:test` 全绿，新增 `StructuredOutputInvokerTest` 5 例（预算耗尽不再重试、
+    超时按预算收敛且等待不随 HTTP 超时走、parse_failed 用满尝试次数、后台档不受预算约束）。
+  - 真实链路（自起 8082 实例，用完即停，未碰 8081）：向自适应探针会话提交一次真实作答，
+    端到端 831ms 完成逐题评估并返回下一题，`turnVersion` 正常推进（顺带回归了 P4-9a 的提交链路）。
+    单次样本只用于确认预算没有卡住真实调用，P95 口径的实测属 P4-9b。
+  - P4-9b 已在 2026-09-20 完成 20 组正常 / 20 组故障真实链路实测，结果见 7.15。
+
+### 7.8 逐轮提交幂等与推进一致性（P4-9a）
+
+- [x] **请求标识 + 预期版本 + 单事务落库**：逐轮提交（作答 / 跳过 / 结束）带请求标识与预期会话版本；
+  `interview_sessions.turn_version` 随每次推进 +1，条件更新同时校验「版本 / 当前待答题 / 会话仍在进行中」，
+  影响 0 行即拒绝。答案事实、索引、状态、评估请求与幂等记录在**同一个短事务**里提交，模型调用仍在其外。
+- [x] **幂等记录表 `interview_turn_requests`**（`V20260919`）：`(session_id, request_id)` 唯一，保存动作、载荷指纹、原结果与前后版本。
+  已处理请求返回原结果；同一标识换了载荷返回 `INTERVIEW_TURN_REQUEST_CONFLICT`；
+  处理中重复请求由 Redis 占位拒绝（`INTERVIEW_TURN_IN_PROGRESS`），不再重复花模型调用。
+- [x] **旧调用兼容与结束边界**：不带标识时退化为「索引 + 状态」闸门（版本取数据库当前值）；
+  已结束的会话一律拒绝，不再出现「提交把 COMPLETED 写回 IN_PROGRESS」。
+- [x] **缓存跟随提交并可自愈**：题目列表 / 索引 / 状态 / 版本在提交成功后一次写齐；版本或待答题不匹配时，
+  先用数据库实体重建缓存再返回可见原因（`INTERVIEW_TURN_STALE` / `INTERVIEW_TURN_INDEX_MISMATCH`）。
+- [x] **评估触发不重复产生业务效果**：`evaluate_epoch` 随 Stream 消息投递，消费端原子领取「代次一致且未完成」的任务，
+  代次落后的触发直接丢弃；重试先把评估状态置回 PENDING 再入队（否则领取判据会让重试静默无效）。
+- [x] **前端接入**：Interview Mode 的提交 / 跳过 / 结束生成请求标识（同一次提交的重试复用同一标识）并回传 `turnVersion`；
+  请求层保留业务错误码，过期类错误触发回源同步并给出可见提示。
+- [x] **已验证**（2026-09-18，本机）：
+  - Java：`./gradlew :app:test --no-daemon` 全绿，其中 `InterviewTurnConsistencyTest` 11 例（幂等 / 冲突 / 过期 / 处理中 / 已结束 / 非当前题）、
+    `InterviewTurnConsistencyIntegrationTest` 4 例**真跑本地 dev 库**（重复推进只生效一次且只留一行答案、版本不符的提交不落任何写入、
+    最后一轮的状态与评估请求同批落地、晚到提交无法重开已结束会话）；`SkillProfilePipelineIntegrationTest` 复用同一数据库门控类。
+  - 前端：`pnpm run build`、13 个 `test:*` 脚本（新增 `test:interview-turn-sync` 并已同步进 CI）、`pnpm run test:e2e` 11 例通过。
+  - 集成测试抓到并修掉一处被 mock 掩盖的缺陷：提前交卷曾按「普通作答」推进（把已结束的会话写回 IN_PROGRESS + 移动索引）。
+  - 逐轮提交由前端直连 Java，不经 Agent Tool，因此本次没有新增契约产物。
+
+### 7.10 候选素材与实际轮次分离（P4-1）
+
+- [x] **稳定题目标识与语义归属**：候选使用 `questionId / parentQuestionId` 表达身份和父子关系，
+  `topic` 表达「项目经历」等交流话题，`category` 保留「Java」等考察技能；difficulty、expectedPoints、followUpType
+  等既有元数据继续保留。旧候选按原 questionIndex 派生稳定兼容标识，排序变化不再改变身份。
+- [x] **候选池与实际轨迹独立**：会话契约分别返回只读 `candidates`、实际发生的 `turns` 及当前题；
+  答案事实保存 questionId、turnOrdinal 和 decidedAction。只有真正展示并提交、跳过或明确不会的题进入轨迹，
+  未问候选不再被历史恢复或报告补写伪造成实际轮次。
+- [x] **恢复、报告与画像统一按真实轮次关联**：缓存与数据库恢复当前 questionId 和 turns；正式报告只评价实际作答，
+  跳过、拒答和未回答保留轨迹语义但不参与技术评分；Evidence / Profile 使用稳定题目标识，前端刷新后以 questionId
+  合并候选元数据，继续展示正确的话题、追问关系和轮次状态。
+- [x] **旧会话兼容与数据修复**：`V20260920` 增加题目标识和轮次字段，`V20260921` 修正旧报告曾为未问候选生成的
+  UNANSWERED 轮次并收紧 questionId 约束；旧客户端仍可用索引提交，旧会话可回放与继续。历史 UNANSWERED 无法可靠区分
+  真实空答与旧补写记录，因此迁移保守地不把它们计入实际轨迹。
+- [x] **已验证**（2026-09-18，本机）：`./gradlew :app:test --no-daemon` 全绿；前端相关单元测试 31 例通过，
+  `pnpm run build` 通过；新增迁移已在本地 PostgreSQL 成功执行，`git diff --check` 通过。
+
+### 7.14 受限生成、候选多样性与完整节奏控制（P4-4b / P4Q-3c / P4-8b）
+
+- [x] **Selection-before-Generation 收口：同轮受限生成**：逐轮语义调用在既有质量 / 覆盖 / 缺口 / 动作之外，
+  新增 `FOLLOW_UP_GENERATED` 与 `generatedFollowUp / generatedExpectedPoint / generatedAnswerBasis`。
+  仅当关键缺口存在、追问预算 > 0 且合法候选里没有匹配缺口的追问时才生成，且必须携带考察点与逐字引用的
+  回答依据；`AdaptiveInterviewPolicy` 校验预算 / 去重 / 依据 / 长度后接纳，否则退回选择或转场。
+- [x] **生成题与推进同一短事务落库**：被接纳的生成追问由会话服务构造成正式候选（`parentQuestionId` =
+  当前话题组、`category/topic` 继承当前题、来源 `MODEL_GENERATED`、盖新代次），通过
+  `InterviewTurnCommit.newQuestionsJson` 在 `applyTurn` 命中版本后由 `persistGeneratedCandidates` 同事务写回
+  `questions_json`；缓存 `applyTurnState` 同步含新题的候选池。恢复、报告与证据按 `questionId` 天然复用，
+  不新增旁路；`interview_turn_requests` 重放返回含同一生成题的原结果，重试不重复追加。
+- [x] **候选多样性与容量≠预算**：`InterviewQuestionDTO` 追问类型新增 TRADEOFF / FAILURE / CONTRIBUTION，
+  出题提示词要求每组追问覆盖 ≥ 3 类且「素材池不是必答清单」。`InterviewQuestionProperties` 拆分
+  `followUpCandidateCount`（池容量）与 `followUpCount`（每组追问预算）；`remainingFollowUpsFor` 与策略统一为
+  `min(组内未问候选, 每组上限 - 本组已问追问数)`。
+- [x] **候选来源 / 代次与后台异步预备**：`interview_sessions` 新增 `candidate_version`（迁移 `V20260924`）；
+  进入新主问题且本组素材低于阈值时投递 `CandidateStreamProducer` 任务，`CandidateStreamConsumer` 在事务外
+  局部补题、去重、以 `BACKGROUND` 来源回写；回写走 `candidate_version` 乐观闸门，代次落后（已推进 / 换话题 /
+  结束）直接丢弃。预备失败不影响实时循环。
+- [x] **节奏指令与难度分离**：逐轮评估新增 `difficultyAdjust` 与 `stopDeepDive`，与 `score/answerState/skipRequested`
+  分开判定——技术答案里夹带节奏指令不吞掉有效证据，含实质内容的「不会发生死锁」不被误判为跳过；
+  `stopDeepDive` 命中时软转场到下一主问题并保留本轮证据（状态仍 ANSWERED）。显式难度调整走新端点
+  `POST /sessions/{id}/pace`（`InterviewSessionEntity.difficulty_preference` 仅本场、不写长期画像），下一轮选题
+  按偏好接近难度。
+- [x] **前端 Interview Mode 接入**：顶栏新增「简单一点 / 难一点」确定性节奏动作；受限生成的追问作为普通
+  下一题渲染并带来源标记，恢复时按 `questionId` 合并进实际轨迹；Java 否决建议时不展示承诺继续深挖的文案。
+- [x] **已验证**（2026-09-18，本机）：Java `./gradlew :app:test --no-daemon` 全绿（含 `V20260924` 迁移真跑、
+  `AdaptiveInterviewPolicyTest` 新增 5 例覆盖生成接纳 / 依据缺失回退 / 预算用尽不消费候选 / 停深挖 / 难度偏好、
+  `TurnEvaluationServiceTest` 新增生成与节奏归一、不-误判-跳过、预算裁剪，及 `InterviewSessionAdaptiveTest`
+  生成题落库断言）；前端 `pnpm run build` 与 `test:interview-turns`（16 例）通过。真实模型联合验收已在
+  2026-09-20 补齐，见 7.15。
+
+### 7.15 面试质量与响应速度联合验收（P4-9b）
+
+- [x] **可重复的真实链路夹具**：新增 opt-in 的 `InterviewLiveAcceptanceTest`，固定简历、候选池与 10 组
+  「只回答堆、遗漏栈」/「堆栈均回答充分」成对答案；每个样例都从随机端口 HTTP 接口进入，穿过真实模型、
+  Java 决策、逐轮短事务与下一题响应。默认测试不连接外部模型，仅在 `P4_LIVE_ACCEPTANCE=true` 时运行；
+  会话及临时 Provider 在测试后清理，报告写入 `app/build/reports/p4-9b/`。
+- [x] **正常模式实测**（2026-09-20，本机，`deepseek-v4-flash`）：20 个样例全部得到可用评估；10 个关键缺口
+  全部进入针对「虚拟机栈」的追问，10 个充分回答全部转入 Redis 主问题，质量通过率 100%；端到端 P95
+  为 **2876ms**，达到 3.5 节「争取 ≤3s」目标；实际模型请求 20 次、降级 0%，没有用降级换取延迟。
+- [x] **故障模式实测**：将实时总预算压到 100ms 后，20 个样例端到端 P95 为 **154ms**，实际模型请求
+  20 次、失败调用 20 次、降级 100%；全部按 UNKNOWN 保守转入下一主问题，没有因超时追加隐藏重试。
+  该模式只验证可解释降级和节奏不中断，不评价追问质量。
+- [x] **验收中修正的边界**：Spring AI schema validation advisor 可能在一次 `entity()` 内部再发模型修复请求，
+  导致业务 attempts 小于真实请求数；实时档现改为「单次模型响应 + 本地结构化解析 / 引号修复」，后台档仍保留
+  schema validation。受限生成的 `generatedAnswerBasis` 也从“非空即可”收紧为必须逐字出现在本轮回答中，
+  否则 Java 清空依据并走既有确定性回退。
+- [x] **复跑命令**：正常与故障分别执行
+  `P4_LIVE_ACCEPTANCE=true P4_LIVE_MODE=normal P4_LIVE_PROVIDER=deepseek ./gradlew :app:test --tests '*InterviewLiveAcceptanceTest' --no-daemon --rerun-tasks`
+  与 `P4_LIVE_ACCEPTANCE=true P4_LIVE_MODE=failure P4_LIVE_PROVIDER=deepseek ./gradlew :app:test --tests '*InterviewLiveAcceptanceTest' --no-daemon --rerun-tasks`；
+  `--rerun-tasks` 用于避免 Gradle 因环境变量变化复用旧结果。
+
+### 7.16 报告与可变路线评价（P4-5）
+
+- [x] **逐题语义评分与路线聚合分离**：LLM 只负责实际作答轮次的语义分数与反馈；Java 使用版本化规则
+  `adaptive-report-v1` 聚合——主问占组内 70%，同组全部追问的均值合计占 30%，主题内各主问题组等权，
+  最后跨主题等权；主问或追问仅一侧有正式评分时使用可用的一侧。追加追问只改变所属主问题组的证据，
+  不会增加该路线在总分中的权重。
+- [x] **缺失评价不是 0 分**：批次评估缺项、上游失败或无有效评分时，逐题 / 主题 / 总分保持 `null` 并标记
+  `INSUFFICIENT_EVIDENCE`；主动跳过为 `SKIPPED`，未进入实际路线的话题为 `NOT_ASSESSED`。全部跳过时不调用
+  评估模型，直接生成无分报告；画像 Evidence 继续只消费非空正式评分。
+- [x] **报告关联真实路线**：逐题报告携带 `questionId` / `turnOrdinal` / `MAIN|FOLLOW_UP` / `parentQuestionId` /
+  `topic` / `difficulty` / `expectedPoints` / `answerState` / `realtimeDecision` / `decisionReason`，并单独说明“实时判断用于选下一步，
+  正式报告在结束后独立评分”，不把两种用途混成一个结论。覆盖项列出实际轮次、有效主问题组、证据题和考察点。
+- [x] **完整快照与可重算**：迁移 `V20260925` 新增 `interview_sessions.report_json`，保存规则版本、聚合输入与
+  最终结果；报告读取、完成卡与 PDF 导出消费同一快照，不再因 GET 报告重复调用模型。旧会话没有快照时保留
+  一次兼容重算并补齐快照。固定输入重复组装得到完全相同报告的回归已落地。
+- [x] **前端结果卡**：总分为空时明确显示“暂无足够评分证据”，主题分不补 0；展示必考标签、已评估 / 未考察 /
+  已跳过 / 证据不足以及实际轮次和有效主问题组数，并直接展示规则版本与聚合口径。
+- [x] **已验证**（2026-09-20，本机）：`./gradlew :app:test --no-daemon` 全绿（含 `V20260925` 迁移真跑、
+  可变路线等权聚合、缺失 / 跳过 / 未考察和快照复用回归）；`pnpm run build` 通过，面试轮次与评估轮询
+  专项测试共 23 例通过。尚未新增真实模型下的报告质量验收；语义评分质量仍取决于所选 Provider，本批已验证
+  的是路线证据、确定性聚合、缺失语义与读取一致性。

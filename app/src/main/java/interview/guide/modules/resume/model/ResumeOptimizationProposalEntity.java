@@ -48,6 +48,17 @@ public class ResumeOptimizationProposalEntity {
   @Column(name = "optimization_type", nullable = false, length = 32)
   private OptimizationType optimizationType = OptimizationType.GENERAL;
 
+  /**
+   * JD_TARGETED 时的目标 JD（P2 待修正）：记录本提案的优化坐标系。
+   * 应用生成新版本时原样带到版本表，使「按这份 JD 优化」可追溯。
+   */
+  @Column(name = "target_job_id")
+  private Long targetJobId;
+
+  /** 定向优化时用户指定的目标方向描述（TARGET_DIRECTION，如「Java 后端实习」） */
+  @Column(name = "target_direction", length = 128)
+  private String targetDirection;
+
   /** 提案状态：PENDING → APPLIED / REJECTED（用户决策驱动） */
   @Enumerated(EnumType.STRING)
   @Column(nullable = false, length = 32)
@@ -60,6 +71,10 @@ public class ResumeOptimizationProposalEntity {
   /** Patch 列表 JSON（ResumePatchItem 数组） */
   @Column(name = "patches_json", nullable = false, columnDefinition = "TEXT")
   private String patchesJson;
+
+  /** JD 定向时的独立 Gap 分析快照；非 JD 模式为 null */
+  @Column(name = "jd_gap_analysis_json", columnDefinition = "TEXT")
+  private String jdGapAnalysisJson;
 
   @Column(name = "created_at", nullable = false)
   private LocalDateTime createdAt;

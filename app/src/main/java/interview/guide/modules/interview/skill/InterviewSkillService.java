@@ -24,12 +24,15 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * 面试方向 Skill 管理：分类分配、References 注入、自定义 Skill 构建。
@@ -144,6 +147,49 @@ public class InterviewSkillService {
             return toSkillDTO(skillId, preset);
         }
         throw new BusinessException(ErrorCode.BAD_REQUEST, "未找到面试主题: " + skillId);
+    }
+
+    /**
+     * 按重点考察方向裁剪预设 Skill 的分类（P3 待收口）。
+     *
+     * <p>匹配规则：与分类 key 或 label 大小写不敏感地相等。两种都要匹配是因为
+     * 画像里的技能名来自面试 category（习惯是 label，如 "MySQL"），
+     * 而提案侧也可能直接给出 key（如 "MYSQL"）。
+     *
+     * <p>一个都没匹配上时**返回原 Skill**，不做缩减：focus 的语义是「重点考察」，
+     * 宁可按原方向全量出题，也不能产出空分类——空分类会让出题 prompt 失去依据，
+     * 属于比「没聚焦」严重得多的失败。
+     */
+    public SkillDTO focusOn(SkillDTO skill, List<String> focusCategories) {
+        if (skill == null || skill.categories().isEmpty()
+            || focusCategories == null || focusCategories.isEmpty()) {
+            return skill;
+        }
+        Set<String> wanted = focusCategories.stream()
+            .filter(item -> item != null && !item.isBlank())
+            .map(item -> item.trim().toLowerCase(Locale.ROOT))
+            .collect(Collectors.toSet());
+        if (wanted.isEmpty()) {
+            return skill;
+        }
+
+        List<SkillCategoryDTO> matched = skill.categories().stream()
+            .filter(category -> wanted.contains(safeLower(category.key()))
+                || wanted.contains(safeLower(category.label())))
+            .toList();
+        if (matched.isEmpty()) {
+            log.warn("focus 未命中任何分类，按原方向全量出题: skill={}, focus={}",
+                skill.id(), focusCategories);
+            return skill;
+        }
+        log.info("focus 已裁剪出题分类: skill={}, focus={}, 命中={}/{}",
+            skill.id(), focusCategories, matched.size(), skill.categories().size());
+        return new SkillDTO(skill.id(), skill.name(), skill.description(), matched,
+            skill.isPreset(), skill.sourceJd(), skill.persona(), skill.display());
+    }
+
+    private static String safeLower(String value) {
+        return value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
     }
 
     /**

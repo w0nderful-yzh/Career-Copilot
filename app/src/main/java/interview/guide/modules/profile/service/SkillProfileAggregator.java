@@ -69,23 +69,28 @@ public class SkillProfileAggregator {
   }
 
   /**
-   * 重聚合单个技能：无剩余证据时删除画像行，否则按等权均值更新。
+   * 重聚合单个技能：无剩余**有分**证据时删除画像行，否则按等权均值更新。
+   *
+   * <p>声明型证据（score 为 null，如简历列出的技能）不参与均值——画像分必须能由有分证据
+   * 逐条还原；某技能只有声明证据时不产生画像行（它属于 declaredSkills，由查询侧单独返回）。
    */
   @Transactional(rollbackFor = Exception.class)
   public void reaggregateSkill(String skill) {
-    List<SkillEvidenceEntity> evidences =
-        evidenceRepository.findByUserIdAndSkill(DEFAULT_USER_ID, skill);
+    List<SkillEvidenceEntity> scored =
+        evidenceRepository.findByUserIdAndSkill(DEFAULT_USER_ID, skill).stream()
+            .filter(evidence -> evidence.getScore() != null)
+            .toList();
 
-    if (evidences.isEmpty()) {
+    if (scored.isEmpty()) {
       profileRepository.findByUserIdAndSkill(DEFAULT_USER_ID, skill)
           .ifPresent(profileRepository::delete);
-      log.info("技能证据已清空，画像行已删除: skill={}", skill);
+      log.info("技能已无有分证据，画像行已删除: skill={}", skill);
       return;
     }
 
     int score = (int) Math.round(
-        evidences.stream().mapToInt(SkillEvidenceEntity::getScore).average().orElse(0));
-    int count = evidences.size();
+        scored.stream().mapToInt(SkillEvidenceEntity::getScore).average().orElse(0));
+    int count = scored.size();
 
     SkillProfileEntity profile = profileRepository
         .findByUserIdAndSkill(DEFAULT_USER_ID, skill)
@@ -100,6 +105,52 @@ public class SkillProfileAggregator {
     // updatedAt 由实体 @PrePersist/@PreUpdate 维护（最后聚合时间）
     profileRepository.save(profile);
     log.debug("画像已聚合: skill={}, score={}, evidenceCount={}", skill, score, count);
+  }
+
+  /**
+   * 用一批简历声明**整体替换**某份简历的 RESUME 证据。
+   *
+   * <p>整体替换而非增量：重新解析或用户纠正后，旧的技能条目可能已不存在，
+   * 增量写入会留下永远清不掉的幽灵技能。
+   *
+   * @param resumeId     简历 ID（作为 RESUME 证据的 sourceId）
+   * @param declarations 声明证据（score 必须为 null）
+   */
+  @Transactional(rollbackFor = Exception.class)
+  public void replaceResumeDeclarations(Long resumeId, List<SkillEvidenceEntity> declarations) {
+    removeResumeEvidence(resumeId);
+    if (declarations == null || declarations.isEmpty()) {
+      return;
+    }
+    evidenceRepository.saveAll(declarations);
+    evidenceRepository.flush();
+    List<String> skills = declarations.stream()
+        .map(SkillEvidenceEntity::getSkill)
+        .distinct()
+        .toList();
+    // 声明本身不影响分数，但技能集合可能变化（例如某技能原本只有声明、现在要删行）
+    skills.forEach(this::reaggregateSkill);
+    log.info("简历声明证据已写入: resumeId={}, 技能数={}", resumeId, skills.size());
+  }
+
+  /**
+   * 清理某份简历的全部 RESUME 声明证据（重新解析前 / 简历删除时）。
+   */
+  @Transactional(rollbackFor = Exception.class)
+  public void removeResumeEvidence(Long resumeId) {
+    List<SkillEvidenceEntity> evidences = evidenceRepository.findBySourceTypeAndSourceId(
+        EvidenceSourceType.RESUME, String.valueOf(resumeId));
+    if (evidences.isEmpty()) {
+      return;
+    }
+    List<String> skills = evidences.stream()
+        .map(SkillEvidenceEntity::getSkill)
+        .distinct()
+        .toList();
+    evidenceRepository.deleteAll(evidences);
+    evidenceRepository.flush();
+    skills.forEach(this::reaggregateSkill);
+    log.info("简历声明证据已清理: resumeId={}, 技能数={}", resumeId, skills.size());
   }
 
   /**

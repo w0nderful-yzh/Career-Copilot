@@ -14,6 +14,7 @@ export interface ResumeListItem {
   interviewCount: number;
   analyzeStatus?: AnalyzeStatus;
   analyzeError?: string;
+  analyzeStatusUpdatedAt?: string | null;
   storageUrl?: string;
 }
 
@@ -56,14 +57,22 @@ export interface InterviewItem {
 
 export interface AnswerItem {
   questionIndex: number;
+  /** 真实发生顺序（1 起）；候选池顺序只作兼容展示 */
+  questionOrdinal?: number | null;
   question: string;
   category: string;
-  userAnswer: string;
-  score: number;
-  feedback: string;
+  userAnswer: string | null;
+  score: number | null;
+  feedback: string | null;
   referenceAnswer?: string;
   keyPoints?: string[];
-  answeredAt: string;
+  /** 本轮实际采用的下一题；用于历史回放与决策审计 */
+  decidedNextQuestionId?: string | null;
+  /** Java 边界校验后的实际决策理由 */
+  decisionReason?: string | null;
+  /** 模型建议被原样接纳时保存的简短承接语 */
+  transitionMessage?: string | null;
+  answeredAt: string | null;
 }
 
 export interface ResumeDetail {
@@ -77,6 +86,7 @@ export interface ResumeDetail {
   resumeText: string;
   analyzeStatus?: AnalyzeStatus;
   analyzeError?: string;
+  analyzeStatusUpdatedAt?: string | null;
   analyses: AnalysisItem[];
   interviews: InterviewItem[];
 }
@@ -193,6 +203,9 @@ export const historyApi = {
       oldValue: string | null;
       newValue: string | null;
       reason: string | null;
+      evidence?: string[];
+      impact?: string | null;
+      verificationRequired?: string[];
     }>,
     templateId?: string,
   ): Promise<Blob> {
@@ -220,7 +233,48 @@ export const historyApi = {
   async downloadExportedPdf(fileKey: string): Promise<Blob> {
     return request.download(`/api/resume-exports/download?fileKey=${encodeURIComponent(fileKey)}`);
   },
+
+  /**
+   * 简历优化提案状态（P2 待修正）：历史消息块只存 patches，
+   * 刷新回放时需要权威决策状态，避免已应用/已忽略的提案仍显示成可操作。
+   */
+  async getResumeOptimizationProposal(proposalId: number): Promise<ResumeOptimizationProposalItem> {
+    return request.get<ResumeOptimizationProposalItem>(
+      `/api/resume-optimization/proposals/${proposalId}`,
+    );
+  },
+
+  /**
+   * 放弃本轮全部优化建议（PENDING → REJECTED，审计留痕）。
+   * 拒绝不改动简历内容，与「应用勾选修改」构成对称决策出口。
+   */
+  async rejectResumeOptimizationProposal(
+    proposalId: number,
+  ): Promise<ResumeOptimizationProposalItem> {
+    // 显式空对象请求体：null body 会触发 Content-Type 拒绝（见解析确认端点的同类修复）
+    return request.post<ResumeOptimizationProposalItem>(
+      `/api/resume-optimization/proposals/${proposalId}/reject`,
+      {},
+    );
+  },
 };
+
+/** 简历优化提案（决策状态回显用；patches 在此不需要结构化还原） */
+export interface ResumeOptimizationProposalItem {
+  id: number;
+  resumeId: number;
+  sourceVersionId: number;
+  optimizationType: 'GENERAL' | 'TARGET_DIRECTION' | 'JD_TARGETED';
+  status: 'PENDING' | 'APPLIED' | 'REJECTED';
+  summary: string | null;
+  jdGapAnalysis?: {
+    jobTitle: string;
+    matchLevel: 'HIGH' | 'MEDIUM' | 'LOW' | 'UNKNOWN';
+    summary: string;
+  } | null;
+  createdAt: string;
+  decidedAt: string | null;
+}
 
 // ===== 简历结构化版本（P2-0/P2-3） =====
 
@@ -281,6 +335,10 @@ export interface ResumeVersionItem {
   version: number;
   source: 'IMPORT' | 'USER_EDIT' | 'AI_OPTIMIZE';
   confirmationStatus: 'PENDING_CONFIRMATION' | 'ACTIVE' | 'NEED_USER_INFO';
+  /** 优化坐标系（P2 待修正）：导入版本为 null */
+  optimizationType: 'GENERAL' | 'TARGET_DIRECTION' | 'JD_TARGETED' | null;
+  targetJobId: number | null;
+  targetDirection: string | null;
   content: ResumeContentJson | null;
   missingFields: string[];
   sourceCreatedAt: string;

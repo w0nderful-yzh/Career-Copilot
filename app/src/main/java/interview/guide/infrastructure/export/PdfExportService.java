@@ -16,6 +16,7 @@ import com.itextpdf.layout.properties.UnitValue;
 import interview.guide.common.exception.BusinessException;
 import interview.guide.common.exception.ErrorCode;
 import interview.guide.modules.interview.model.InterviewAnswerEntity;
+import interview.guide.modules.interview.model.InterviewReportDTO;
 import interview.guide.modules.interview.model.InterviewSessionEntity;
 import interview.guide.modules.interview.model.ResumeAnalysisResponse;
 import interview.guide.modules.resume.model.ResumeEntity;
@@ -168,6 +169,7 @@ public class PdfExportService {
         PdfWriter writer = new PdfWriter(baos);
         PdfDocument pdfDoc = new PdfDocument(writer);
         Document document = new Document(pdfDoc);
+        InterviewReportDTO report = parseInterviewReport(session.getReportJson());
         
         // 使用支持中文的字体
         PdfFont font = createChineseFont();
@@ -185,7 +187,8 @@ public class PdfExportService {
         document.add(new Paragraph("\n"));
         document.add(createSectionTitle("面试信息"));
         document.add(new Paragraph("会话ID: " + session.getSessionId()));
-        document.add(new Paragraph("题目数量: " + session.getTotalQuestions()));
+        document.add(new Paragraph("实际轮次: "
+            + (report != null ? report.totalQuestions() : session.getTotalQuestions())));
         document.add(new Paragraph("面试状态: " + getStatusText(session.getStatus())));
         document.add(new Paragraph("开始时间: " + 
             (session.getCreatedAt() != null ? DATE_FORMAT.format(session.getCreatedAt()) : "未知")));
@@ -209,6 +212,20 @@ public class PdfExportService {
             document.add(new Paragraph("\n"));
             document.add(createSectionTitle("总体评价"));
             document.add(new Paragraph(sanitizeText(session.getOverallFeedback())));
+        }
+
+        if (report != null) {
+            document.add(new Paragraph("\n"));
+            document.add(createSectionTitle("评分口径与覆盖"));
+            document.add(new Paragraph("规则版本: " + report.scoringRuleVersion()));
+            document.add(new Paragraph(sanitizeText(report.aggregationMethod())));
+            for (InterviewReportDTO.TopicCoverage item : report.coverage()) {
+                String required = item.required() ? " · 必考" : "";
+                document.add(new Paragraph(String.format(
+                    "• %s: %s%s（实际 %d 轮，有效主问题组 %d）",
+                    item.topic(), coverageStatusText(item.status()), required,
+                    item.actualTurnCount(), item.evaluatedMainGroupCount())));
+            }
         }
         
         // 优势
@@ -248,34 +265,114 @@ public class PdfExportService {
         }
         
         // 问答详情
-        List<InterviewAnswerEntity> answers = session.getAnswers();
-        if (answers != null && !answers.isEmpty()) {
+        if (report != null && !report.questionDetails().isEmpty()) {
             document.add(new Paragraph("\n"));
-            document.add(createSectionTitle("问答详情"));
-            
-            for (InterviewAnswerEntity answer : answers) {
+            document.add(createSectionTitle("实际轮次与决策依据"));
+            for (InterviewReportDTO.QuestionEvaluation detail : report.questionDetails()) {
                 document.add(new Paragraph("\n"));
-                document.add(new Paragraph("问题 " + (answer.getQuestionIndex() + 1) + 
-                    " [" + (answer.getCategory() != null ? answer.getCategory() : "综合") + "]")
-                    .setBold()
-                    .setFontSize(12));
-                document.add(new Paragraph("Q: " + sanitizeText(answer.getQuestion())));
-                document.add(new Paragraph("A: " + sanitizeText(answer.getUserAnswer() != null ? answer.getUserAnswer() : "未回答")));
-                document.add(new Paragraph("得分: " + answer.getScore() + "/100")
-                    .setFontColor(getScoreColor(answer.getScore())));
-                if (answer.getFeedback() != null) {
-                    document.add(new Paragraph("评价: " + sanitizeText(answer.getFeedback()))
-                        .setItalic());
+                String role = detail.followUp() ? "追问" : "主问";
+                document.add(new Paragraph("第 " + detail.turnOrdinal() + " 轮 · " + role
+                    + " [" + detail.topic() + "]").setBold().setFontSize(12));
+                document.add(new Paragraph("Q: " + sanitizeText(detail.question())));
+                document.add(new Paragraph("A: " + sanitizeText(
+                    detail.userAnswer() != null ? detail.userAnswer() : answerStateText(detail.answerState()))));
+                if (detail.score() != null) {
+                    document.add(new Paragraph("得分: " + detail.score() + "/100")
+                        .setFontColor(getScoreColor(detail.score())));
+                } else {
+                    document.add(new Paragraph("得分: 未评分（" + answerStateText(detail.answerState()) + "）"));
                 }
-                if (answer.getReferenceAnswer() != null) {
-                    document.add(new Paragraph("参考答案: " + sanitizeText(answer.getReferenceAnswer()))
-                        .setFontColor(new DeviceRgb(39, 174, 96)));
+                if (detail.feedback() != null) {
+                    document.add(new Paragraph("评价: " + sanitizeText(detail.feedback())).setItalic());
+                }
+                if (detail.expectedPoints() != null && !detail.expectedPoints().isEmpty()) {
+                    document.add(new Paragraph("考察点: "
+                        + sanitizeText(String.join("；", detail.expectedPoints()))));
+                }
+                if (detail.realtimeDecision() != null) {
+                    document.add(new Paragraph("实时路线: " + detail.realtimeDecision()
+                        + (detail.decisionReason() != null
+                            ? " · " + sanitizeText(detail.decisionReason()) : "")));
+                }
+                if (detail.decisionComparison() != null) {
+                    document.add(new Paragraph(sanitizeText(detail.decisionComparison()))
+                        .setFontColor(new DeviceRgb(90, 100, 115)));
+                }
+            }
+        } else {
+            List<InterviewAnswerEntity> answers = session.getAnswers();
+            if (answers != null && !answers.isEmpty()) {
+                document.add(new Paragraph("\n"));
+                document.add(createSectionTitle("问答详情"));
+
+                for (InterviewAnswerEntity answer : answers) {
+                    document.add(new Paragraph("\n"));
+                    document.add(new Paragraph("问题 " + (answer.getQuestionIndex() + 1)
+                        + " [" + (answer.getCategory() != null ? answer.getCategory() : "综合") + "]")
+                        .setBold()
+                        .setFontSize(12));
+                    document.add(new Paragraph("Q: " + sanitizeText(answer.getQuestion())));
+                    document.add(new Paragraph("A: " + sanitizeText(
+                        answer.getUserAnswer() != null ? answer.getUserAnswer() : "未回答")));
+                    if (answer.getScore() != null) {
+                        document.add(new Paragraph("得分: " + answer.getScore() + "/100")
+                            .setFontColor(getScoreColor(answer.getScore())));
+                    } else {
+                        document.add(new Paragraph("得分: 未评分"));
+                    }
+                    if (answer.getFeedback() != null) {
+                        document.add(new Paragraph("评价: " + sanitizeText(answer.getFeedback()))
+                            .setItalic());
+                    }
+                    if (answer.getReferenceAnswer() != null) {
+                        document.add(new Paragraph("参考答案: "
+                            + sanitizeText(answer.getReferenceAnswer()))
+                            .setFontColor(new DeviceRgb(39, 174, 96)));
+                    }
                 }
             }
         }
         
         document.close();
         return baos.toByteArray();
+    }
+
+    private InterviewReportDTO parseInterviewReport(String json) {
+        if (json == null || json.isBlank()) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(json, InterviewReportDTO.class);
+        } catch (Exception e) {
+            log.warn("解析完整面试报告失败，导出退回旧字段: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    private String coverageStatusText(String status) {
+        if (status == null) {
+            return "未知";
+        }
+        return switch (status) {
+            case "ASSESSED" -> "已评估";
+            case "NOT_ASSESSED" -> "未考察";
+            case "SKIPPED" -> "已跳过";
+            case "INSUFFICIENT_EVIDENCE" -> "证据不足";
+            default -> status;
+        };
+    }
+
+    private String answerStateText(String state) {
+        if (state == null) {
+            return "未知";
+        }
+        return switch (state) {
+            case "SKIPPED" -> "用户跳过";
+            case "DECLINED" -> "明确不会";
+            case "UNANSWERED" -> "未作答";
+            case "ANSWERED" -> "已作答";
+            default -> state;
+        };
     }
     
     private Paragraph createSectionTitle(String title) {

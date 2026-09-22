@@ -7,6 +7,7 @@ Graph 只通过 deps 访问，测试可注入 fake 实现，避免真实 LLM / J
 from dataclasses import dataclass
 
 from career_copilot.agent.answerer import Answerer
+from career_copilot.agent.llm import LlmExecutor
 from career_copilot.agent.router import IntentRouter
 from career_copilot.clients.backend import BackendClient
 
@@ -18,3 +19,5 @@ class GraphDeps:
     intent_router: IntentRouter
     answerer: Answerer
     backend: BackendClient
+    #: LLM 统一执行器（ARCH-2）：节点做结构化调用时用它，不再摸 answerer 的私有模型属性
+    llm: LlmExecutor

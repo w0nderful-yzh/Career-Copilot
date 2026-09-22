@@ -120,6 +120,38 @@ public final class AsyncTaskStreamConstants {
      */
     public static final String FIELD_SESSION_ID = "sessionId";
 
+    /**
+     * 评估代次字段（P4-9a）：每次请求评估 +1，消费端只执行不低于当前代次的消息
+     */
+    public static final String FIELD_EVALUATE_EPOCH = "evaluateEpoch";
+
+    // ========== 面试后台预备候选 Stream 配置（P4-4b） ==========
+
+    /**
+     * 后台预备候选 Stream Key
+     */
+    public static final String INTERVIEW_CANDIDATE_PREP_STREAM_KEY = "interview:candidate-prep:stream";
+
+    /**
+     * 后台预备候选 Consumer Group 名称
+     */
+    public static final String INTERVIEW_CANDIDATE_PREP_GROUP_NAME = "candidate-prep-group";
+
+    /**
+     * 后台预备候选 Consumer 名称前缀
+     */
+    public static final String INTERVIEW_CANDIDATE_PREP_CONSUMER_PREFIX = "candidate-prep-consumer-";
+
+    /**
+     * 预备任务的目标主问题标识字段
+     */
+    public static final String FIELD_MAIN_QUESTION_ID = "mainQuestionId";
+
+    /**
+     * 候选代次字段（P4-4b）：投递时的 candidate_version，消费回写前比对，过期结果丢弃
+     */
+    public static final String FIELD_CANDIDATE_VERSION = "candidateVersion";
+
     // ========== 语音面试评估 Stream 配置 ==========
 
     /**

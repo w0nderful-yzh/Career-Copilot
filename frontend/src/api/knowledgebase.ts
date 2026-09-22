@@ -19,6 +19,7 @@ export interface KnowledgeBaseItem {
   questionCount: number;
   vectorStatus: VectorStatus;
   vectorError: string | null;
+  vectorStatusUpdatedAt: string | null;
   chunkCount: number;
   questionGenStatus: QuestionGenStatus;
   questionGenError: string | null;

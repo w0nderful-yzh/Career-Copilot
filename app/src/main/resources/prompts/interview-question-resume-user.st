@@ -1,6 +1,8 @@
 # Input Data
 请生成共 {questionCount} 个针对项目经历的面试主问题。
-每个主问题必须额外生成 {followUpCount} 个追问。
+每个主问题必须额外生成 {followUpCount} 个追问（followUps 为对象数组）。
+单题难度基线为 {difficultyBase}（1-5），可在各题 ±1 内浮动。
+
 
 ## 面试方向
 {skillName}（{skillDescription}）
@@ -23,3 +25,4 @@
   - "Redis 缓存策略设计"
   - "MySQL 索引优化"
   - "Kafka 异步消息解耦"
+- 每个主问题必须包含 difficulty 与 expectedPoints；followUps 内每个对象必须包含 question / followUpType / expectedPoints

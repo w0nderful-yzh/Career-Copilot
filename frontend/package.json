@@ -12,7 +12,18 @@
     "test:question-generation": "node --test src/pages/questionGenerationStatus.test.ts",
     "test:interview-capacity": "node --test src/components/knowledgebaseInterview/interviewCapacity.test.ts",
     "test:interview-entry": "node --test src/pages/interviewEntry.test.ts",
-    "test:copilot-action": "tsx --test src/constants/copilotAction.test.ts"
+    "test:copilot-action": "tsx --test src/constants/copilotAction.test.ts",
+    "test:agent-chat-protocol": "tsx --test src/api/agentChat.test.ts",
+    "test:copilot-turn-status": "tsx --test src/utils/copilotTurnStatus.test.ts",
+    "test:code-language": "tsx --test src/utils/codeLanguage.test.ts",
+    "test:interview-turns": "tsx --test src/utils/interviewTurns.test.ts",
+    "test:profile-impact": "tsx --test src/utils/profileImpact.test.ts",
+    "test:evaluate-polling": "tsx --test src/utils/evaluatePolling.test.ts",
+    "test:voice-evaluation": "tsx --test src/pages/voiceEvaluationStatus.test.ts",
+    "test:resume-patch-selection": "tsx --test src/utils/resumePatchSelection.test.ts",
+    "test:resume-content-edit": "tsx --test src/utils/resumeContentEdit.test.ts",
+    "test:interview-turn-sync": "tsx --test src/utils/interviewTurnSync.test.ts",
+    "test:async-flow": "tsx --test src/utils/asyncFlow.test.ts"
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4.1.18",

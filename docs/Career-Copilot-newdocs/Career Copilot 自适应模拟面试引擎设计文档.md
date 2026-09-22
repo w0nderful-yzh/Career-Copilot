@@ -127,13 +127,19 @@ Agent 不应拥有无限制追问能力。
 必须通过代码限制：
 
 ```text
-最大追问次数
+最大追问次数（每组上限，创建时可配）
+追问预算（运行期 = min(组内未问候选, 上限 − 已问追问)）
 Topic 最大时间
-剩余时间
-难度范围
-题目数量
+剩余时间（只统计用户答题时间，模型等待不计）
+难度范围（含用户显式调整节奏）
+必要覆盖（requiredTopics：未覆盖前不跳过其主问题）
 知识点覆盖率
 ```
+
+> 更新（P4Q-2 / 第三批落地口径）：「题目数量」不再是边界——规模由**预计时长**推导
+> （主问题数 ≈ 时长 / 4，夹取 3-12），候选容量与追问预算分开计算；
+> 结束条件也不再是「列表耗尽」，而是必要覆盖完成 / 预算用尽 / 候选耗尽 / 用户结束四种真实原因
+> （`end_reason` 四值）。
 
 LLM 负责语义判断。
 
@@ -641,8 +647,9 @@ END_INTERVIEW
 例如：
 
 ```text
-if followupCount >= 2:
+if 组内已问追问 >= 每组上限（可配，缺省 2）:
     NEXT_QUESTION
+# 运行期追问预算 = min(组内未问候选, 上限 − 已问追问)：候选容量不等于追问预算
 ```
 
 ---
@@ -1301,6 +1308,27 @@ Topic 得分
 InterviewReport
 ```
 
+## 34.1 异步评估的可恢复状态
+
+评估状态和状态更新时间由 Java 持久化并对外提供，页面刷新后仍以 Java 事实为准。
+前端不能仅根据本次页面打开后的等待时长猜测任务是否卡住；历史数据缺少时间戳时，
+继续展示等待状态，而不是猜测超时。
+
+```text
+PENDING / PROCESSING + 未超时  -> waiting，继续轮询
+PENDING / PROCESSING + 已超时  -> timeout，停止轮询并提供重试
+FAILED                            -> task_failed，提供重试
+COMPLETED + 有报告               -> completed
+COMPLETED + 无报告               -> empty，不伪装成失败
+```
+
+界面取数失败是 `load_failed`，依赖服务不可用是 `dependency_failed`，用户主动停止是
+`user_stopped`；它们与评估任务本身失败不能共用一个「失败」文案。超时和任务失败可重试，
+用户停止不提供「重新发送」；后端原始错误可能含依赖地址或连接信息，不直接回显。
+
+重试必须复用现有 Java API 的幂等与状态抢占边界：同代次可重投，旧代次丢弃，
+报告已完成后不再领取任务。页面重试只触发该 API，不在前端直接写入业务状态。
+
 ---
 
 # 35. Career Copilot 接入方式
@@ -1454,29 +1482,33 @@ modules/
 
 ```json
 {
-  "sessionId": 1001,
+  "sessionId": "8f3c…",
 
   "status": "IN_PROGRESS",
 
-  "currentTopic": "JVM",
+  "currentQuestionId": "q4a91f3c2b",
 
-  "currentQuestionId": 202,
+  "plannedDurationMinutes": 20,
 
-  "questionCount": 4,
+  "consumedSeconds": 320,
 
-  "followupCount": 1,
+  "remainingSeconds": 880,
 
-  "remainingSeconds": 1240,
+  "requiredTopics": ["实习经历", "Java"],
 
-  "difficulty": 2,
+  "focusCategories": ["JAVA", "REDIS"],
 
-  "coverage": {
-    "JVM": 0.28,
-    "Redis": 0.10,
-    "Spring": 0.06
-  }
+  "difficultyPreference": null,
+
+  "candidateVersion": 1
 }
 ```
+
+> 更新（P4-1 / P4Q-2 落地口径）：**候选素材与实际轮次分离**——
+> `questions_json` 是「可以问什么」的素材池，实际发生过的轮次在 `interview_answers`
+> （带稳定 `question_id`、真实发生顺序 `turn_ordinal` 与本轮决定 `decided_action`）。
+> 因此状态里不再有 `questionCount` / `followupCount` / 内嵌 `coverage`：
+> 计数与覆盖都由「素材池 × 实际轨迹」实时推导（覆盖状态不落库，避免与轨迹漂移）。
 
 ---
 
@@ -1585,12 +1617,14 @@ Knowledge Point
 创建 Interview 时：
 
 ```text
-一次生成：
+预生成：
 
 主问题
 +
-候选追问
+候选追问（素材池，容量可大于运行期追问预算）
 ```
+
+候选池不是「创建后只读、问完即止」的固定清单：运行期会按作答动态补充（见 Phase 2 受限生成与后台预备）。
 
 ---
 
@@ -1602,17 +1636,32 @@ Knowledge Point
 Turn Evaluator
 ```
 
-用户回答后：
+用户回答后，一次逐轮语义调用先尝试从「本轮合法候选」中选择（Selection Before Generation）；
+当关键缺口存在、追问预算 > 0 且没有合适的预置候选时，允许在同一次调用中基于回答**受限生成一条短追问**
+（携带考察点与逐字引用的回答依据），经 Java 校验预算 / 去重 / 依据 / 长度并与推进同一短事务落库后才展示，
+走相同的恢复 / 报告 / 证据链路。候选带来源（预生成 / 受限生成 / 后台预备）与会话代次，
+后台预备结果回写前按 `candidate_version` 判过期，晚到 / 过期结果不驱动状态。
 
 ```text
 Answer
  ↓
-Evaluate
+Evaluate（一次调用：理解回答 + 选候选 or 受限生成 + 节奏/难度/停深挖 + 覆盖证据）
  ↓
-FOLLOW_UP / NEXT
+Java 校验边界
+ ↓
+FOLLOW_UP / FOLLOW_UP_GENERATED / NEXT_MAIN / FINISH
 ```
 
-不实时生成问题。
+不额外串联一次只为出题的模型调用；受限生成复用同一次逐轮语义调用。
+
+实时逐轮调用还必须保证可观测的 attempts 与真实模型请求一致。Spring AI 的 schema validation advisor
+可能在单次 `entity()` 内部追加模型修复请求，因此实时档采用「单次响应 + 本地结构化解析 / 引号修复」；
+后台异步任务仍可保留 schema validation。模型生成的 `generatedAnswerBasis` 只有逐字出现在本轮回答里才有效，
+不能由模型自己证明引用真实。
+
+P4-9b 的固定简历成对验收（2026-09-20，20 个真实模型样例）结果为：关键缺口追问与充分回答转场均 10/10
+正确，端到端 P95 2876ms，实际模型请求 20 次，降级 0%；100ms 故障预算下 P95 154ms、20 次请求均按
+UNKNOWN 安全转场且无隐藏重试。故障数据仅验证边界，不作为正常性能达标依据。
 
 ---
 
@@ -1633,6 +1682,37 @@ Time Policy
 ```text
 Adaptive Interview
 ```
+
+## 43.1 可变路线的最终报告
+
+最终报告不再按实际轮次数量直接平均，否则被追问更多的话题会天然获得更高权重。正式评分分成两层：
+
+```text
+逐题语义评分（LLM，只评实际作答）
+  ↓
+主问题组：主问 70% + 全部追问均值 30%
+  ↓
+主题：主问题组等权
+  ↓
+总分：已评估主题等权
+```
+
+若主问或追问只有一侧取得正式评分，组分使用可用的一侧；两侧都没有评分时该组不进入数值聚合。
+
+聚合由 Java 按 `adaptive-report-v1` 执行；模型缺失评价保持 `null`，不补成 0。报告明确区分：
+
+```text
+ASSESSED              已获得正式评分
+INSUFFICIENT_EVIDENCE 已作答，但正式评价不可用
+SKIPPED               用户跳过 / 未形成技术评分
+NOT_ASSESSED          该话题未进入实际路线
+```
+
+逐轮条目关联题目标识、真实顺序、主问 / 追问关系、难度、考察点、Java 最终路线决定与依据。
+实时判断只服务于下一题选择，正式报告在结束后独立评分，报告必须解释二者用途差异。
+
+完整报告以 JSON 快照持久化到 Java System of Record；读取、前端完成卡与 PDF 导出复用同一快照，
+不因查看报告再次调用模型。规则版本与聚合输入一并保存，使固定输入可以确定性重算和比对。
 
 ---
 

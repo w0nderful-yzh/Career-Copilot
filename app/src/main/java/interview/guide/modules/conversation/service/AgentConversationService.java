@@ -10,8 +10,10 @@ import interview.guide.modules.conversation.dto.CreateConversationRequest;
 import interview.guide.modules.conversation.dto.SaveMessagesRequest;
 import interview.guide.modules.conversation.dto.SaveMessagesRequest.MessagePayload;
 import interview.guide.modules.conversation.model.AgentConversationEntity;
+import interview.guide.modules.conversation.model.AgentConversationEntity.ConversationStatus;
 import interview.guide.modules.conversation.model.AgentMessageEntity;
 import interview.guide.modules.conversation.model.AgentMessageEntity.MessageRole;
+import interview.guide.modules.conversation.model.AgentMessageEntity.MessageStatus;
 import interview.guide.modules.conversation.repository.AgentConversationRepository;
 import interview.guide.modules.conversation.repository.AgentMessageRepository;
 import java.util.List;
@@ -51,12 +53,43 @@ public class AgentConversationService {
     return toListItem(conversation);
   }
 
-  public List<ConversationListItemDTO> listConversations() {
+  /**
+   * 会话列表：默认只返回活跃会话；status 传 ARCHIVED 时返回已归档会话。
+   *
+   * <p>归档是软隐藏且可恢复，与 {@link #deleteConversation} 的硬删除语义区分：
+   * 归档用于「从工作区收起但保留记录」，删除不可恢复。
+   */
+  public List<ConversationListItemDTO> listConversations(String status) {
+    ConversationStatus queryStatus = parseConversationStatus(status);
     return conversationRepository
-        .findActiveByUserIdOrderByPinnedAndUpdatedAtDesc(DEFAULT_USER_ID)
+        .findByUserIdAndStatusOrderByPinnedAndUpdatedAtDesc(DEFAULT_USER_ID, queryStatus)
         .stream()
         .map(this::toListItem)
         .toList();
+  }
+
+  /** 归档会话：软隐藏，可从归档列表恢复 */
+  @Transactional
+  public void archiveConversation(Long conversationId) {
+    changeStatus(conversationId, ConversationStatus.ARCHIVED);
+  }
+
+  /** 恢复已归档会话，回到活跃列表（置顶状态保持不变） */
+  @Transactional
+  public void restoreConversation(Long conversationId) {
+    changeStatus(conversationId, ConversationStatus.ACTIVE);
+  }
+
+  /**
+   * 删除会话：硬删除且不可恢复（前端确认文案与此一致）。
+   *
+   * <p>只想从工作区收起、保留记录的场景应使用 {@link #archiveConversation}。
+   */
+  @Transactional
+  public void deleteConversation(Long conversationId) {
+    AgentConversationEntity conversation = getConversationOrThrow(conversationId);
+    conversationRepository.delete(conversation);
+    log.info("Conversation deleted: id={}", conversationId);
   }
 
   public ConversationDetailDTO getConversationDetail(Long conversationId) {
@@ -70,6 +103,7 @@ public class AgentConversationService {
             message.getRole().name(),
             message.getContent(),
             message.getBlocks(),
+            message.getStatus() == null ? null : message.getStatus().name(),
             message.getCreatedAt()))
         .toList();
     return new ConversationDetailDTO(
@@ -132,6 +166,7 @@ public class AgentConversationService {
             message.getRole().name(),
             message.getContent(),
             null,
+            null,
             message.getCreatedAt()))
         .toList();
     long totalCount = messageRepository.countByConversationId(conversationId);
@@ -154,11 +189,12 @@ return new ConversationContextDTO(
     conversationRepository.save(conversation);
   }
 
-  @Transactional
-  public void deleteConversation(Long conversationId) {
+  /** 变更会话状态（归档 / 恢复共用） */
+  private void changeStatus(Long conversationId, ConversationStatus status) {
     AgentConversationEntity conversation = getConversationOrThrow(conversationId);
-    conversationRepository.delete(conversation);
-    log.info("Conversation deleted: id={}", conversationId);
+    conversation.setStatus(status);
+    conversationRepository.save(conversation);
+    log.info("Conversation status changed: id={}, status={}", conversationId, status);
   }
 
   /**
@@ -178,14 +214,21 @@ return new ConversationContextDTO(
     int order = conversation.getMessages().size();
     for (MessagePayload payload : payloads) {
       MessageRole role = parseRole(payload.role());
-      if (payload.content() == null || payload.content().isBlank()) {
+      MessageStatus status = parseStatus(payload.status());
+      // 未完成的助手消息允许空内容：用户停止 / 生成失败时可能尚未产出任何内容，
+      // 但「这一轮没答完」本身需要留痕（否则刷新后只剩一条孤零零的用户提问）
+      boolean emptyContentAllowed =
+          MessageRole.ASSISTANT == role && MessageStatus.COMPLETED != status;
+      if (!emptyContentAllowed && (payload.content() == null || payload.content().isBlank())) {
         throw new BusinessException(ErrorCode.CONVERSATION_MESSAGE_INVALID,
             "消息内容不能为空: role=" + payload.role());
       }
       AgentMessageEntity message = new AgentMessageEntity();
       message.setRole(role);
-      message.setContent(payload.content());
+      // content 列 NOT NULL：空内容落库时归一为空串
+      message.setContent(payload.content() == null ? "" : payload.content());
       message.setBlocks(payload.blocks());
+      message.setStatus(status);
       message.setMessageOrder(order++);
       conversation.addMessage(message);
     }
@@ -213,6 +256,32 @@ return new ConversationContextDTO(
     } catch (IllegalArgumentException | NullPointerException e) {
       throw new BusinessException(
           ErrorCode.CONVERSATION_MESSAGE_INVALID, "非法消息角色: " + role);
+    }
+  }
+
+  /** 解析消息终态；缺省按 COMPLETED（兼容未带 status 的调用方与历史客户端） */
+  private MessageStatus parseStatus(String status) {
+    if (status == null || status.isBlank()) {
+      return MessageStatus.COMPLETED;
+    }
+    try {
+      return MessageStatus.valueOf(status.toUpperCase());
+    } catch (IllegalArgumentException e) {
+      throw new BusinessException(
+          ErrorCode.CONVERSATION_MESSAGE_INVALID, "非法消息状态: " + status);
+    }
+  }
+
+  /** 解析列表查询的会话状态；缺省（未传）按 ACTIVE，只列活跃会话 */
+  private ConversationStatus parseConversationStatus(String status) {
+    if (status == null || status.isBlank()) {
+      return ConversationStatus.ACTIVE;
+    }
+    try {
+      return ConversationStatus.valueOf(status.trim().toUpperCase());
+    } catch (IllegalArgumentException e) {
+      throw new BusinessException(
+          ErrorCode.CONVERSATION_STATUS_INVALID, "非法会话状态: " + status);
     }
   }
 

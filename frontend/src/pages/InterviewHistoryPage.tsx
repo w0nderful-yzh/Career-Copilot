@@ -1,5 +1,5 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {useNavigate} from 'react-router-dom';
+import {useLocation, useNavigate} from 'react-router-dom';
 import {AnimatePresence, motion} from 'framer-motion';
 import {CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis} from 'recharts';
 import {historyApi} from '../api/history';
@@ -34,11 +34,13 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
+  Sparkles,
   Tag,
   Trash2,
   TrendingUp,
   Users,
 } from 'lucide-react';
+import {loadFailed, type AsyncFailure} from '../utils/asyncFlow';
 
 type InterviewType = 'all' | 'text' | 'voice';
 type TimeRange = 'all' | '7d' | '30d' | '90d';
@@ -85,11 +87,11 @@ function isLiveStatus(status: string): boolean {
 }
 
 function isEvaluating(item: UnifiedInterviewItem): boolean {
-  return item.evaluateStatus === 'PENDING' || item.evaluateStatus === 'PROCESSING';
+  return Boolean(item.evaluateStatus) && getItemEvaluationPresentation(item).shouldPoll;
 }
 
 function isEvaluateFailed(item: UnifiedInterviewItem): boolean {
-  return item.evaluateStatus === 'FAILED';
+  return getItemEvaluationPresentation(item).failure?.kind === 'task_failed';
 }
 
 function getItemEvaluationPresentation(item: UnifiedInterviewItem) {
@@ -99,13 +101,13 @@ function getItemEvaluationPresentation(item: UnifiedInterviewItem) {
   });
 }
 
-function isVoiceEvaluationRetryable(item: UnifiedInterviewItem): boolean {
-  return item.type === 'voice' && getItemEvaluationPresentation(item).retryable;
+function isEvaluationRetryable(item: UnifiedInterviewItem): boolean {
+  return Boolean(item.evaluateStatus) && getItemEvaluationPresentation(item).retryable;
 }
 
 function StatusIcon({ item }: { item: UnifiedInterviewItem }) {
   if (isEvaluateFailed(item)) return <AlertCircle className="w-4 h-4 text-red-500 dark:text-red-400"/>;
-  if (isVoiceEvaluationRetryable(item)) {
+  if (isEvaluationRetryable(item)) {
     return <AlertCircle className="w-4 h-4 text-amber-500 dark:text-amber-400"/>;
   }
   if (isEvaluating(item)) return <RefreshCw className="w-4 h-4 text-blue-500 dark:text-blue-400 animate-spin"/>;
@@ -116,7 +118,7 @@ function StatusIcon({ item }: { item: UnifiedInterviewItem }) {
 
 function getStatusText(item: UnifiedInterviewItem): string {
   if (isEvaluateFailed(item)) return '评估失败';
-  if (item.type === 'voice' && item.evaluateStatus) {
+  if (item.evaluateStatus) {
     return getItemEvaluationPresentation(item).label;
   }
   if (isEvaluating(item)) return item.evaluateStatus === 'PROCESSING' ? '评估中' : '等待评估';
@@ -222,6 +224,7 @@ export default function InterviewHistoryPage({
   knowledgeBaseId,
 }: InterviewHistoryPageProps) {
   const navigate = useNavigate();
+  const location = useLocation();
   const knowledgeBaseFilterId = knowledgeBaseId ?? null;
   const isKnowledgeBaseView = knowledgeBaseFilterId !== null && !Number.isNaN(knowledgeBaseFilterId);
   const [items, setItems] = useState<UnifiedInterviewItem[]>([]);
@@ -235,11 +238,34 @@ export default function InterviewHistoryPage({
   const [deleteItem, setDeleteItem] = useState<UnifiedInterviewItem | null>(null);
   const [exporting, setExporting] = useState<string | null>(null);
   const [retryingVoiceSessionId, setRetryingVoiceSessionId] = useState<number | null>(null);
+  const [retryingTextSessionId, setRetryingTextSessionId] = useState<string | null>(null);
+  const [loadFailure, setLoadFailure] = useState<AsyncFailure | null>(null);
+  // P3 待收口：画像变化卡的「查看该场面试」带 sessionId 跳转过来，定位并高亮该场次
+  const highlightSessionId =
+    (location.state as { highlightSessionId?: string } | null)?.highlightSessionId ?? null;
+  const highlightRowRef = useRef<HTMLTableRowElement | null>(null);
   const pollingRef = useRef<number | null>(null);
   const skillsRef = useRef<SkillDTO[]>([]);
   const skillsLoadedRef = useRef(false);
 
   const hasActiveKbFilters = categoryFilter !== 'all' || timeFilter !== 'all' || completionFilter !== 'all';
+
+  // 定位被追溯的场次：列表是异步加载的，等 items 就绪后再滚动
+  useEffect(() => {
+    if (!highlightSessionId) return;
+    const timer = window.setTimeout(() => {
+      highlightRowRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [highlightSessionId, items.length]);
+
+  /** 命中被追溯场次：文字面试的 sessionId 与行 id 一致，语音面试则匹配 voiceSessionId */
+  const isHighlightedRow = useCallback(
+    (item: UnifiedInterviewItem) =>
+      highlightSessionId !== null &&
+      (item.sessionId === highlightSessionId || item.id === highlightSessionId),
+    [highlightSessionId],
+  );
 
   const resetKbFilters = () => {
     setCategoryFilter('all');
@@ -270,6 +296,7 @@ export default function InterviewHistoryPage({
 
       const all = [...scopedTextInterviews, ...voiceWithNames];
       all.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      setLoadFailure(null);
 
       setItems(prev => {
         const hasActiveEvaluation = all.some(item =>
@@ -279,6 +306,7 @@ export default function InterviewHistoryPage({
       });
     } catch (err) {
       console.error('加载面试记录失败', err);
+      setLoadFailure(loadFailed('面试记录加载失败，当前评估状态未知'));
     } finally {
       if (!isPolling) setLoading(false);
     }
@@ -286,9 +314,8 @@ export default function InterviewHistoryPage({
 
   // Load text interviews from dedicated API
   async function loadTextInterviews(skills: SkillDTO[]): Promise<UnifiedInterviewItem[]> {
-    try {
-      const sessions = await interviewApi.listSessions();
-      return sessions.map((session: TextSessionMeta) => ({
+    const sessions = await interviewApi.listSessions();
+    return sessions.map((session: TextSessionMeta) => ({
         id: session.sessionId,
         type: 'text' as const,
         sourceType: session.sourceType,
@@ -299,6 +326,7 @@ export default function InterviewHistoryPage({
         status: session.status,
         evaluateStatus: session.evaluateStatus ?? undefined,
         evaluateError: session.evaluateError ?? undefined,
+        evaluateStatusUpdatedAt: session.evaluateStatusUpdatedAt ?? undefined,
         overallScore: session.overallScore,
         totalQuestions: session.totalQuestions,
         createdAt: session.createdAt,
@@ -306,16 +334,12 @@ export default function InterviewHistoryPage({
         knowledgeBaseId: session.knowledgeBaseId ?? undefined,
         interviewCategory: session.interviewCategory ?? null,
       }));
-    } catch {
-      return [];
-    }
   }
 
   // Load voice interviews from voice API
   async function loadVoiceInterviews(): Promise<UnifiedInterviewItem[]> {
-    try {
-      const sessions = await voiceInterviewApi.getAllSessions();
-      return sessions.map((session: SessionMeta) => ({
+    const sessions = await voiceInterviewApi.getAllSessions();
+    return sessions.map((session: SessionMeta) => ({
         id: `voice-${session.sessionId}`,
         type: 'voice' as const,
         title: session.roleType,
@@ -329,9 +353,6 @@ export default function InterviewHistoryPage({
         createdAt: session.createdAt,
         voiceSessionId: session.sessionId,
       }));
-    } catch {
-      return [];
-    }
   }
 
   useEffect(() => {
@@ -428,6 +449,22 @@ export default function InterviewHistoryPage({
       alert('重新生成评估失败，请稍后再试');
     } finally {
       setRetryingVoiceSessionId(null);
+    }
+  };
+
+  const handleRetryTextEvaluation = async (
+    item: UnifiedInterviewItem,
+    e: React.MouseEvent,
+  ) => {
+    e.stopPropagation();
+    setRetryingTextSessionId(item.sessionId);
+    try {
+      await interviewApi.retryEvaluation(item.sessionId);
+      await loadAll(true);
+    } catch {
+      alert('重新生成评估失败，请稍后再试');
+    } finally {
+      setRetryingTextSessionId(null);
     }
   };
 
@@ -654,8 +691,24 @@ export default function InterviewHistoryPage({
         </div>
       )}
 
+      {!loading && loadFailure && (
+        <div className="mb-6 flex items-center justify-between gap-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="h-5 w-5 shrink-0" />
+            <span>{loadFailure.message}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => void loadAll()}
+            className="shrink-0 rounded-lg border border-amber-300 px-3 py-1.5 text-sm font-medium"
+          >
+            重试加载
+          </button>
+        </div>
+      )}
+
       {/* 筛选无结果（知识库视图且筛选条件生效） */}
-      {!loading && showFilterEmpty && (
+      {!loading && !loadFailure && showFilterEmpty && (
         <motion.div
           className="text-center py-20 bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-700"
           initial={{ opacity: 0, scale: 0.95 }}
@@ -675,7 +728,7 @@ export default function InterviewHistoryPage({
       )}
 
       {/* Empty */}
-      {!loading && showOriginalEmpty && (
+      {!loading && !loadFailure && showOriginalEmpty && (
         <motion.div
           className="text-center py-20 bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-700"
           initial={{ opacity: 0, scale: 0.95 }}
@@ -718,7 +771,12 @@ export default function InterviewHistoryPage({
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: index * 0.05 }}
                     onClick={() => handleRowClick(item)}
-                    className="border-b border-slate-50 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50 cursor-pointer transition-colors group"
+                    ref={isHighlightedRow(item) ? highlightRowRef : undefined}
+                    className={`border-b border-slate-50 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50 cursor-pointer transition-colors group ${
+                      isHighlightedRow(item)
+                        ? 'bg-primary-50/60 ring-2 ring-inset ring-primary-400 dark:bg-primary-900/20'
+                        : ''
+                    }`}
                   >
                     <td className="px-6 py-4">
                       <TypeBadge item={item} />
@@ -733,6 +791,15 @@ export default function InterviewHistoryPage({
                         <div>
                           <div className="flex items-center gap-2 flex-wrap">
                             <p className="font-medium text-slate-800 dark:text-white">{item.title}</p>
+                            {isHighlightedRow(item) && (
+                              <span
+                                className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-primary-50 dark:bg-primary-900/30 text-primary-600 dark:text-primary-300 rounded text-xs font-medium"
+                                title="画像变化来自这一场面试"
+                              >
+                                <Sparkles className="w-3 h-3" />
+                                画像变化来源
+                              </span>
+                            )}
                             {isKnowledgeBaseView && item.type === 'text' && (
                               <span
                                 className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 rounded text-xs font-medium"
@@ -766,7 +833,7 @@ export default function InterviewHistoryPage({
                           </div>
                           <span className="font-bold text-slate-800 dark:text-white">{item.overallScore}</span>
                         </div>
-                      ) : isVoiceEvaluationRetryable(item) ? (
+                      ) : isEvaluationRetryable(item) ? (
                         <span className="text-amber-600 dark:text-amber-400 text-sm">可重新生成</span>
                       ) : isEvaluating(item) ? (
                         <span className="text-blue-500 dark:text-blue-400 text-sm">生成中...</span>
@@ -844,7 +911,7 @@ export default function InterviewHistoryPage({
                             <RotateCcw className="w-4 h-4" />
                           </button>
                         )}
-                        {isVoiceEvaluationRetryable(item) && item.voiceSessionId && (
+                        {isEvaluationRetryable(item) && item.type === 'voice' && item.voiceSessionId && (
                           <button
                             onClick={(e) => handleRetryVoiceEvaluation(item, e)}
                             disabled={retryingVoiceSessionId === item.voiceSessionId}
@@ -856,6 +923,34 @@ export default function InterviewHistoryPage({
                             ) : (
                               <RefreshCw className="w-4 h-4" />
                             )}
+                          </button>
+                        )}
+                        {isEvaluationRetryable(item) && item.type === 'text' && (
+                          <button
+                            onClick={(e) => handleRetryTextEvaluation(item, e)}
+                            disabled={retryingTextSessionId === item.sessionId}
+                            className="p-2 text-amber-500 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/30 rounded-lg transition-colors disabled:opacity-50"
+                            title="重新生成评估"
+                          >
+                            {retryingTextSessionId === item.sessionId ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <RefreshCw className="w-4 h-4" />
+                            )}
+                          </button>
+                        )}
+                        {isEvaluateCompleted(item) && item.type === 'text' && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              // 带上 sessionId 跳到 /copilot，由该页发起 REVIEW_INTERVIEW：
+                              // 支持复盘「指定的这一场」而不只是最近一场（P4 待修正）
+                              navigate('/copilot', { state: { reviewSessionId: item.sessionId } });
+                            }}
+                            className="p-2 text-slate-400 hover:text-violet-500 hover:bg-violet-50 dark:hover:bg-violet-900/30 rounded-lg transition-colors"
+                            title="让 Copilot 复盘这场面试"
+                          >
+                            <Sparkles className="w-4 h-4" />
                           </button>
                         )}
                         <button

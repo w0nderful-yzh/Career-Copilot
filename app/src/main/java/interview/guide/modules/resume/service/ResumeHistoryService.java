@@ -70,7 +70,8 @@ public class ResumeHistoryService {
                 lastAnalyzedAt,
                 interviewCount,
                 resume.getAnalyzeStatus(),
-                resume.getAnalyzeError()
+                resume.getAnalyzeError(),
+                resume.getAnalyzeStatusUpdatedAt()
             );
         }).toList();
     }
@@ -110,6 +111,7 @@ public class ResumeHistoryService {
             resume.getResumeText(),
             resume.getAnalyzeStatus(),
             resume.getAnalyzeError(),
+            resume.getAnalyzeStatusUpdatedAt(),
             analysisHistory,
             interviewHistory
         );
@@ -182,4 +184,3 @@ public class ResumeHistoryService {
      */
     public record ExportResult(byte[] pdfBytes, String filename) {}
 }
-

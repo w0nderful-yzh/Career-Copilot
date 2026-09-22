@@ -3,8 +3,10 @@ package interview.guide.modules.agenttool.service;
 import interview.guide.common.exception.BusinessException;
 import interview.guide.common.exception.ErrorCode;
 import interview.guide.common.model.AsyncTaskStatus;
+import interview.guide.modules.agenttool.contract.AgentToolSchemaExporter;
 import interview.guide.modules.agenttool.dto.ToolInfoDTO;
 import interview.guide.modules.agenttool.dto.ToolResponse;
+import interview.guide.modules.agenttool.model.AgentToolName;
 import interview.guide.modules.agenttool.model.AgentToolPermission;
 import interview.guide.modules.interview.model.CreateInterviewRequest;
 import interview.guide.modules.interview.model.InterviewDetailDTO;
@@ -23,14 +25,16 @@ import interview.guide.modules.profile.service.SkillProfileQueryService;
 import interview.guide.modules.resume.model.ResumeContentDTO;
 import interview.guide.modules.resume.model.ResumeEntity;
 import interview.guide.modules.resume.model.ResumeVersionEntity;
-import interview.guide.modules.resume.service.ResumeVersionService;
-import interview.guide.modules.resume.service.ResumePatchApplyService;
-import tools.jackson.databind.ObjectMapper;
-import interview.guide.modules.resume.model.ResumeEntity;
 import interview.guide.modules.resume.service.ResumeHistoryService;
+import interview.guide.modules.resume.service.ResumePatchApplyService;
 import interview.guide.modules.resume.service.ResumePersistenceService;
+import interview.guide.modules.resume.service.ResumeVersionService;
+import jakarta.validation.Validation;
+import jakarta.validation.Validator;
 import java.util.List;
 import java.util.Map;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 import java.util.Optional;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -75,9 +79,18 @@ class AgentToolServiceTest {
   private ResumeVersionService resumeVersionService;
   @Mock
   private ResumePatchApplyService resumePatchApplyService;
+  @Mock
+  private interview.guide.modules.job.service.JobDescriptionService jobDescriptionService;
 
   @Spy
   private final ObjectMapper objectMapper = new ObjectMapper();
+
+  /**
+   * 用真实 Validator（而非 mock）：入参校验是契约的一部分，
+   * 把它 mock 掉等于把「校验是否生效」这件事也一起测没了。
+   */
+  @Spy
+  private final Validator validator = Validation.buildDefaultValidatorFactory().getValidator();
 
   @InjectMocks
   private AgentToolService agentToolService;
@@ -91,7 +104,7 @@ class AgentToolServiceTest {
     void listToolsReturnsAllToolsWithPermissions() {
       List<ToolInfoDTO> tools = agentToolService.listTools();
 
-      assertThat(tools).hasSize(13);
+      assertThat(tools).hasSize(14);
       // 只读 Tool 仍全部为 READ；写 Tool（create_interview / apply_resume_patches）为 CONFIRM_WRITE
       assertThat(tools)
           .extracting(ToolInfoDTO::permission)
@@ -99,7 +112,8 @@ class AgentToolServiceTest {
       assertThat(tools)
           .extracting(ToolInfoDTO::name)
           .contains("get_resume_list", "get_skill_profile", "get_resume_version",
-              "search_knowledge", "create_interview", "apply_resume_patches");
+              "get_interview_report", "get_interview_progress", "search_knowledge",
+              "create_interview", "apply_resume_patches");
       assertThat(tools)
           .allSatisfy(tool -> {
             assertThat(tool.description()).isNotBlank();
@@ -116,6 +130,26 @@ class AgentToolServiceTest {
           .singleElement()
           .extracting(ToolInfoDTO::permission)
           .isEqualTo(AgentToolPermission.CONFIRM_WRITE);
+    }
+
+    @Test
+    @DisplayName("Tool Discovery 的 inputSchema 是合法 JSON，且与契约导出逐字段一致")
+    void discoverySchemaIsRealJsonAndMatchesContract() {
+      for (ToolInfoDTO tool : agentToolService.listTools()) {
+        AgentToolName name = AgentToolName.from(tool.name()).orElseThrow();
+        JsonNode actual = objectMapper.readTree(tool.inputSchema());
+
+        assertThat(actual.isObject())
+            .as("%s 的 inputSchema 必须是 JSON 对象（此前是 `{resumeId: Long, optional}` 这类伪 JSON）",
+                tool.name())
+            .isTrue();
+        assertThat(actual.get("additionalProperties").asBoolean())
+            .as("%s 必须声明拒绝未声明参数", tool.name())
+            .isFalse();
+        assertThat(objectMapper.writeValueAsString(actual))
+            .as("%s 的 Discovery Schema 必须就是契约导出结果（不允许存在第二份人肉 schema）", tool.name())
+            .isEqualTo(objectMapper.writeValueAsString(AgentToolSchemaExporter.exportTool(name)));
+      }
     }
 
     @Test
@@ -299,7 +333,7 @@ class AgentToolServiceTest {
     @Test
     @DisplayName("get_skill_profile 返回画像与证据明细")
     void getSkillProfileDelegates() {
-      SkillProfileResponse expected = new SkillProfileResponse(List.of());
+      SkillProfileResponse expected = new SkillProfileResponse(List.of(), List.of());
       when(skillProfileQueryService.getProfileWithEvidence()).thenReturn(expected);
 
       ToolResponse response = agentToolService.execute("get_skill_profile", Map.of());
@@ -384,12 +418,17 @@ class AgentToolServiceTest {
 
       ToolResponse response = agentToolService.execute(
           "create_interview",
-          Map.of("skillId", "java-backend", "difficulty", "mid", "questionCount", 8));
+          Map.of(
+              "skillId", "java-backend",
+              "difficulty", "mid",
+              "plannedDurationMinutes", 30,
+              "requiredTopics", List.of("JVM")));
 
       assertThat(response.data()).isSameAs(expected);
       verify(interviewSessionService).createSession(
           new CreateInterviewRequest(
-              null, 8, null, false, null, "java-backend", "mid", null, null, null));
+              null, 30, List.of("JVM"), null, null, false, null, "java-backend", "mid",
+              null, null, null, true, List.of()));
     }
 
     @Test

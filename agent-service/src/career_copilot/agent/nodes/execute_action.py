@@ -14,11 +14,13 @@ from career_copilot.agent.nodes.business_tools import _plan_targeted_resume
 from career_copilot.agent.nodes.interview_proposal import interview_proposal
 from career_copilot.agent.nodes.resume_optimization import resume_optimization
 from career_copilot.agent.plan import StreamPlan, static_text
+from career_copilot.agent.response import interview_session_block
 from career_copilot.agent.router import ActionRoute
 from career_copilot.agent.state import CareerAgentState, RunStatus
 from career_copilot.clients.backend import BusinessToolError
 from career_copilot.schemas.action import AgentAction
-from career_copilot.schemas.message import ActionBlock, NavigationBlock
+from career_copilot.schemas.message import ActionBlock, ChoiceBlock, ChoiceOption, NavigationBlock
+from career_copilot.tools import format_history, summarize_interview_detail
 
 
 async def execute_action(state: CareerAgentState, deps: GraphDeps) -> dict[str, Any]:
@@ -39,7 +41,8 @@ async def execute_action(state: CareerAgentState, deps: GraphDeps) -> dict[str, 
 
     if action_name == AgentAction.OPTIMIZE_RESUME.value:
         # 简历优化：走优化子图（生成 Patch 提案，待用户确认后应用）。
-        # payload.resumeId / payload.jobId（ChoiceBlock 回传）优先，回退会话活动资源。
+        # payload.resumeId / payload.jobId（ChoiceBlock 回传）优先，回退会话活动资源；
+        # payload.mode / payload.direction 来自「上下文不足」澄清块，用于锁定用户已选定的模式。
         optimize_state: CareerAgentState = {**state}
         payload_resume_id = _as_int(payload.get("resumeId"))
         if payload_resume_id is not None:
@@ -47,6 +50,12 @@ async def execute_action(state: CareerAgentState, deps: GraphDeps) -> dict[str, 
         payload_job_id = _as_int(payload.get("jobId"))
         if payload_job_id is not None:
             optimize_state["active_job_id"] = payload_job_id
+        payload_mode = payload.get("mode")
+        if isinstance(payload_mode, str) and payload_mode:
+            optimize_state["optimization_mode"] = payload_mode
+        payload_direction = payload.get("direction")
+        if isinstance(payload_direction, str) and payload_direction.strip():
+            optimize_state["target_direction"] = payload_direction.strip()
         return await resume_optimization(optimize_state, deps)
 
     if action_name == AgentAction.START_INTERVIEW.value:
@@ -58,6 +67,9 @@ async def execute_action(state: CareerAgentState, deps: GraphDeps) -> dict[str, 
 
     if action_name == AgentAction.APPLY_RESUME_PATCHES.value:
         return await _apply_resume_patches_action(state, deps, payload)
+
+    if action_name == AgentAction.REVIEW_INTERVIEW.value:
+        return await _review_interview_action(state, deps, payload)
 
     return {"plan": _dispatch(action_name, payload)}
 
@@ -103,9 +115,10 @@ async def _create_interview_action(
     """按用户确认后的配置创建面试（CONFIRM_WRITE）。
 
     payload 由前端从 InterviewProposalBlock 原样回传（direction/difficulty/focus/
-    questionCount/resumeId），先校验必填，再调用 Java create_interview Tool。
-    创建成功后产出 NavigationBlock 跳转现有面试会话页（过渡方案，
-    P4-0 的 InterviewSessionBlock 就绪后原地内嵌替换）。
+    plannedDurationMinutes/requiredTopics/resumeId），先校验必填，再调用 Java
+    create_interview Tool。
+    创建成功后产出 InterviewSessionBlock 原地内嵌（P4-0：不再跳转面试页，
+    答题在块内直连 Java Interview API）。
     """
     direction = payload.get("direction")
     difficulty = payload.get("difficulty") or "mid"
@@ -116,15 +129,30 @@ async def _create_interview_action(
             )
         }
 
+    # focus 必须真正传给 Java：否则用户看到「重点考察 JVM」却仍被问 MySQL（P3 待收口）
+    focus_categories = [f for f in (payload.get("focus") or []) if isinstance(f, str)]
+    required_topics = [
+        topic for topic in (payload.get("requiredTopics") or [])
+        if isinstance(topic, str)
+    ]
+
+    # 幂等键：由前端在同一次确认流程中生成并原样回传（重发/重试复用同一值）。
+    # 缺失时为 None——那等于没有幂等保护，重复提交会重复建会话（ARCH-1 的契约行为测试盯这条）。
+    raw_request_id = payload.get("requestId")
+    request_id = raw_request_id if isinstance(raw_request_id, str) and raw_request_id else None
+
     emit_tool_started("create_interview")
     try:
         session = await deps.backend.create_interview(
             skill_id=direction,
             difficulty=difficulty,
-            question_count=_as_int(payload.get("questionCount")),
+            planned_duration_minutes=_as_int(payload.get("plannedDurationMinutes")),
+            required_topics=required_topics,
             resume_id=_as_int(payload.get("resumeId")) or state.get("active_resume_id"),
             resume_text=None,
             force_create=True,
+            request_id=request_id,
+            focus_categories=focus_categories,
         )
     except BusinessToolError as exc:
         emit_tool_completed("create_interview")
@@ -145,19 +173,34 @@ async def _create_interview_action(
             )
         }
 
+    planned_minutes = (
+        session.get("plannedDurationMinutes")
+        or payload.get("plannedDurationMinutes")
+        or 20
+    )
+    persisted_required_topics = session.get("requiredTopics")
+    session_required_topics = (
+        [topic for topic in persisted_required_topics if isinstance(topic, str)]
+        if isinstance(persisted_required_topics, list)
+        else required_topics
+    )
     emit_run_status(RunStatus.COMPLETED.value)
     return {
         "plan": StreamPlan(
             blocks=[
-                NavigationBlock(
-                    route=ActionRoute.INTERVIEW_SESSION.value,
-                    label="进入面试",
-                    params={"sessionId": session_id},
+                interview_session_block(
+                    session_id=session_id,
+                    skill_id=direction if isinstance(direction, str) else None,
+                    difficulty=difficulty if isinstance(difficulty, str) else None,
+                    focus=focus_categories,
+                    planned_duration_minutes=_as_int(planned_minutes),
+                    required_topics=session_required_topics,
+                    direction_name=None,
                 )
             ],
             text=static_text(
-                f"面试已创建（{session.get('totalQuestions') or '?'} 题）。"
-                "点击「进入面试」开始答题，祝你发挥顺利！"
+                f"面试已创建（预计 {planned_minutes} 分钟）。"
+                "面试已在你面前展开，直接在卡片内回答即可。"
             ),
         )
     }
@@ -244,11 +287,73 @@ async def _apply_resume_patches_action(
     }
 
 
+async def _review_interview_action(
+    state: CareerAgentState,
+    deps: GraphDeps,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """复盘刚结束的面试（P4-6a 面试结果回流 Copilot）。
+
+    payload 由结果卡携带 sessionId。读取 Java 面试详情（强项/弱项/逐题得分），
+    让 LLM 基于客观数据给出复盘（answerer 系统 prompt 禁止编造参考信息）；
+    附 [再来一场] / [查看面试记录] 下一步动作。
+    """
+    session_id = payload.get("sessionId")
+    if not isinstance(session_id, str) or not session_id:
+        return {
+            "plan": StreamPlan(
+                text=static_text("缺少面试信息，请回到面试结果卡片重新操作。")
+            )
+        }
+
+    emit_tool_started("interview_review")
+    try:
+        detail = await deps.backend.get_interview_detail(session_id)
+    except BusinessToolError as exc:
+        emit_tool_completed("interview_review")
+        return {
+            "plan": StreamPlan(
+                text=static_text(
+                    f"读取面试详情失败：{exc.message}。你可以在「面试记录」页查看完整报告。"
+                )
+            )
+        }
+    emit_tool_completed("interview_review")
+
+    context = summarize_interview_detail(detail)
+    history = format_history(
+        state.get("history") or [],
+        state.get("history_summary"),
+        snapshot=state.get("user_snapshot"),
+    )
+    message = (state.get("message") or "").strip() or "请帮我复盘这次面试"
+
+    return {
+        "plan": StreamPlan(
+            blocks=[
+                ActionBlock(
+                    route=ActionRoute.INTERVIEW_HISTORY.value,
+                    label="查看面试记录",
+                    params={},
+                ),
+                ChoiceBlock(
+                    title="下一步",
+                    options=[
+                        ChoiceOption(
+                            action=AgentAction.START_INTERVIEW.value,
+                            label="再来一场模拟面试",
+                            payload={},
+                        ),
+                    ],
+                ),
+            ],
+            text=deps.answerer.answer_stream(message, context, history or None),
+        )
+    }
+
+
 def _dispatch(action_name: str | None, payload: dict[str, Any]) -> StreamPlan:
     """动作注册表：action key → 确定流程。"""
-    resume_id = payload.get("resumeId")
-    params: dict[str, Any] = {"resumeId": resume_id} if resume_id else {}
-
     handlers: dict[str, StreamPlan] = {
         # ANALYZE_RESUME / OPTIMIZE_RESUME / START_INTERVIEW / CREATE_INTERVIEW 已在上方异步处理
         AgentAction.JOB_MATCH.value: StreamPlan(

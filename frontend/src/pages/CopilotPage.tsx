@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useOutletContext } from 'react-router-dom';
+import { useLocation, useNavigate, useOutletContext } from 'react-router-dom';
+import { AlertCircle, RefreshCw } from 'lucide-react';
 import { conversationApi, jobUploadApi, resumeUploadApi, streamChat } from '../api/agentChat';
 import Composer, { type AttachmentKind } from '../components/copilot/Composer';
 import ContextPanel from '../components/copilot/ContextPanel';
+import InterviewWorkspace from '../components/copilot/InterviewWorkspace';
 import MessageList from '../components/copilot/MessageList';
 import type { CopilotOutletContext } from '../components/Layout';
+import { ROUTES } from '../constants/routes';
+import { FAILED_TURN_HINT, toMessageStatus } from '../utils/copilotTurnStatus';
 import type {
   ActionSelected,
   AgentBlock,
@@ -13,7 +17,10 @@ import type {
   ConversationDetail,
   ConversationItem,
   CopilotMessage,
+  InterviewModeState,
+  InterviewSessionBlock,
   StreamEvent,
+  TurnRetryPayload,
 } from '../types/copilot';
 
 // Copilot Workspace：Agent 对话工作台
@@ -36,15 +43,33 @@ function parseBlocks(blocksJson: string | null): AgentBlock[] {
   }
 }
 
-/** 历史消息 → 前端消息模型 */
+/** 历史消息 → 前端消息模型（终态由 Java status 还原，缺省按正常完成处理） */
 function toCopilotMessages(detail: ConversationDetail): CopilotMessage[] {
-  return detail.messages.map((message) => ({
-    id: `saved_${message.id}`,
-    role: message.role === 'USER' ? 'user' : 'assistant',
-    content: message.content,
-    blocks: parseBlocks(message.blocks),
-    status: 'done',
-  }));
+  return detail.messages.map((message) => {
+    const status = toMessageStatus(message.status);
+    return {
+      id: `saved_${message.id}`,
+      role: message.role === 'USER' ? 'user' : 'assistant',
+      content: message.content,
+      blocks: parseBlocks(message.blocks),
+      status,
+      // 历史回放没有实时错误详情，失败轮次给兜底文案
+      error: status === 'error' ? FAILED_TURN_HINT : undefined,
+    };
+  });
+}
+
+/** 取消息流里最近一个 interview_session 信号块（Interview Mode 重构：进入 Interview Mode 的信号） */
+function latestInterviewSignal(messages: CopilotMessage[]): InterviewSessionBlock | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    for (let j = messages[i].blocks.length - 1; j >= 0; j--) {
+      const block = messages[i].blocks[j];
+      if (block.type === 'interview_session') {
+        return block;
+      }
+    }
+  }
+  return null;
 }
 
 export default function CopilotPage() {
@@ -54,14 +79,46 @@ export default function CopilotPage() {
     refreshConversations,
     selectConversation,
     onConversationCreated,
+    conversationsLoaded,
   } = useOutletContext<CopilotOutletContext>();
+  const location = useLocation();
+  const navigate = useNavigate();
 
   const [messages, setMessages] = useState<CopilotMessage[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  // 历史加载失败：与「空会话」区分开，否则界面会渲染成新会话首屏，用户以为历史被清空
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  // 失败重试用：递增以重新触发加载 effect
+  const [historyReloadKey, setHistoryReloadKey] = useState(0);
   // 会话绑定的活动 JD（Conversation Memory，P2-5；侧栏活跃资源展示用）
   const [boundJobId, setBoundJobId] = useState<number | null>(null);
   const [streaming, setStreaming] = useState(false);
+  // Interview Mode（Interview Mode 重构）：null = 普通聊天；有值 = 中间区进入面试模式
+  const [interviewMode, setInterviewMode] = useState<InterviewModeState | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // 已主动退出的面试会话：不再被旧的 interview_session 信号块自动拉回 Interview Mode。
+  // 退出时会向会话追加一条「面试完成摘要」artifact，messages 因此变化，
+  // 下面的自动进入 effect 会重新扫描到那个信号块 —— 不记录就会把用户又拽回面试模式（P4 待修正）。
+  const closedInterviewSessionsRef = useRef<Set<string>>(new Set());
+  /** 进行中的面试会话（P4-10）：发送消息时读取，避免把 interviewMode 塞进回调依赖 */
+  const interviewModeRef = useRef<InterviewModeState | null>(null);
+  // 面试模式变化时同步给 ref：发送消息的回调不能依赖 interviewMode（否则每次进出面试都要重建）
+  useEffect(() => {
+    interviewModeRef.current = interviewMode;
+  }, [interviewMode]);
+  /**
+   * 侧栏画像刷新令牌（P4-6b）：面试报告完成时 +1。
+   *
+   * 报告落库会同时写入画像证据，侧栏若不重取就还在显示面试前的分数——
+   * 用户刚看到「本场画像变化」，旁边的画像却纹丝不动，是最容易让人不信任的一类不一致。
+   */
+  const [profileRefreshToken, setProfileRefreshToken] = useState(0);
+  useEffect(() => {
+    if (interviewMode?.status === 'completed') {
+      setProfileRefreshToken((token) => token + 1);
+    }
+  }, [interviewMode?.status]);
+
   // 新建会话首次触发历史加载时跳过（保留刚追加的流式消息，避免被空历史覆盖）
   const skipHistoryLoadRef = useRef<number | null>(null);
 
@@ -79,6 +136,7 @@ export default function CopilotPage() {
     let cancelled = false;
     if (activeConversationId === null) {
       setMessages([]);
+      setHistoryError(null);
       return;
     }
     // 刚创建的新会话：不加载历史，保留本次发送追加的消息
@@ -88,13 +146,20 @@ export default function CopilotPage() {
     }
     (async () => {
       setLoadingHistory(true);
+      // 重试前先清掉上一次的错误，避免旧提示与新加载状态并存
+      setHistoryError(null);
       try {
         const detail = await conversationApi.getDetail(activeConversationId);
         if (cancelled) return;
         setMessages(toCopilotMessages(detail));
         setBoundJobId(detail.activeJobId ?? null);
       } catch (err) {
+        if (cancelled) return;
+        // 明确记录失败态：此前只 console.error，messages 保持为空 →
+        // 渲染出新会话首屏，用户会误以为历史丢了（P1 待收口）
         console.error('Failed to load conversation:', err);
+        setMessages([]);
+        setHistoryError(err instanceof Error ? err.message : '对话加载失败');
       } finally {
         if (!cancelled) setLoadingHistory(false);
       }
@@ -102,7 +167,7 @@ export default function CopilotPage() {
     return () => {
       cancelled = true;
     };
-  }, [activeConversationId]);
+  }, [activeConversationId, historyReloadKey]);
 
   const handleEvent = useCallback(
     (assistantId: string, event: StreamEvent) => {
@@ -238,12 +303,24 @@ export default function CopilotPage() {
       }
 
       const assistantId = existingAssistantId ?? nextId();
+      // 记下本轮原始请求：失败/停止后可原样重发（含附件与 Action 提交）
+      const retryPayload: TurnRetryPayload = { message, userContent, attachments, action };
       if (!existingAssistantId) {
         setMessages((prev) => [
           ...prev,
           { id: nextId(), role: 'user', content: userContent, blocks: [], status: 'done' },
-          { id: assistantId, role: 'assistant', content: '', blocks: [], status: 'streaming' },
+          {
+            id: assistantId,
+            role: 'assistant',
+            content: '',
+            blocks: [],
+            status: 'streaming',
+            retry: retryPayload,
+          },
         ]);
+      } else {
+        // 复用已有气泡（附件上传成功后继续本轮）：同步刷新重发载荷
+        updateMessage(assistantId, (m) => ({ ...m, retry: retryPayload }));
       }
       setStreaming(true);
 
@@ -257,10 +334,15 @@ export default function CopilotPage() {
           conversationId,
           attachments,
           action,
+          // P4-10：Interview Mode 里把进行中的会话告诉后端，
+          // Copilot 才能回答「现在考到哪、还剩什么」而不是只能等结束后的报告
+          interviewModeRef.current?.sessionId,
         );
       } catch (err) {
         if (controller.signal.aborted) {
-          updateMessage(assistantId, (current) => ({ ...current, status: 'done' }));
+          // 用户主动「停止生成」：标为 stopped 而非 done，
+          // 否则停止后与正常完成无法区分（Java 侧同步落 STOPPED）
+          updateMessage(assistantId, (current) => ({ ...current, status: 'stopped' }));
         } else {
           updateMessage(assistantId, (current) => ({
             ...current,
@@ -336,6 +418,13 @@ export default function CopilotPage() {
             ? `附件上传失败：${err.message}`
             : '附件上传失败，请重试',
           toolTrace: [],
+          // 上传失败时资源 id 还不存在，重发需要原始文件（其余轮次用已有 id 即可）
+          retry: {
+            message: text,
+            userContent,
+            attachments: [],
+            attachment: { file: attachment, kind: attachmentKind },
+          },
         }));
         setStreaming(false);
         return;
@@ -355,6 +444,28 @@ export default function CopilotPage() {
     [runTurn, updateMessage],
   );
 
+  /**
+   * 画像低分项「一键定向」（P4-6b）。
+   *
+   * 把用户的明确选择作为动作载荷交给提案节点：它能对上方向分类就强制进「重点 + 必要覆盖」，
+   * 对不上会如实说明——不悄悄换成一个考不到的重点。
+   */
+  const startFocusInterview = useCallback(
+    (skill: string) => {
+      const text = `针对「${skill}」来一场定向面试`;
+      void runTurn({
+        message: text,
+        userContent: text,
+        action: {
+          type: 'ACTION_SELECTED',
+          action: 'START_INTERVIEW',
+          payload: { focusSkill: skill },
+        },
+      });
+    },
+    [runTurn],
+  );
+
   const submitAction = useCallback(
     (option: ChoiceOption) => {
       // 文案仅用于可读的用户气泡和历史；Graph 只按结构化 action 确定性路由。
@@ -371,9 +482,152 @@ export default function CopilotPage() {
     [runTurn],
   );
 
+  /**
+   * 失败/停止后重发本轮：复用消息上保存的原始请求重跑，用户无需重新输入。
+   *
+   * 语义是「新的一轮」——后端会一并落一条用户消息，界面与历史里会再出现一次该提问，
+   * 与持久化结果保持一致（不做无痕重放）。若要「原地续写/重新生成」，需要后端提供
+   * regenerate 语义（跳过 USER 落库），属后续独立改动。
+   */
+  const retryTurn = useCallback(
+    (messageId: string) => {
+      const payload = messages.find((message) => message.id === messageId)?.retry;
+      if (!payload) return;
+      if (payload.attachment) {
+        // 附件上传失败轮：资源 id 尚不存在，按原始文件重走一遍上传
+        void send(payload.message, payload.attachment.file, payload.attachment.kind);
+        return;
+      }
+      void runTurn({
+        message: payload.message,
+        userContent: payload.userContent,
+        attachments: payload.attachments,
+        action: payload.action,
+      });
+    },
+    [messages, runTurn, send],
+  );
+
   const cancel = useCallback(() => {
     abortRef.current?.abort();
   }, []);
+
+  /** 画像变化的追溯入口（P3 待收口）：跳到面试记录页并定位该场次 */
+  const viewInterviewSession = useCallback(
+    (sessionId: string) => {
+      navigate(ROUTES.interviewHistory, { state: { highlightSessionId: sessionId } });
+    },
+    [navigate],
+  );
+
+  /**
+   * 让 Copilot 复盘指定面试会话（REVIEW_INTERVIEW action）。
+   *
+   * 这是该 action 的真实前端入口：此前 Python 侧已实现 REVIEW_INTERVIEW 处理（读 Java
+   * /interview/sessions/{id}/details 做逐题复盘），但前端从来没有地方触发它（P4 待修正）。
+   * 复盘面向「已结束」的会话，因此先退出 Interview Mode 并登记为已退出。
+   */
+  const reviewInterview = useCallback(
+    async (sessionId: string, title: string) => {
+      closedInterviewSessionsRef.current.add(sessionId);
+      setInterviewMode(null);
+      // 同时留下完成摘要 artifact：与「完成并返回对话」保持一致的历史回放记录
+      if (activeConversationId !== null) {
+        const summaryContent = `✅ 模拟面试完成（${title}）。表现已写入能力画像，下面为你复盘。`;
+        const assistantId = `interview_done_${Date.now()}`;
+        setMessages((prev) => [
+          ...prev,
+          { id: assistantId, role: 'assistant', content: summaryContent, blocks: [], status: 'done' },
+        ]);
+        try {
+          await fetch(`/api/agent/conversations/${activeConversationId}/messages`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              messages: [{ role: 'ASSISTANT', content: summaryContent, blocks: JSON.stringify([]) }],
+            }),
+          });
+        } catch (err) {
+          console.error('保存面试完成摘要失败:', err);
+        }
+      }
+      await runTurn({
+        message: '帮我复盘这次面试',
+        userContent: '让 Copilot 复盘这次面试',
+        action: {
+          type: 'ACTION_SELECTED',
+          action: 'REVIEW_INTERVIEW',
+          payload: { sessionId },
+        },
+      });
+    },
+    [activeConversationId, runTurn],
+  );
+
+  // 面试记录页点「让 Copilot 复盘」会带 reviewSessionId 跳到 /copilot：
+  // 等会话列表就绪后再发起（否则 activeConversationId 还是 null，runTurn 会误建新会话）。
+  const pendingReviewSessionId =
+    (location.state as { reviewSessionId?: string } | null)?.reviewSessionId ?? null;
+
+  useEffect(() => {
+    if (!pendingReviewSessionId || !conversationsLoaded) return;
+    // 处理一次即清 state，避免重渲染/刷新重复发起
+    navigate(ROUTES.copilot, { replace: true, state: null });
+    void reviewInterview(pendingReviewSessionId, '指定面试');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingReviewSessionId, conversationsLoaded]);
+
+  // 面试信号块到达 → 进入 Interview Mode（若已是同会话 mode 则保持，避免重复进入）
+  useEffect(() => {
+    const signal = latestInterviewSignal(messages);
+    if (!signal) return;
+    // 已退出的会话不再自动进入（面试已结束，不应把用户拽回面试模式）
+    if (closedInterviewSessionsRef.current.has(signal.session_id)) return;
+    setInterviewMode((prev) => {
+      if (prev && prev.sessionId === signal.session_id) return prev;
+      const title = signal.direction_name || signal.skill_id || '模拟面试';
+      return {
+        sessionId: signal.session_id,
+        status: 'starting',
+        title,
+        difficulty: signal.difficulty ?? null,
+      };
+    });
+  }, [messages]);
+
+  // 切换会话时退出 Interview Mode（Java 会话保留，可恢复）
+  useEffect(() => {
+    setInterviewMode(null);
+  }, [activeConversationId]);
+
+  // 面试完成 → 退出 Interview Mode，向会话写入一条轻量「面试完成摘要」artifact
+  // （领域隔离：过程不写 conversation，只写结果；供历史回放与复盘）
+  const exitInterviewWithSummary = useCallback(async (mode: InterviewModeState) => {
+    // 先登记已退出：追加摘要会让 messages 变化并重新扫描到信号块，
+    // 不登记就会被自动拉回面试模式（见 closedInterviewSessionsRef 注释）
+    closedInterviewSessionsRef.current.add(mode.sessionId);
+    const summaryContent = `✅ 模拟面试完成（${mode.title}）。表现已写入能力画像，可让我复盘本次面试或再来一场。`;
+    if (activeConversationId !== null) {
+      const assistantId = `interview_done_${Date.now()}`;
+      setMessages((prev) => [
+        ...prev,
+        { id: assistantId, role: 'assistant', content: summaryContent, blocks: [], status: 'done' },
+      ]);
+      try {
+        const res = await fetch(`/api/agent/conversations/${activeConversationId}/messages`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            messages: [{ role: 'ASSISTANT', content: summaryContent, blocks: JSON.stringify([]) }],
+          }),
+        });
+        if (!res.ok) console.error('保存面试完成摘要失败:', res.status);
+      } catch (err) {
+        console.error('保存面试完成摘要失败:', err);
+      }
+    }
+    setInterviewMode(null);
+  }, [activeConversationId]);
 
   const activeConversation = conversations.find((item) => item.id === activeConversationId);
 
@@ -395,26 +649,65 @@ export default function CopilotPage() {
           </div>
         </header>
 
-        <main className="relative flex-1 overflow-y-auto bg-[radial-gradient(circle_at_top,_rgba(99,102,241,0.06),_transparent_38%)] dark:bg-[radial-gradient(circle_at_top,_rgba(99,102,241,0.10),_transparent_38%)]">
-          {loadingHistory ? (
-            <div className="flex h-full items-center justify-center text-sm text-slate-400">
-              加载对话中…
-            </div>
-          ) : (
-            <MessageList
-              messages={messages}
-              actionDisabled={streaming}
-              onActionSelect={submitAction}
-              onQuickPrompt={(prompt) => void send(prompt)}
-            />
-          )}
-        </main>
+        {interviewMode ? (
+          <InterviewWorkspace
+            mode={interviewMode}
+            onChangeStatus={setInterviewMode}
+            onExit={() => void exitInterviewWithSummary(interviewMode)}
+            onReview={() => void reviewInterview(interviewMode.sessionId, interviewMode.title)}
+            onViewSession={viewInterviewSession}
+          />
+        ) : (
+          <>
+            <main className="relative flex-1 overflow-y-auto bg-[radial-gradient(circle_at_top,_rgba(99,102,241,0.06),_transparent_38%)] dark:bg-[radial-gradient(circle_at_top,_rgba(99,102,241,0.10),_transparent_38%)]">
+              {loadingHistory ? (
+                <div className="flex h-full items-center justify-center text-sm text-slate-400">
+                  加载对话中…
+                </div>
+              ) : historyError ? (
+                /* 加载失败必须与「空会话」区分：否则会显示新会话首屏，像是历史被清空 */
+                <div className="flex h-full items-center justify-center px-6">
+                  <div className="w-full max-w-md rounded-2xl border border-red-200 bg-red-50/70 px-5 py-4 text-center dark:border-red-900/50 dark:bg-red-900/20">
+                    <AlertCircle className="mx-auto h-5 w-5 text-red-500" />
+                    <p className="mt-2 text-sm font-medium text-red-700 dark:text-red-300">
+                      对话加载失败
+                    </p>
+                    <p className="mt-1 break-words text-xs text-red-600/80 dark:text-red-300/80">
+                      {historyError}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setHistoryReloadKey((key) => key + 1)}
+                      className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-red-700"
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" />
+                      重试
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <MessageList
+                  messages={messages}
+                  actionDisabled={streaming}
+                  onActionSelect={submitAction}
+                  onQuickPrompt={(prompt) => void send(prompt)}
+                  onRetry={retryTurn}
+                />
+              )}
+            </main>
 
-        <div className="shrink-0 border-t border-slate-200/60 bg-white/85 pt-3 backdrop-blur-xl dark:border-slate-700 dark:bg-slate-900/85">
-          <Composer streaming={streaming} onSend={send} onCancel={cancel} />
-        </div>
+            <div className="shrink-0 border-t border-slate-200/60 bg-white/85 pt-3 backdrop-blur-xl dark:border-slate-700 dark:bg-slate-900/85">
+              <Composer streaming={streaming} onSend={send} onCancel={cancel} />
+            </div>
+          </>
+        )}
       </section>
-      <ContextPanel messages={messages} activeJobId={boundJobId} />
+      <ContextPanel
+        messages={messages}
+        activeJobId={boundJobId}
+        profileRefreshToken={profileRefreshToken}
+        onStartFocusInterview={startFocusInterview}
+      />
     </div>
   );
 }

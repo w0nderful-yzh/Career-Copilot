@@ -1,6 +1,7 @@
 package interview.guide.modules.profile.service;
 
 import interview.guide.modules.interview.model.InterviewAnswerEntity;
+import interview.guide.modules.interview.model.InterviewQuestionDTO;
 import interview.guide.modules.interview.model.InterviewSessionEntity;
 import interview.guide.modules.interview.repository.InterviewSessionRepository;
 import interview.guide.modules.profile.model.EvidenceSourceType;
@@ -48,7 +49,11 @@ public class InterviewEvidenceExtractor {
     InterviewSessionEntity session = sessionOpt.get();
     List<SkillEvidenceEntity> evidences = new ArrayList<>();
     for (InterviewAnswerEntity answer : session.getAnswers()) {
-      // 只取真实作答且有评分的答案；score 为 null 表示评估未覆盖该题
+      // P4Q-5：只取「真实作答」——跳过/未作答/明确不会是有意记录的事实，不是评分证据
+      if (!answer.countsAsAnswer()) {
+        continue;
+      }
+      // score 为 null 表示评估未覆盖该题（未作答的题目得 0 分是"未考"而非"不会"）
       if (answer.getUserAnswer() == null || answer.getUserAnswer().isBlank()
           || answer.getScore() == null) {
         continue;
@@ -61,7 +66,7 @@ public class InterviewEvidenceExtractor {
           ProfileConstants.DEFAULT_USER_ID,
           skill,
           EvidenceSourceType.INTERVIEW_TURN,
-          sessionId + ":" + answer.getQuestionIndex(),
+          sessionId + ":" + evidenceKey(answer),
           answer.getScore(),
           session.getCompletedAt() != null ? session.getCompletedAt() : LocalDateTime.now()));
     }
@@ -69,11 +74,33 @@ public class InterviewEvidenceExtractor {
     return evidences;
   }
 
-  /** category 为空时归入未知技能并丢弃（无技能归属的证据不参与聚合） */
+  /**
+   * 证据来源键（P4-1）：优先**题目标识**，旧数据没有标识时才退回 `legacy-<下标>`。
+   *
+   * <p>格式仍是 {@code sessionId:key}——它是「同一轮次只计一次分」的唯一依据
+   * （唯一索引 (user_id, skill, source_type, source_id)）。
+   */
+  private static String evidenceKey(InterviewAnswerEntity answer) {
+    if (answer.getQuestionId() != null && !answer.getQuestionId().isBlank()) {
+      return answer.getQuestionId();
+    }
+    return answer.getQuestionIndex() == null
+        ? "unknown"
+        : InterviewQuestionDTO.legacyIdFor(answer.getQuestionIndex());
+  }
+
+  /**
+   * category → 技能名。
+   *
+   * <p>P4Q-6：历史数据里追问序号被拼进了 category（`Java（追问1）`），直接当技能名会产出
+   * 伪技能；这里统一归一化，使历史与新增数据落在同一个稳定技能标识上。
+   * category 为空时丢弃（无技能归属的证据不参与聚合）。
+   */
   private String normalizeSkill(String category) {
     if (category == null || category.isBlank()) {
       return null;
     }
-    return category.trim();
+    String skill = SkillNameNormalizer.normalize(category);
+    return skill == null || skill.isBlank() ? null : skill;
   }
 }

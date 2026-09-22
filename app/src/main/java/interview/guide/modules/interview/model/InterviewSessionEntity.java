@@ -81,6 +81,15 @@ public class InterviewSessionEntity {
     // 参考答案 (JSON)
     @Column(columnDefinition = "TEXT")
     private String referenceAnswersJson;
+
+    /**
+     * P4-5 完整报告快照。
+     *
+     * <p>报告含规则版本、真实轮次、覆盖与聚合输入；读取时返回同一快照，不再次调用模型，
+     * 从而保证展示、导出与后续复盘基于同一份事实。
+     */
+    @Column(name = "report_json", columnDefinition = "TEXT")
+    private String reportJson;
     
     // 面试答案记录
     @OneToMany(mappedBy = "session", cascade = CascadeType.ALL, orphanRemoval = true)
@@ -102,6 +111,10 @@ public class InterviewSessionEntity {
     @Column(length = 500)
     private String evaluateError;
 
+    // 评估状态最后变化时间：供跨刷新超时判断，直接更新语句也必须同步维护
+    @Column(name = "evaluate_status_updated_at")
+    private LocalDateTime evaluateStatusUpdatedAt;
+
     // LLM提供商
     @Column(length = 50)
     private String llmProvider = "dashscope";
@@ -116,7 +129,113 @@ public class InterviewSessionEntity {
     // 知识库面试方向（来自题库 category，普通面试为 null）
     @Column(length = 64)
     private String interviewCategory;
-    
+
+    // 是否自适应面试（P4-3：逐题轻量评估 + 决策选下一题；普通/知识库面试保持顺序题单）
+    @Column(nullable = false)
+    private Boolean adaptive = false;
+
+    // 简历来源（P4Q-1）：RESUME_VERSION / RESUME_TEXT / EXPLICIT_TEXT / NONE
+    @Column(name = "resume_source", length = 24)
+    private String resumeSource;
+
+    // 出题使用的简历版本号（来源为 RESUME_VERSION 时有值）
+    @Column(name = "resume_version")
+    private Integer resumeVersion;
+
+    // 出题实际使用的简历上下文文本快照（简历后续被修改/删除也能追溯当时依据）
+    @Column(name = "resume_context_text", columnDefinition = "TEXT")
+    private String resumeContextText;
+
+    // 会话推进版本（P4-9a）：作答 / 跳过 / 结束各 +1，逐轮提交用它做乐观并发控制。
+    // 只由「推进会话」的路径递增，报告回填与评估状态更新不动它——否则异步任务会把
+    // 用户正在进行的提交判成过期。
+    @Column(name = "turn_version", nullable = false)
+    private Integer turnVersion = 0;
+
+    // 评估任务代次（P4-9a）：每次请求评估 +1，随 Stream 消息投递，消费端据此丢弃过期触发
+    @Column(name = "evaluate_epoch", nullable = false)
+    private Long evaluateEpoch = 0L;
+
+    /**
+     * 结束原因（P4-1）：候选素材耗尽与用户主动结束必须能分开表达。
+     *
+     * <p>此前结束只有 status=COMPLETED 一种说法，「候选问完了」「用户不想聊了」「预算到了」
+     * 在数据上无法区分，报告与复盘也就说不出「为什么这场结束了」。覆盖与预算原因由 P4Q-2 扩展。
+     */
+    @Column(name = "end_reason", length = 32)
+    private String endReason;
+
+    /** 候选素材已耗尽（不是「考察完成」——覆盖是否充分是另一件事） */
+    public static final String END_CANDIDATES_EXHAUSTED = "CANDIDATES_EXHAUSTED";
+    /** 用户主动结束（提前交卷 / 自然语言要求结束） */
+    public static final String END_USER_FINISHED = "USER_FINISHED";
+    /** 必要覆盖已完成（P4Q-2）：与「候选耗尽」分开——前者是目标达成，后者是素材用完 */
+    public static final String END_COVERAGE_SATISFIED = "COVERAGE_SATISFIED";
+    /** 时间预算用尽（P4Q-2）：只统计用户答题时间，模型等待不算 */
+    public static final String END_BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED";
+
+    /**
+     * 预计时长（分钟，P4Q-2）：规模与收束判据都由它推导；NULL 表示旧会话未记录计划。
+     */
+    @Column(name = "planned_duration_minutes")
+    private Integer plannedDurationMinutes;
+
+    /**
+     * 必要覆盖的话题列表（P4Q-2，JSON 数组）。
+     *
+     * <p>覆盖**状态**不落库：候选池与实际轨迹足以还原「每个话题问没问、怎么答的」，
+     * 再存一份快照只会与轨迹漂移。这里只存「计划要求覆盖哪些话题」。
+     */
+    @Column(name = "required_topics_json", columnDefinition = "TEXT")
+    private String requiredTopicsJson;
+
+    /**
+     * 提案重点分类 key 列表（P5-2，JSON 数组）。
+     *
+     * <p>focus 只在出题那一刻被消费过，不落库就没人说得清「为什么这场重点考了这些」。
+     * 与必要覆盖、计划时长一起构成计划快照；推荐依据文本不落库（展示层措辞，实时推导）。
+     */
+    @Column(name = "focus_categories_json", columnDefinition = "TEXT")
+    private String focusCategoriesJson;
+
+    /**
+     * 用户答题累计耗时（秒，P4Q-2）。
+     *
+     * <p>只记「题目展示 → 本轮提交」的墙钟并扣除本轮模型评估耗时——
+     * 模型/网络等待与暂停都不扣用户预算，否则「模型慢」会变成「用户超时」。
+     */
+    @Column(name = "consumed_seconds", nullable = false)
+    private Integer consumedSeconds = 0;
+
+    /**
+     * 当前题展示时刻（P4Q-2）：时间记账起点，提交时结算本轮耗时。
+     */
+    @Column(name = "question_presented_at")
+    private LocalDateTime questionPresentedAt;
+
+    /**
+     * 当前待答题的稳定标识（P4-1）。
+     *
+     * <p>推进闸门与「当前题」定位都基于它；{@link #currentQuestionIndex} 退化为展示顺序
+     * 与旧数据兼容。旧会话由迁移按 {@code legacy-<index>} 回填。
+     */
+    @Column(name = "current_question_id", length = 64)
+    private String currentQuestionId;
+
+    /**
+     * 本场难度偏好（P4Q-3c）：显式节奏指令当轮生效，只影响本场后续选题与生成的难度基线，
+     * 不写长期画像。junior/mid/senior；NULL 表示未调整。
+     */
+    @Column(name = "difficulty_preference", length = 16)
+    private String difficultyPreference;
+
+    /**
+     * 候选代次（P4-4b）：受限生成与后台预备候选都带上当时的代次；
+     * 后台异步预备回写前比对代次，晚到/过期的结果不驱动状态。
+     */
+    @Column(name = "candidate_version", nullable = false)
+    private Integer candidateVersion = 0;
+
     public enum SessionStatus {
         CREATED,      // 会话已创建
         IN_PROGRESS,  // 面试进行中
@@ -237,6 +356,14 @@ public class InterviewSessionEntity {
     public void setReferenceAnswersJson(String referenceAnswersJson) {
         this.referenceAnswersJson = referenceAnswersJson;
     }
+
+    public String getReportJson() {
+        return reportJson;
+    }
+
+    public void setReportJson(String reportJson) {
+        this.reportJson = reportJson;
+    }
     
     public List<InterviewAnswerEntity> getAnswers() {
         return answers;
@@ -268,6 +395,7 @@ public class InterviewSessionEntity {
 
     public void setEvaluateStatus(AsyncTaskStatus evaluateStatus) {
         this.evaluateStatus = evaluateStatus;
+        this.evaluateStatusUpdatedAt = LocalDateTime.now();
     }
 
     public String getEvaluateError() {
@@ -276,6 +404,14 @@ public class InterviewSessionEntity {
 
     public void setEvaluateError(String evaluateError) {
         this.evaluateError = evaluateError;
+    }
+
+    public LocalDateTime getEvaluateStatusUpdatedAt() {
+        return evaluateStatusUpdatedAt;
+    }
+
+    public void setEvaluateStatusUpdatedAt(LocalDateTime evaluateStatusUpdatedAt) {
+        this.evaluateStatusUpdatedAt = evaluateStatusUpdatedAt;
     }
 
     public String getLlmProvider() {
@@ -324,6 +460,126 @@ public class InterviewSessionEntity {
 
     public void setInterviewCategory(String interviewCategory) {
         this.interviewCategory = interviewCategory;
+    }
+
+    public Boolean getAdaptive() {
+        return adaptive;
+    }
+
+    public void setAdaptive(Boolean adaptive) {
+        this.adaptive = adaptive;
+    }
+
+    public String getResumeSource() {
+        return resumeSource;
+    }
+
+    public void setResumeSource(String resumeSource) {
+        this.resumeSource = resumeSource;
+    }
+
+    public Integer getResumeVersion() {
+        return resumeVersion;
+    }
+
+    public void setResumeVersion(Integer resumeVersion) {
+        this.resumeVersion = resumeVersion;
+    }
+
+    public String getResumeContextText() {
+        return resumeContextText;
+    }
+
+    public void setResumeContextText(String resumeContextText) {
+        this.resumeContextText = resumeContextText;
+    }
+
+    public Integer getTurnVersion() {
+        return turnVersion;
+    }
+
+    public void setTurnVersion(Integer turnVersion) {
+        this.turnVersion = turnVersion;
+    }
+
+    public Long getEvaluateEpoch() {
+        return evaluateEpoch;
+    }
+
+    public void setEvaluateEpoch(Long evaluateEpoch) {
+        this.evaluateEpoch = evaluateEpoch;
+    }
+
+    public String getEndReason() {
+        return endReason;
+    }
+
+    public void setEndReason(String endReason) {
+        this.endReason = endReason;
+    }
+
+    public String getFocusCategoriesJson() {
+        return focusCategoriesJson;
+    }
+
+    public void setFocusCategoriesJson(String focusCategoriesJson) {
+        this.focusCategoriesJson = focusCategoriesJson;
+    }
+
+    public Integer getPlannedDurationMinutes() {
+        return plannedDurationMinutes;
+    }
+
+    public void setPlannedDurationMinutes(Integer plannedDurationMinutes) {
+        this.plannedDurationMinutes = plannedDurationMinutes;
+    }
+
+    public String getRequiredTopicsJson() {
+        return requiredTopicsJson;
+    }
+
+    public void setRequiredTopicsJson(String requiredTopicsJson) {
+        this.requiredTopicsJson = requiredTopicsJson;
+    }
+
+    public Integer getConsumedSeconds() {
+        return consumedSeconds;
+    }
+
+    public void setConsumedSeconds(Integer consumedSeconds) {
+        this.consumedSeconds = consumedSeconds != null ? consumedSeconds : 0;
+    }
+
+    public LocalDateTime getQuestionPresentedAt() {
+        return questionPresentedAt;
+    }
+
+    public void setQuestionPresentedAt(LocalDateTime questionPresentedAt) {
+        this.questionPresentedAt = questionPresentedAt;
+    }
+
+    public String getCurrentQuestionId() {
+        return currentQuestionId;
+    }
+
+    public void setCurrentQuestionId(String currentQuestionId) {
+        this.currentQuestionId = currentQuestionId;
+    }
+
+    public String getDifficultyPreference() {
+        return difficultyPreference;
+    }
+
+    public void setDifficultyPreference(String difficultyPreference) {
+        this.difficultyPreference = difficultyPreference;
+    }
+
+    public Integer getCandidateVersion() {
+        return candidateVersion;
+    }
+
+    public void setCandidateVersion(Integer candidateVersion) {
+        this.candidateVersion = candidateVersion != null ? candidateVersion : 0;
     }
 
     public void addAnswer(InterviewAnswerEntity answer) {

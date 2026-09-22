@@ -1,0 +1,265 @@
+package interview.guide.modules.interview.service;
+
+import interview.guide.common.ai.StructuredOutputInvoker;
+import interview.guide.common.ai.StructuredOutputProperties;
+import interview.guide.common.exception.BusinessException;
+import interview.guide.common.exception.ErrorCode;
+import interview.guide.modules.interview.model.InterviewQuestionDTO;
+import interview.guide.modules.interview.model.TurnEvaluation;
+import interview.guide.modules.interview.model.TurnEvaluationRequest;
+import interview.guide.modules.interview.model.TurnEvaluation.AnswerState;
+import interview.guide.modules.interview.model.TurnEvaluation.RecommendedAction;
+import interview.guide.modules.interview.service.TurnEvaluationService.TurnEvalDTO;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.core.io.DefaultResourceLoader;
+
+import java.util.List;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.TimeoutException;
+import java.util.stream.Stream;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+/**
+ * P4-2 逐题轻量评估：NO_ANSWER 短路、模型输出归一（score/state/coverage）、失败回落。
+ * 用 mock StructuredOutputInvoker 返回 DTO，不触发真实 LLM。
+ */
+@DisplayName("逐题轻量评估（P4-2）")
+@ExtendWith(MockitoExtension.class)
+class TurnEvaluationServiceTest {
+
+  @Mock
+  private StructuredOutputInvoker invoker;
+  @Mock
+  private ChatClient chatClient;
+
+  private TurnEvaluationService service;
+
+  @BeforeEach
+  void setUp() throws Exception {
+    service = new TurnEvaluationService(
+        invoker,
+        new DefaultResourceLoader(),
+        new TurnEvaluationProperties(),
+        new StructuredOutputProperties()
+    );
+  }
+
+  private static InterviewQuestionDTO question() {
+    return InterviewQuestionDTO.createMain(0,
+        "Minor GC 与 Full GC 有什么区别？", "JVM", "JVM", "GC 对比", 3,
+        List.of("触发条件", "发生区域", "STW"));
+  }
+
+  @Test
+  @DisplayName("空回答与「不会」类短语直接短路 NO_ANSWER，不调用 LLM")
+  void shortAnswersShortCircuitWithoutLlm() {
+    for (String answer : List.of("", "   ", "不会", "不知道", "忘了", "跳过", "i don't know", "没复习")) {
+      TurnEvaluation evaluation = service.evaluateTurn(chatClient, TurnEvaluationRequest.of(question(), answer));
+      assertThat(evaluation.answerState()).isEqualTo(AnswerState.NO_ANSWER);
+      assertThat(evaluation.score()).isZero();
+      assertThat(evaluation.evaluatedByLlm()).isFalse();
+    }
+    verify(invoker, never()).invoke(any(), any(), any(), any(), any(), any(), any(), any());
+  }
+
+  @Test
+  @DisplayName("模型输出归一：状态合法则按状态默认分补齐缺失分数，coverage 由要点列表计算")
+  void normalizesModelOutputWhenScoreMissing() throws Exception {
+    TurnEvalDTO dto = new TurnEvalDTO(null, "PARTIAL", List.of("触发条件"), List.of("发生区域", "STW"), "GC 触发细节", null);
+    when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(dto);
+
+    TurnEvaluation evaluation = service.evaluateTurn(chatClient, TurnEvaluationRequest.of(question(), "Young 代满会触发 Minor GC……"));
+
+    assertThat(evaluation.answerState()).isEqualTo(AnswerState.PARTIAL);
+    assertThat(evaluation.score()).isEqualTo(55); // PARTIAL 默认分
+    assertThat(evaluation.coverage()).isEqualTo(1.0 / 3.0);
+    assertThat(evaluation.coveredPoints()).containsExactly("触发条件");
+    assertThat(evaluation.missingPoints()).containsExactly("发生区域", "STW");
+    assertThat(evaluation.recommendedFocus()).isEqualTo("GC 触发细节");
+    assertThat(evaluation.evaluatedByLlm()).isTrue();
+  }
+
+  @Test
+  @DisplayName("节奏建议归一：动作、候选标识、理由与承接语进入决策输入")
+  void normalizesSemanticDecisionFields() {
+    TurnEvaluation evaluation = TurnEvaluationService.normalize(new TurnEvalDTO(
+        75, "GOOD", List.of("触发条件"), List.of("STW"), "继续确认 STW",
+        false, "follow_up", " q-follow-up-1 ", " 存在关键缺口 ", " 好，我们继续看这个点。 "));
+
+    assertThat(evaluation.recommendedAction()).isEqualTo(RecommendedAction.FOLLOW_UP);
+    assertThat(evaluation.recommendedQuestionId()).isEqualTo("q-follow-up-1");
+    assertThat(evaluation.decisionReason()).isEqualTo("存在关键缺口");
+    assertThat(evaluation.transitionMessage()).isEqualTo("好，我们继续看这个点。");
+  }
+
+  @Test
+  @DisplayName("受限生成与节奏信号归一：生成题/考察点/依据与难度、停深挖进入决策输入（P4-4b/P4Q-3c）")
+  void normalizesGeneratedFollowUpAndRhythmSignals() {
+    TurnEvaluation evaluation = TurnEvaluationService.normalize(new TurnEvalDTO(
+        60, "PARTIAL", List.of("堆"), List.of("乱序回填"), "验证乱序回填", false,
+        "follow_up_generated", "", "缺少亲历细节", "",
+        " 你提到回填乱序，当时怎么定位的？ ", " 定位过程 ", " 回填乱序 ", " harder ", true));
+
+    assertThat(evaluation.recommendedAction()).isEqualTo(RecommendedAction.FOLLOW_UP_GENERATED);
+    assertThat(evaluation.generatedFollowUp()).isEqualTo("你提到回填乱序，当时怎么定位的？");
+    assertThat(evaluation.generatedExpectedPoint()).isEqualTo("定位过程");
+    assertThat(evaluation.generatedAnswerBasis()).isEqualTo("回填乱序");
+    assertThat(evaluation.difficultyAdjust()).isEqualTo(TurnEvaluation.DifficultyAdjust.HARDER);
+    assertThat(evaluation.stopDeepDive()).isTrue();
+  }
+
+  @Test
+  @DisplayName("受限生成依据必须逐字出现在本轮回答中，模型编造的依据由 Java 清空")
+  void rejectsGeneratedBasisNotQuotedFromAnswer() {
+    TurnEvalDTO dto = new TurnEvalDTO(
+        60, "PARTIAL", List.of("堆"), List.of("乱序回填"), "验证乱序回填", false,
+        "follow_up_generated", "", "缺少亲历细节", "",
+        "你提到回填乱序，当时怎么定位的？", "定位过程", "回填乱序", "none", false);
+
+    TurnEvaluation accepted = TurnEvaluationService.normalize(dto, "当时日志显示回填乱序");
+    TurnEvaluation rejected = TurnEvaluationService.normalize(dto, "当时只看到缓存命中率下降");
+
+    assertThat(accepted.generatedAnswerBasis()).isEqualTo("回填乱序");
+    assertThat(rejected.generatedAnswerBasis()).isEmpty();
+  }
+
+  @Test
+  @DisplayName("含实质内容的技术判断不会被误判为跳过（P4Q-3c）")
+  void technicalJudgementIsNotSkipped() {
+    // 「不会发生死锁」是技术判断，不是跳过指令：短路词表精确匹配，它不该短路
+    assertThat(TurnEvaluationService.shortCircuit("不会发生死锁")).isNull();
+    assertThat(TurnEvaluationService.isNoAnswerPhrase("不会发生死锁")).isFalse();
+  }
+
+  @Test
+  @DisplayName("追问预算：候选容量大于每组上限时只按剩余预算给出（P4-4b）")
+  void remainingFollowUpsClampedByPerGroupBudget() {
+    InterviewQuestionDTO main = InterviewQuestionDTO.createMain(
+        0, "Q1", "JVM", "JVM", "", 3, List.of()).withQuestionId("q-m");
+    InterviewQuestionDTO f1 = InterviewQuestionDTO.createFollowUp(
+        1, "F1", "JVM", "JVM", "q-m", 1, "DEPTH", List.of()).withQuestionId("q-f1");
+    InterviewQuestionDTO f2 = InterviewQuestionDTO.createFollowUp(
+        2, "F2", "JVM", "JVM", "q-m", 2, "WHY", List.of()).withQuestionId("q-f2");
+    InterviewQuestionDTO f3 = InterviewQuestionDTO.createFollowUp(
+        3, "F3", "JVM", "JVM", "q-m", 3, "SCENARIO", List.of()).withQuestionId("q-f3");
+    List<InterviewQuestionDTO> pool = List.of(main, f1, f2, f3);
+
+    // 未问过：本组 3 条未问，每组上限 2 → 预算 2
+    assertThat(TurnEvaluationService.remainingFollowUpsFor(pool, List.of(), main, 2)).isEqualTo(2);
+    // 上限 0：不限制，按未问候选数
+    assertThat(TurnEvaluationService.remainingFollowUpsFor(pool, List.of(), main, 0)).isEqualTo(3);
+  }
+
+  @Test
+  @DisplayName("分数越界时夹取到 0-100，状态缺失时按分数推导")
+  void clampsScoreAndDerivesStateWhenStateMissing() throws Exception {
+    TurnEvalDTO high = new TurnEvalDTO(120, null, List.of(), List.of(), "", null);
+    when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(high);
+    TurnEvaluation evaluation = service.evaluateTurn(chatClient, TurnEvaluationRequest.of(question(), "非常完整的回答……"));
+    assertThat(evaluation.score()).isEqualTo(100);
+    assertThat(evaluation.answerState()).isEqualTo(AnswerState.EXCELLENT);
+
+    TurnEvalDTO negative = new TurnEvalDTO(-5, null, List.of(), List.of(), "", null);
+    when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(negative);
+    TurnEvaluation low = service.evaluateTurn(chatClient, TurnEvaluationRequest.of(question(), "回答错误……"));
+    assertThat(low.score()).isZero();
+    assertThat(low.answerState()).isEqualTo(AnswerState.WRONG);
+  }
+
+  @Test
+  @DisplayName("score 与 answerState 同时存在时以分数为准，状态自洽不需要强行改写")
+  void keepsScoreAndStateWhenBothPresent() throws Exception {
+    TurnEvalDTO dto = new TurnEvalDTO(88, "EXCELLENT", List.of("触发条件", "发生区域", "STW"), List.of(), "", null);
+    when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(dto);
+    TurnEvaluation evaluation = service.evaluateTurn(chatClient, TurnEvaluationRequest.of(question(), "回答很完整……"));
+    assertThat(evaluation.score()).isEqualTo(88);
+    assertThat(evaluation.answerState()).isEqualTo(AnswerState.EXCELLENT);
+    assertThat(evaluation.coverage()).isEqualTo(1.0);
+  }
+
+  @ParameterizedTest
+  @MethodSource("modelFailures")
+  @DisplayName("模型超时、解析或上游失败时返回未知质量，不伪造分数与覆盖率")
+  void fallsBackWhenLlmFails(RuntimeException failure) {
+    when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any(), any()))
+        .thenThrow(failure);
+    TurnEvaluation evaluation = service.evaluateTurn(chatClient, TurnEvaluationRequest.of(question(), "回答内容……"));
+    assertUnknown(evaluation);
+  }
+
+  private static Stream<RuntimeException> modelFailures() {
+    return Stream.of(
+        new CompletionException(new TimeoutException("模型超时")),
+        new IllegalArgumentException("结构化输出解析失败"),
+        new BusinessException(ErrorCode.INTERVIEW_EVALUATION_FAILED, "模型不可用"));
+  }
+
+  @ParameterizedTest
+  @MethodSource("missingQualityResults")
+  @DisplayName("返回空结果或没有可用质量判断时不补造 PARTIAL 分数")
+  void missingQualityIsUnavailable(TurnEvalDTO dto) {
+    when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(dto);
+    assertUnknown(service.evaluateTurn(chatClient, TurnEvaluationRequest.of(question(), "真实回答")));
+  }
+
+  private static Stream<TurnEvalDTO> missingQualityResults() {
+    return Stream.of(null,
+        new TurnEvalDTO(null, null, List.of(), List.of(), "", false),
+        new TurnEvalDTO(null, "INVALID", List.of(), List.of(), "", false),
+        new TurnEvalDTO(50, "UNKNOWN", List.of(), List.of(), "", false));
+  }
+
+  private static void assertUnknown(TurnEvaluation evaluation) {
+    assertThat(evaluation.answerState()).isEqualTo(AnswerState.UNKNOWN);
+    assertThat(evaluation.score()).isNull();
+    assertThat(evaluation.coverage()).isNull();
+    assertThat(evaluation.coveredPoints()).isEmpty();
+    assertThat(evaluation.missingPoints()).isEmpty();
+    assertThat(evaluation.recommendedFocus()).isEmpty();
+    assertThat(evaluation.evaluatedByLlm()).isFalse();
+    assertThat(evaluation.skipRequested()).isFalse();
+  }
+
+  @Test
+  @DisplayName("缺少质量字段但明确要求跳过时仍保留跳过语义")
+  void skipDoesNotRequireQualityFields() {
+    TurnEvaluation evaluation = TurnEvaluationService.normalize(
+        new TurnEvalDTO(null, null, null, null, null, true));
+    assertThat(evaluation.skipRequested()).isTrue();
+    assertThat(evaluation.answerState()).isEqualTo(AnswerState.NO_ANSWER);
+  }
+
+  @Test
+  @DisplayName("未提供期望要点时无要点判定，coverage 回落中性")
+  void noExpectedPointsYieldsNeutralCoverage() throws Exception {
+    InterviewQuestionDTO bare = InterviewQuestionDTO.create(0, "简单介绍下 JVM？", "JVM", "JVM");
+    TurnEvalDTO dto = new TurnEvalDTO(80, "GOOD", List.of(), List.of(), "", null);
+    when(invoker.invoke(any(), any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(dto);
+    TurnEvaluation evaluation = service.evaluateTurn(chatClient, TurnEvaluationRequest.of(bare, "回答……"));
+    assertThat(evaluation.score()).isEqualTo(80);
+    assertThat(evaluation.answerState()).isEqualTo(AnswerState.GOOD);
+    assertThat(evaluation.coverage()).isEqualTo(0.5);
+  }
+
+  @Test
+  @DisplayName("静态短路词表归一：大小写与前后空格")
+  void shortCircuitNormalization() {
+    assertThat(TurnEvaluationService.isNoAnswerPhrase("不会")).isTrue();
+    assertThat(TurnEvaluationService.isNoAnswerPhrase(" I DON'T KNOW ")).isTrue();
+    assertThat(TurnEvaluationService.isNoAnswerPhrase("Skip")).isTrue();
+    assertThat(TurnEvaluationService.isNoAnswerPhrase("我不太确定，试着说说")).isFalse();
+  }
+}

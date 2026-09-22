@@ -9,8 +9,11 @@ from career_copilot.schemas.message import (
     ActionBlock,
     CopilotResponse,
     InterviewProposalBlock,
+    InterviewSessionBlock,
     InterviewSummaryBlock,
     KnowledgeCitationsBlock,
+    ResumeGapAnalysisBlock,
+    ResumeGapItem,
     ResumeOptimizationBlock,
     ResumeOptimizationPatch,
     ResumeSummaryBlock,
@@ -98,7 +101,17 @@ def skill_profile_block(profile: dict[str, Any], skill_limit: int = 6) -> SkillP
                 "evidences": evidences,
             }
         )
-    return SkillProfileBlock(skills=skills)
+    # 简历已列、从未考过的技能：没有分数，单独返回（P3 待收口）
+    declared = [
+        {
+            "skill": item.get("skill"),
+            "resumeId": item.get("resumeId"),
+            "declaredAt": item.get("declaredAt"),
+        }
+        for item in (profile.get("declaredSkills") or [])[:skill_limit]
+        if isinstance(item, dict)
+    ]
+    return SkillProfileBlock(skills=skills, declaredSkills=declared)
 
 
 def resume_optimization_block(
@@ -109,8 +122,14 @@ def resume_optimization_block(
     summary: str,
     patches: list[Any],
     rejected_note: str | None = None,
+    optimization_type: str | None = None,
+    target_direction: str | None = None,
 ) -> ResumeOptimizationBlock:
-    """简历优化提案块：Patch Diff 卡片（P2-1 HITL 确认入口）。"""
+    """简历优化提案块：Patch Diff 卡片（P2-1 HITL 确认入口）。
+
+    optimizationType/targetDirection 让「通用 / 定向方向 / JD 定向」在卡片上可分辨
+    （P2 待修正：此前一律显示为通用优化）。
+    """
     items = [
         ResumeOptimizationPatch(
             id=patch.id,
@@ -119,6 +138,9 @@ def resume_optimization_block(
             oldValue=patch.oldValue,
             newValue=patch.newValue,
             reason=patch.reason,
+            evidence=patch.evidence,
+            impact=patch.impact,
+            verificationRequired=patch.verificationRequired,
         )
         for patch in patches
     ]
@@ -129,6 +151,31 @@ def resume_optimization_block(
         summary=summary,
         patches=items,
         rejectedNote=rejected_note,
+        optimizationType=optimization_type,
+        targetDirection=target_direction,
+    )
+
+
+def resume_gap_analysis_block(
+    *, resume_id: int, job_id: int, analysis: Any
+) -> ResumeGapAnalysisBlock:
+    """JD Gap 独立展示块：字段来自已验证的结构化输出。"""
+    return ResumeGapAnalysisBlock(
+        resumeId=resume_id,
+        jobId=job_id,
+        jobTitle=analysis.jobTitle,
+        matchLevel=analysis.matchLevel.value,
+        summary=analysis.summary,
+        items=[
+            ResumeGapItem(
+                requirement=item.requirement,
+                status=item.status.value,
+                resumeEvidence=item.resumeEvidence,
+                impact=item.impact,
+                verificationRequired=item.verificationRequired,
+            )
+            for item in analysis.items
+        ],
     )
 
 
@@ -139,9 +186,11 @@ def interview_proposal_block(
     difficulty: str,
     difficulty_name: str,
     focus: list[str],
-    question_count: int = 8,
+    planned_duration_minutes: int = 20,
+    required_topics: list[str] | None = None,
     resume_id: int | None = None,
     summary: str = "",
+    reasons: list[str] | None = None,
 ) -> InterviewProposalBlock:
     """面试提案确认块：Agent 推荐的面试配置 + [按推荐开始] / [调整配置]。
 
@@ -155,7 +204,35 @@ def interview_proposal_block(
         difficulty_name=difficulty_name,
         mode="TEXT",
         focus=focus,
-        question_count=question_count,
+        planned_duration_minutes=planned_duration_minutes,
+        required_topics=required_topics or [],
         resume_id=resume_id,
         summary=summary,
+        reasons=reasons or [],
+    )
+
+
+def interview_session_block(
+    *,
+    session_id: str,
+    skill_id: str | None = None,
+    difficulty: str | None = None,
+    focus: list[str] | None = None,
+    planned_duration_minutes: int | None = None,
+    required_topics: list[str] | None = None,
+    direction_name: str | None = None,
+) -> InterviewSessionBlock:
+    """内嵌面试会话块（P4-0）：面试创建成功后原地内嵌。
+
+    只带展示字段；前端据此 sessionId 直连 Java API 拉取会话与答题。
+    """
+    return InterviewSessionBlock(
+        session_id=session_id,
+        skill_id=skill_id,
+        difficulty=difficulty,
+        mode="TEXT",
+        focus=focus or [],
+        planned_duration_minutes=planned_duration_minutes,
+        required_topics=required_topics or [],
+        direction_name=direction_name,
     )

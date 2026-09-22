@@ -55,8 +55,15 @@ public class SkillEvidenceEntity {
   @Column(name = "source_id", nullable = false, length = 64)
   private String sourceId;
 
-  /** 该证据的评分 (0-100) */
-  @Column(nullable = false)
+  /**
+   * 该证据的评分 (0-100)；{@code null} 表示**声明型证据**。
+   *
+   * <p>声明型证据目前只有简历来源：结构化简历里列了这项技能，但没有任何评分依据。
+   * 它不参与画像聚合（聚合只看有分证据）——给未验证的技能编一个分数会违反
+   * Core-4「画像分必须能由证据逐条还原」。它的用途是让画像能表达
+   * 「简历已列 · 待验证」，并作为下一场面试选 focus 的依据（没考过的技能最该被考）。
+   */
+  @Column
   private Integer score;
 
   /** 证据发生时间（面试取 completedAt / answeredAt） */

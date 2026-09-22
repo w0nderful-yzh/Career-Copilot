@@ -1,0 +1,254 @@
+{
+  "version" : 1,
+  "source" : "app/src/main/java/interview/guide/modules/agenttool/model/AgentToolRequests.java",
+  "tools" : {
+    "get_resume_list" : {
+      "description" : "获取简历列表，包含最新分析分数与面试次数",
+      "permission" : "READ",
+      "type" : "object",
+      "additionalProperties" : false,
+      "properties" : { }
+    },
+    "get_skill_profile" : {
+      "description" : "获取用户技能画像（各技能聚合分与可追溯证据：来自哪些面试、得了多少分）",
+      "permission" : "READ",
+      "type" : "object",
+      "additionalProperties" : false,
+      "properties" : { }
+    },
+    "get_resume_version" : {
+      "description" : "获取简历的结构化版本内容（基本信息/教育/经历/项目/技能 JSON，简历优化取数用）",
+      "permission" : "READ",
+      "type" : "object",
+      "additionalProperties" : false,
+      "required" : [ "resumeId" ],
+      "properties" : {
+        "resumeId" : {
+          "type" : "integer",
+          "format" : "int64",
+          "exclusiveMinimum" : 0,
+          "description" : "简历 ID"
+        },
+        "version" : {
+          "type" : "integer",
+          "format" : "int32",
+          "exclusiveMinimum" : 0,
+          "description" : "指定版本号；缺省取最新 ACTIVE 版本"
+        }
+      }
+    },
+    "get_resume_analysis" : {
+      "description" : "获取指定简历的最新分析结果（各项评分、优势与改进建议）",
+      "permission" : "READ",
+      "type" : "object",
+      "additionalProperties" : false,
+      "required" : [ "resumeId" ],
+      "properties" : {
+        "resumeId" : {
+          "type" : "integer",
+          "format" : "int64",
+          "exclusiveMinimum" : 0,
+          "description" : "简历 ID"
+        }
+      }
+    },
+    "get_resume" : {
+      "description" : "获取指定简历的完整内容（解析文本）与元信息",
+      "permission" : "READ",
+      "type" : "object",
+      "additionalProperties" : false,
+      "required" : [ "resumeId" ],
+      "properties" : {
+        "resumeId" : {
+          "type" : "integer",
+          "format" : "int64",
+          "exclusiveMinimum" : 0,
+          "description" : "简历 ID"
+        },
+        "maxChars" : {
+          "type" : "integer",
+          "format" : "int32",
+          "exclusiveMinimum" : 0,
+          "description" : "服务端截断上限（字符），缺省 20000；截断在 Java 侧完成（Token 纪律）"
+        }
+      }
+    },
+    "get_job" : {
+      "description" : "获取指定 JD（岗位描述）的完整内容与元信息（jobId，简历优化 JD 定向模式 / JD 匹配取数用）",
+      "permission" : "READ",
+      "type" : "object",
+      "additionalProperties" : false,
+      "required" : [ "jobId" ],
+      "properties" : {
+        "jobId" : {
+          "type" : "integer",
+          "format" : "int64",
+          "exclusiveMinimum" : 0,
+          "description" : "JD ID"
+        }
+      }
+    },
+    "get_interview_history" : {
+      "description" : "获取模拟面试历史列表，可按 resumeId 过滤",
+      "permission" : "READ",
+      "type" : "object",
+      "additionalProperties" : false,
+      "properties" : {
+        "resumeId" : {
+          "type" : "integer",
+          "format" : "int64",
+          "exclusiveMinimum" : 0,
+          "description" : "按简历过滤；缺省返回全部面试"
+        }
+      }
+    },
+    "get_interview_report" : {
+      "description" : "获取单场模拟面试的完整报告（sessionId）",
+      "permission" : "READ",
+      "type" : "object",
+      "additionalProperties" : false,
+      "required" : [ "sessionId" ],
+      "properties" : {
+        "sessionId" : {
+          "type" : "string",
+          "minLength" : 1,
+          "description" : "面试会话 ID"
+        }
+      }
+    },
+    "get_interview_progress" : {
+      "description" : "获取面试**进行中**的实时进展：当前话题、必要覆盖状态、已发生轮次摘要、剩余时间预算，可用 questionId 取某一轮完整详情（sessionId + 可选 questionId）",
+      "permission" : "READ",
+      "type" : "object",
+      "additionalProperties" : false,
+      "required" : [ "sessionId" ],
+      "properties" : {
+        "sessionId" : {
+          "type" : "string",
+          "minLength" : 1,
+          "description" : "面试会话 ID"
+        },
+        "questionId" : {
+          "type" : "string",
+          "description" : "可选：题目标识（questionId），只看这一轮的完整问答与评估；缺省返回整体进展"
+        }
+      }
+    },
+    "list_knowledge_bases" : {
+      "description" : "获取知识库列表",
+      "permission" : "READ",
+      "type" : "object",
+      "additionalProperties" : false,
+      "properties" : { }
+    },
+    "search_knowledge" : {
+      "description" : "基于 RAG 知识库回答技术问题（knowledgeBaseIds + question）",
+      "permission" : "READ",
+      "type" : "object",
+      "additionalProperties" : false,
+      "required" : [ "knowledgeBaseIds", "question" ],
+      "properties" : {
+        "knowledgeBaseIds" : {
+          "type" : "array",
+          "items" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "minItems" : 1,
+          "description" : "检索目标知识库 ID 列表，至少一个"
+        },
+        "question" : {
+          "type" : "string",
+          "minLength" : 1,
+          "description" : "待检索的问题"
+        }
+      }
+    },
+    "list_skills" : {
+      "description" : "获取可用的模拟面试技能方向列表",
+      "permission" : "READ",
+      "type" : "object",
+      "additionalProperties" : false,
+      "properties" : { }
+    },
+    "create_interview" : {
+      "description" : "创建模拟面试会话（方向/难度/预计时长/重点/必要覆盖，需用户确认后执行）",
+      "permission" : "CONFIRM_WRITE",
+      "type" : "object",
+      "additionalProperties" : false,
+      "required" : [ "skillId" ],
+      "properties" : {
+        "skillId" : {
+          "type" : "string",
+          "minLength" : 1,
+          "description" : "面试方向 skillId（来自 list_skills）"
+        },
+        "difficulty" : {
+          "type" : "string",
+          "description" : "难度：junior / mid / senior；缺省 mid"
+        },
+        "plannedDurationMinutes" : {
+          "type" : "integer",
+          "format" : "int32",
+          "minimum" : 5,
+          "maximum" : 120,
+          "description" : "预计时长（分钟，5-120）；缺省 20"
+        },
+        "requiredTopics" : {
+          "type" : "array",
+          "items" : {
+            "type" : "string"
+          },
+          "description" : "必要覆盖的话题 key；只保留本场候选池真实存在的主问题话题"
+        },
+        "resumeId" : {
+          "type" : "integer",
+          "format" : "int64",
+          "exclusiveMinimum" : 0,
+          "description" : "目标简历 ID。与 resumeText 二选一：传了 ID 由 Java 解析简历来源与版本，调用方不必也不应传原文"
+        },
+        "resumeText" : {
+          "type" : "string",
+          "description" : "显式简历原文（仅手动面试 / 知识库面试等无 ID 场景使用）。传了 resumeId 时忽略本字段"
+        },
+        "forceCreate" : {
+          "type" : "boolean",
+          "description" : "忽略未完成会话复用、强制新建；缺省 false"
+        },
+        "requestId" : {
+          "type" : "string",
+          "description" : "创建请求幂等键：同一次用户确认的网络重试应复用同一值，避免重复建会话"
+        },
+        "focusCategories" : {
+          "type" : "array",
+          "items" : {
+            "type" : "string"
+          },
+          "description" : "重点考察的分类 key；未命中任何分类时按原方向全量出题"
+        }
+      }
+    },
+    "apply_resume_patches" : {
+      "description" : "应用用户确认的简历优化建议并生成新版本（proposalId + 勾选的 patchIds，需用户确认后执行）",
+      "permission" : "CONFIRM_WRITE",
+      "type" : "object",
+      "additionalProperties" : false,
+      "required" : [ "proposalId" ],
+      "properties" : {
+        "proposalId" : {
+          "type" : "integer",
+          "format" : "int64",
+          "exclusiveMinimum" : 0,
+          "description" : "优化提案 ID"
+        },
+        "patchIds" : {
+          "type" : "array",
+          "items" : {
+            "type" : "string"
+          },
+          "description" : "勾选的 Patch ID 列表；缺省表示全部应用"
+        }
+      }
+    }
+  }
+}

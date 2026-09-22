@@ -2,27 +2,21 @@ import { useEffect, useState } from 'react';
 import {
   BarChart3,
   BriefcaseBusiness,
-  CheckCircle2,
-  Circle,
   FileText,
   Link2,
+  RefreshCw,
   Target,
 } from 'lucide-react';
 import type { CopilotMessage } from '../../types/copilot';
 import {
   jobApi,
   skillProfileApi,
+  type DeclaredSkill,
   type SkillProfileSkill,
 } from '../../api/agentChat';
 
-// 侧栏「求职上下文」：能力画像为真实 Evidence 数据（P3-2），
-// 活跃资源展示会话附件/绑定的简历与 JD（P2-5）。
-// 今日任务为示例占位（Preparation 接入后替换）。
-const PREVIEW_TASKS = [
-  { label: '复习 JVM GC', done: true },
-  { label: '梳理消息可靠性', done: false },
-  { label: '准备项目深挖', done: false },
-] as const;
+// 侧栏「求职上下文」只展示 Java 权威数据：能力画像来自 Evidence，
+// 活跃资源来自会话绑定的简历与 JD。Preparation 尚未接入时不展示示例任务。
 
 function findLatestResume(messages: CopilotMessage[]): string | null {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -60,7 +54,7 @@ type ProfileState =
   | { status: 'loading' }
   | { status: 'error' }
   | { status: 'empty' }
-  | { status: 'ready'; skills: SkillProfileSkill[] };
+  | { status: 'ready'; skills: SkillProfileSkill[]; declared: DeclaredSkill[] };
 
 /** 会话绑定 JD 的标题（activeJobId 存在时拉详情；失败静默，回落附件文件名展示） */
 function useBoundJobTitle(activeJobId: number | null | undefined): string | null {
@@ -83,8 +77,17 @@ function useBoundJobTitle(activeJobId: number | null | undefined): string | null
   return title;
 }
 
-function ProfileSection() {
+function ProfileSection({
+  refreshToken = 0,
+  onStartFocusInterview,
+}: {
+  /** 变化即重取画像（P4-6b）：面试报告完成后证据刚写入，侧栏不能还显示旧分 */
+  refreshToken?: number;
+  /** 一键定向（P4-6b）：把「补强这个技能」的明确选择交给提案节点 */
+  onStartFocusInterview?: (skill: string) => void;
+}) {
   const [state, setState] = useState<ProfileState>({ status: 'loading' });
+  const [retryKey, setRetryKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -93,7 +96,12 @@ function ProfileSection() {
         const profile = await skillProfileApi.get();
         if (cancelled) return;
         const skills = profile.skills ?? [];
-        setState(skills.length > 0 ? { status: 'ready', skills } : { status: 'empty' });
+        const declared = profile.declaredSkills ?? [];
+        setState(
+          skills.length > 0 || declared.length > 0
+            ? { status: 'ready', skills, declared }
+            : { status: 'empty' },
+        );
       } catch {
         if (!cancelled) setState({ status: 'error' });
       }
@@ -101,7 +109,7 @@ function ProfileSection() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refreshToken, retryKey]);
 
   return (
     <section className="mb-6">
@@ -111,7 +119,20 @@ function ProfileSection() {
           <p className="text-xs text-slate-400">加载画像数据…</p>
         )}
         {state.status === 'error' && (
-          <p className="text-xs text-amber-600 dark:text-amber-400">画像加载失败，请稍后重试</p>
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs text-amber-600 dark:text-amber-400">画像加载失败，当前不展示旧数据</p>
+            <button
+              type="button"
+              onClick={() => {
+                setState({ status: 'loading' });
+                setRetryKey((key) => key + 1);
+              }}
+              className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-semibold text-amber-700 transition hover:bg-amber-100 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300"
+            >
+              <RefreshCw className="h-3 w-3" />
+              重试画像
+            </button>
+          </div>
         )}
         {state.status === 'empty' && (
           <p className="text-xs leading-5 text-slate-400 dark:text-slate-500">
@@ -120,25 +141,60 @@ function ProfileSection() {
         )}
         {state.status === 'ready' &&
           state.skills.map((skill) => (
-            <div
-              key={skill.skill}
-              className="grid grid-cols-[5rem_1fr_2rem] items-center gap-2"
-              title={`来自 ${skill.evidenceCount} 条面试证据`}
-            >
-              <span className="truncate text-xs font-semibold text-slate-600 dark:text-slate-300">
-                {skill.skill}
-              </span>
-              <div className="h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-700">
-                <div
-                  className={`h-full rounded-full ${skillBarColor(skill.score)}`}
-                  style={{ width: `${Math.min(Math.max(skill.score, 0), 100)}%` }}
-                />
+            <div key={skill.skill} className="group">
+              <div
+                className="grid grid-cols-[5rem_1fr_2rem] items-center gap-2"
+                title={`来自 ${skill.evidenceCount} 条面试证据`}
+              >
+                <span className="truncate text-xs font-semibold text-slate-600 dark:text-slate-300">
+                  {skill.skill}
+                </span>
+                <div className="h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-700">
+                  <div
+                    className={`h-full rounded-full ${skillBarColor(skill.score)}`}
+                    style={{ width: `${Math.min(Math.max(skill.score, 0), 100)}%` }}
+                  />
+                </div>
+                <span className="text-right text-xs font-bold tabular-nums text-slate-600 dark:text-slate-300">
+                  {skill.score}
+                </span>
               </div>
-              <span className="text-right text-xs font-bold tabular-nums text-slate-600 dark:text-slate-300">
-                {skill.score}
-              </span>
+              {onStartFocusInterview && (
+                <button
+                  type="button"
+                  onClick={() => onStartFocusInterview(skill.skill)}
+                  className="mt-1 pl-[5rem] text-[11px] font-semibold text-primary-600 opacity-0 transition group-hover:opacity-100 focus:opacity-100 dark:text-primary-400"
+                  title={`针对 ${skill.skill} 来一场定向面试（带上该技能作为重点与必要覆盖）`}
+                >
+                  定向补强 →
+                </button>
+              )}
             </div>
           ))}
+        {state.status === 'ready' && state.declared.length > 0 && (
+          <div className="border-t border-dashed border-slate-200 pt-2 dark:border-slate-600">
+            <p
+              className="text-[11px] font-semibold text-slate-400 dark:text-slate-500"
+              title="结构化简历里列出了这些技能，但还没有面试证据可以评分"
+            >
+              简历已列 · 待验证
+            </p>
+            <div className="mt-1.5 flex flex-wrap gap-1">
+              {state.declared.map((item) => (
+                <button
+                  key={item.skill}
+                  type="button"
+                  disabled={!onStartFocusInterview}
+                  onClick={() => onStartFocusInterview?.(item.skill)}
+                  className="rounded bg-slate-50 px-1.5 py-0.5 text-[11px] text-slate-500 transition enabled:hover:bg-primary-50 enabled:hover:text-primary-700 disabled:cursor-default dark:bg-slate-700/50 dark:text-slate-300 dark:enabled:hover:bg-primary-950/40 dark:enabled:hover:text-primary-300"
+                  title="还没有面试证据：点一下针对它来一场定向面试"
+                >
+                  {item.skill}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </section>
   );
@@ -147,9 +203,14 @@ function ProfileSection() {
 export default function ContextPanel({
   messages,
   activeJobId,
+  profileRefreshToken,
+  onStartFocusInterview,
 }: {
   messages: CopilotMessage[];
   activeJobId?: number | null;
+  /** 报告完成后 +1：侧栏画像随之重取（P4-6b） */
+  profileRefreshToken?: number;
+  onStartFocusInterview?: (skill: string) => void;
 }) {
   const activeResume = findLatestResume(messages);
   // JD 展示优先级：会话绑定（Conversation Memory，跨轮有效）> 本轮附件文件名
@@ -161,10 +222,10 @@ export default function ContextPanel({
       <div className="mb-5 flex items-center justify-between">
         <div>
           <p className="font-display text-sm font-bold text-slate-900 dark:text-white">求职上下文</p>
-          <p className="mt-0.5 text-xs text-slate-400">保持当前任务信息可见</p>
+          <p className="mt-0.5 text-xs text-slate-400">仅展示当前会话的真实资源与证据</p>
         </div>
-        <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-700 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300">
-          预览数据
+        <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] font-bold text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300">
+          Evidence
         </span>
       </div>
 
@@ -173,13 +234,16 @@ export default function ContextPanel({
         <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-800">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <p className="text-sm font-bold text-slate-900 dark:text-white">Java 后端求职</p>
-              <p className="mt-1 text-xs text-slate-400">示例目标 · P1-3 接入真实会话资源</p>
+              <p className="text-sm font-bold text-slate-900 dark:text-white">
+                {activeJd ?? '尚未设定目标岗位'}
+              </p>
+              <p className="mt-1 text-xs leading-5 text-slate-400">
+                {activeJd
+                  ? '来自当前会话绑定的岗位 JD'
+                  : '上传或绑定 JD 后，这里会显示本次求职目标'}
+              </p>
             </div>
-            <span className="text-sm font-bold tabular-nums text-slate-700 dark:text-slate-200">72%</span>
-          </div>
-          <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-700">
-            <div className="h-full w-[72%] rounded-full bg-primary-500" />
+            <Target className={`h-5 w-5 shrink-0 ${activeJd ? 'text-primary-500' : 'text-slate-300 dark:text-slate-600'}`} />
           </div>
         </div>
       </section>
@@ -216,23 +280,10 @@ export default function ContextPanel({
         </div>
       </section>
 
-      <ProfileSection />
-
-      <section>
-        <SectionTitle icon={CheckCircle2}>今日任务 · 示例</SectionTitle>
-        <div className="rounded-2xl border border-slate-200 bg-white p-2 shadow-sm dark:border-slate-700 dark:bg-slate-800">
-          {PREVIEW_TASKS.map((task) => (
-            <div key={task.label} className="flex items-center gap-2.5 rounded-xl px-2.5 py-2.5 text-sm text-slate-600 dark:text-slate-300">
-              {task.done ? (
-                <CheckCircle2 className="h-4 w-4 shrink-0 text-primary-500" />
-              ) : (
-                <Circle className="h-4 w-4 shrink-0 text-slate-300 dark:text-slate-600" />
-              )}
-              <span className={task.done ? 'text-slate-400 line-through' : ''}>{task.label}</span>
-            </div>
-          ))}
-        </div>
-      </section>
+      <ProfileSection
+        refreshToken={profileRefreshToken}
+        onStartFocusInterview={onStartFocusInterview}
+      />
     </aside>
   );
 }

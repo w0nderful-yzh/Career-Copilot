@@ -1,6 +1,6 @@
 import {useCallback, useEffect, useState} from 'react';
 import {AnimatePresence, motion} from 'framer-motion';
-import {AnalyzeStatus, historyApi, ResumeListItem, ResumeStats} from '../api/history';
+import {historyApi, ResumeListItem, ResumeStats} from '../api/history';
 import DeleteConfirmDialog from './DeleteConfirmDialog';
 import {getScoreColor} from '../utils/score';
 import {formatDate} from '../utils/date';
@@ -20,6 +20,7 @@ import {
   Search,
   Trash2,
 } from 'lucide-react';
+import {classifyPersistedTask, loadFailed, type AsyncFailure} from '../utils/asyncFlow';
 
 interface HistoryListProps {
   onSelectResume: (id: number) => void;
@@ -34,49 +35,46 @@ function formatFileSize(bytes: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
-// 状态图标组件
-function StatusIcon({ status, hasScore }: { status?: AnalyzeStatus; hasScore: boolean }) {
-  // 如果状态未定义，根据是否有分数判断
-  if (status === undefined) {
-    if (hasScore) {
-      return <CheckCircle className="w-4 h-4 text-green-500" />;
-    }
-    return <Clock className="w-4 h-4 text-yellow-500" />;
-  }
+function getAnalysisState(resume: ResumeListItem) {
+  return classifyPersistedTask({
+    status: resume.analyzeStatus,
+    statusUpdatedAt: resume.analyzeStatusUpdatedAt,
+    hasResult: resume.latestScore != null,
+    missingStatusMeansLoading: true,
+    failedMessage: '简历分析失败',
+    timeoutMessage: '简历分析等待超时',
+  });
+}
 
-  switch (status) {
-    case 'COMPLETED':
+// 状态图标组件
+function StatusIcon({ resume }: { resume: ResumeListItem }) {
+  const state = getAnalysisState(resume);
+  switch (state.phase) {
+    case 'ready':
       return <CheckCircle className="w-4 h-4 text-green-500" />;
-    case 'PROCESSING':
+    case 'loading':
       return <Loader2 className="w-4 h-4 text-blue-500 animate-spin" />;
-    case 'PENDING':
+    case 'empty':
       return <Clock className="w-4 h-4 text-yellow-500" />;
-    case 'FAILED':
+    case 'failed':
       return <AlertCircle className="w-4 h-4 text-red-500" />;
     default:
-      return <CheckCircle className="w-4 h-4 text-green-500" />;
+      return <Clock className="w-4 h-4 text-slate-400" />;
   }
 }
 
 // 状态文本
-function getStatusText(status?: AnalyzeStatus, hasScore?: boolean): string {
-  // 如果状态未定义，根据是否有分数判断
-  if (status === undefined) {
-    if (hasScore) {
+function getStatusText(resume: ResumeListItem): string {
+  const state = getAnalysisState(resume);
+  switch (state.phase) {
+    case 'ready':
       return '已完成';
-    }
-    return '待分析';
-  }
-
-  switch (status) {
-    case 'COMPLETED':
-      return '已完成';
-    case 'PROCESSING':
-      return '分析中';
-    case 'PENDING':
-      return '待分析';
-    case 'FAILED':
-      return '失败';
+    case 'loading':
+      return resume.analyzeStatus === 'PROCESSING' ? '分析中' : '等待分析';
+    case 'empty':
+      return '暂无结果';
+    case 'failed':
+      return state.failure?.kind === 'timeout' ? '等待超时' : '分析失败';
     default:
       return '未知';
   }
@@ -121,6 +119,7 @@ export default function HistoryList({ onSelectResume }: HistoryListProps) {
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [deleteItem, setDeleteItem] = useState<ResumeListItem | null>(null);
   const [reanalyzingId, setReanalyzingId] = useState<number | null>(null);
+  const [loadFailure, setLoadFailure] = useState<AsyncFailure | null>(null);
 
   // 静默加载数据（用于轮询）
   const loadDataSilent = useCallback(async () => {
@@ -131,8 +130,10 @@ export default function HistoryList({ onSelectResume }: HistoryListProps) {
       ]);
       setResumes(resumeData);
       setStats(statsData);
+      setLoadFailure(null);
     } catch (err) {
       console.error('加载数据失败', err);
+      setLoadFailure(loadFailed('简历列表加载失败，当前业务状态未知'));
     }
   }, []);
 
@@ -146,8 +147,10 @@ export default function HistoryList({ onSelectResume }: HistoryListProps) {
       ]);
       setResumes(resumeData);
       setStats(statsData);
+      setLoadFailure(null);
     } catch (err) {
       console.error('加载数据失败', err);
+      setLoadFailure(loadFailed('简历列表加载失败，当前业务状态未知'));
     } finally {
       setLoading(false);
     }
@@ -160,11 +163,7 @@ export default function HistoryList({ onSelectResume }: HistoryListProps) {
   // 轮询：当有待处理项时，每5秒刷新一次
   // 待处理判断：显式的 PENDING/PROCESSING 状态，或状态未定义且无分数
   useEffect(() => {
-    const hasPendingItems = resumes.some(
-      r => r.analyzeStatus === 'PENDING' ||
-        r.analyzeStatus === 'PROCESSING' ||
-        (r.analyzeStatus === undefined && r.latestScore === undefined)
-    );
+    const hasPendingItems = resumes.some(r => getAnalysisState(r).shouldPoll);
 
     if (hasPendingItems && !loading) {
       const timer = setInterval(() => {
@@ -300,8 +299,24 @@ export default function HistoryList({ onSelectResume }: HistoryListProps) {
         </div>
       )}
 
+      {!loading && loadFailure && (
+        <div className="mb-6 flex items-center justify-between gap-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-700">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="h-5 w-5 shrink-0" />
+            <span>{loadFailure.message}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => void loadResumes()}
+            className="shrink-0 rounded-lg border border-amber-300 px-3 py-1.5 text-sm font-medium"
+          >
+            重试加载
+          </button>
+        </div>
+      )}
+
       {/* 空状态 */}
-      {!loading && filteredResumes.length === 0 && (
+      {!loading && !loadFailure && filteredResumes.length === 0 && (
         <motion.div
           className="text-center py-20 bg-white rounded-2xl shadow-sm border border-slate-100"
           initial={{ opacity: 0, scale: 0.95 }}
@@ -357,14 +372,14 @@ export default function HistoryList({ onSelectResume }: HistoryListProps) {
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-2">
-                        <StatusIcon status={resume.analyzeStatus} hasScore={resume.latestScore !== undefined} />
+                        <StatusIcon resume={resume} />
                         <span className="text-sm text-slate-600">
-                          {getStatusText(resume.analyzeStatus, resume.latestScore !== undefined)}
+                          {getStatusText(resume)}
                         </span>
                       </div>
                     </td>
                     <td className="px-6 py-4">
-                      {resume.latestScore !== undefined ? (
+                      {resume.latestScore != null ? (
                         <div className="flex items-center gap-3">
                           <div className="w-16 h-2 bg-slate-100 rounded-full overflow-hidden">
                             <motion.div
@@ -406,8 +421,8 @@ export default function HistoryList({ onSelectResume }: HistoryListProps) {
                             <Download className="w-4 h-4" />
                           </button>
                         )}
-                        {/* 重新分析按钮（仅 FAILED 状态显示） */}
-                        {resume.analyzeStatus === 'FAILED' && (
+                        {/* 任务失败或跨刷新等待超时都提供同一个幂等重试出口 */}
+                        {getAnalysisState(resume).failure?.retryable && (
                           <button
                             onClick={(e) => handleReanalyze(resume.id, e)}
                             disabled={reanalyzingId === resume.id}

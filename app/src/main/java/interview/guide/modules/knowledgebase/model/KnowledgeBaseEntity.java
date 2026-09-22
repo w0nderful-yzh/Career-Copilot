@@ -70,6 +70,10 @@ public class KnowledgeBaseEntity {
     @Column(length = 500)
     private String vectorError;
 
+    // 向量化状态最后变化时间：重试会刷新，页面刷新后仍可判断任务是否卡住
+    @Column(name = "vector_status_updated_at")
+    private LocalDateTime vectorStatusUpdatedAt;
+
     // 向量分块数量
     private Integer chunkCount = 0;
 
@@ -104,6 +108,7 @@ public class KnowledgeBaseEntity {
     protected void onCreate() {
         uploadedAt = LocalDateTime.now();
         lastAccessedAt = LocalDateTime.now();
+        vectorStatusUpdatedAt = LocalDateTime.now();
         accessCount = 1;
     }
     
@@ -228,6 +233,7 @@ public class KnowledgeBaseEntity {
 
     public void setVectorStatus(VectorStatus vectorStatus) {
         this.vectorStatus = vectorStatus;
+        this.vectorStatusUpdatedAt = LocalDateTime.now();
     }
 
     public String getVectorError() {
@@ -236,6 +242,14 @@ public class KnowledgeBaseEntity {
 
     public void setVectorError(String vectorError) {
         this.vectorError = vectorError;
+    }
+
+    public LocalDateTime getVectorStatusUpdatedAt() {
+        return vectorStatusUpdatedAt;
+    }
+
+    public void setVectorStatusUpdatedAt(LocalDateTime vectorStatusUpdatedAt) {
+        this.vectorStatusUpdatedAt = vectorStatusUpdatedAt;
     }
 
     public Integer getChunkCount() {

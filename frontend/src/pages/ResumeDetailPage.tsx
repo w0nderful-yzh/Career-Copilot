@@ -8,6 +8,7 @@ import InterviewDetailPanel from '../components/InterviewDetailPanel';
 import ResumeVersionPanel from '../components/ResumeVersionPanel';
 import {formatDateOnly} from '../utils/date';
 import {CheckSquare, ChevronLeft, Clock, Download, GitBranch, MessageSquare, Mic} from 'lucide-react';
+import {requestFailure} from '../utils/asyncFlow';
 
 interface ResumeDetailPageProps {
   resumeId: number;
@@ -82,6 +83,11 @@ export default function ResumeDetailPage({ resumeId, onBack, onStartInterview }:
       await loadResumeDetailSilent();
     } catch (err) {
       console.error('重新分析失败', err);
+      alert(requestFailure(
+        err,
+        '重新分析请求失败，当前任务状态未知',
+        '简历分析依赖服务暂时不可用，请稍后重试',
+      ).message);
     } finally {
       setReanalyzing(false);
     }
@@ -336,7 +342,7 @@ export default function ResumeDetailPage({ resumeId, onBack, onStartInterview }:
                 <AnalysisPanel
                   analysis={latestAnalysis}
                   analyzeStatus={resume.analyzeStatus}
-                  analyzeError={resume.analyzeError}
+                  analyzeStatusUpdatedAt={resume.analyzeStatusUpdatedAt}
                   onExport={handleExportAnalysisPdf}
                   exporting={exporting === 'analysis'}
                   onReanalyze={handleReanalyze}

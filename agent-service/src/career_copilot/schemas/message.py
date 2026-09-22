@@ -4,11 +4,29 @@
 受控 Block：text / action / choice / resume_summary / interview_summary / knowledge_citations。
 """
 
+from enum import StrEnum
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
 from career_copilot.schemas.action import ActionSelected
+
+
+class TurnStatus(StrEnum):
+    """本轮生成的终态，与 Java ``AgentMessageEntity.MessageStatus`` 逐值对齐。
+
+    随助手消息一起落库（P1 待收口）：
+
+    - ``COMPLETED``：正常跑完；
+    - ``STOPPED``：用户主动「停止生成」或连接中断，content 为已生成的部分内容；
+    - ``FAILED``：生成过程异常（如 LLM 调用失败）。
+
+    非 COMPLETED 时 Java 侧允许助手消息内容为空（尚未产出任何内容也要留痕）。
+    """
+
+    COMPLETED = "COMPLETED"
+    STOPPED = "STOPPED"
+    FAILED = "FAILED"
 
 
 class AttachmentRef(BaseModel):
@@ -45,6 +63,11 @@ class ChatRequest(BaseModel):
     )
     action: ActionSelected | None = Field(
         default=None, description="按钮点击回传的确定性动作（与 message 二选一）"
+    )
+    active_interview_session_id: str | None = Field(
+        default=None,
+        description="正在进行中的面试会话 ID（P4-10）：Interview Mode 里前端随消息带上，"
+        "让 Agent 能读取实时进展而不必等面试结束",
     )
 
 
@@ -128,6 +151,10 @@ class SkillProfileBlock(BaseModel):
         default_factory=list,
         description="技能列表：skill/score/evidenceCount/evidences（已裁剪字段）",
     )
+    declaredSkills: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="简历已列、尚无评分证据的技能（P3 待收口）：无分数，仅表达「待验证」",
+    )
 
 
 class ResumeOptimizationPatch(BaseModel):
@@ -139,6 +166,33 @@ class ResumeOptimizationPatch(BaseModel):
     oldValue: str | None = Field(default=None, description="原值")
     newValue: str | None = Field(default=None, description="新值")
     reason: str = Field(description="修改理由")
+    evidence: list[str] = Field(default_factory=list, description="简历 / JD 原文依据")
+    impact: str = Field(description="影响范围与预期效果")
+    verificationRequired: list[str] = Field(
+        default_factory=list, description="需用户核实的事实"
+    )
+
+
+class ResumeGapItem(BaseModel):
+    """JD 要求与简历证据的单条对照。"""
+
+    requirement: str
+    status: Literal["MATCHED", "PARTIAL", "MISSING", "UNKNOWN"]
+    resumeEvidence: list[str] = Field(default_factory=list)
+    impact: str
+    verificationRequired: list[str] = Field(default_factory=list)
+
+
+class ResumeGapAnalysisBlock(BaseModel):
+    """JD Gap 独立块：先呈现匹配证据和差距，再进入 Patch 决策。"""
+
+    type: Literal["resume_gap_analysis"] = "resume_gap_analysis"
+    resumeId: int
+    jobId: int
+    jobTitle: str
+    matchLevel: Literal["HIGH", "MEDIUM", "LOW", "UNKNOWN"]
+    summary: str
+    items: list[ResumeGapItem] = Field(default_factory=list)
 
 
 class ResumeOptimizationBlock(BaseModel):
@@ -158,6 +212,13 @@ class ResumeOptimizationBlock(BaseModel):
     )
     rejectedNote: str | None = Field(
         default=None, description="被校验器剔除的建议说明（如实告知）"
+    )
+    optimizationType: str | None = Field(
+        default=None,
+        description="优化模式 GENERAL / TARGET_DIRECTION / JD_TARGETED（P2 待修正）",
+    )
+    targetDirection: str | None = Field(
+        default=None, description="TARGET_DIRECTION 时的目标方向描述"
     )
 
 
@@ -183,7 +244,8 @@ class InterviewProposalBlock(BaseModel):
     """面试提案确认块：Agent 推荐的面试配置 + [按推荐开始] / [调整配置]。
 
     direction 使用 Java 面试方向 skillId（如 java-backend），difficulty 使用
-    Java 难度枚举（junior/mid/senior）。focus 为候选重点分类 key（如 JVM/Redis）。
+    Java 难度枚举（junior/mid/senior）。focus 为候选重点分类 key（如 JVM/Redis），
+    required_topics 表达本场至少要触及的范围；不再向用户承诺固定题数。
     """
 
     type: Literal["interview_proposal"] = "interview_proposal"
@@ -193,9 +255,34 @@ class InterviewProposalBlock(BaseModel):
     difficulty_name: str = Field(description="难度展示名（如 校招）")
     mode: Literal["TEXT", "VOICE"] = Field(default="TEXT", description="面试模式（一期仅文字）")
     focus: list[str] = Field(default_factory=list, description="重点考察方向（分类 key）")
-    question_count: int = Field(default=8, description="题目数量")
+    planned_duration_minutes: int = Field(default=20, description="预计时长（分钟）")
+    required_topics: list[str] = Field(default_factory=list, description="必要覆盖话题（分类 key）")
     resume_id: int | None = Field(default=None, description="基于的简历（可选）")
     summary: str = Field(default="", description="推荐理由（一句话）")
+    reasons: list[str] = Field(
+        default_factory=list,
+        description="推荐依据（P4-6b）：画像里的真实事实（分数/证据条数/最近考察/仅声明未验证），"
+        "由 Java 数据确定性拼装；没有依据时为空列表，前端不展示空标题",
+    )
+
+
+class InterviewSessionBlock(BaseModel):
+    """内嵌面试会话块（P4-0）：面试创建成功后的原地内嵌载体。
+
+    只携带展示信息（方向/难度/模式/focus），不含每轮问答；
+    前端块组件持有 sessionId 后直连 Java Interview API 拉取会话/提交答案/轮询评估，
+    不经过 Agent Graph（实时面试边界，见 Inline 设计 §3）。
+    """
+
+    type: Literal["interview_session"] = "interview_session"
+    session_id: str = Field(description="Java 面试会话 ID")
+    skill_id: str | None = Field(default=None, description="Java skillId（如 java-backend）")
+    difficulty: str | None = Field(default=None, description="难度枚举（junior/mid/senior）")
+    mode: Literal["TEXT", "VOICE"] = Field(default="TEXT", description="面试模式")
+    focus: list[str] = Field(default_factory=list, description="重点考察方向")
+    planned_duration_minutes: int | None = Field(default=None, description="预计时长（分钟）")
+    required_topics: list[str] = Field(default_factory=list, description="必要覆盖话题")
+    direction_name: str | None = Field(default=None, description="方向展示名（如 Java 后端）")
 
 
 MessageBlock = Annotated[
@@ -207,8 +294,10 @@ MessageBlock = Annotated[
     | InterviewSummaryBlock
     | KnowledgeCitationsBlock
     | SkillProfileBlock
+    | ResumeGapAnalysisBlock
     | ResumeOptimizationBlock
-    | InterviewProposalBlock,
+    | InterviewProposalBlock
+    | InterviewSessionBlock,
     Field(discriminator="type"),
 ]
 

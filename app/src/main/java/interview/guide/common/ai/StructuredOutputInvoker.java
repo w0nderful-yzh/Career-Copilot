@@ -4,17 +4,47 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tags;
 import interview.guide.common.exception.BusinessException;
 import interview.guide.common.exception.ErrorCode;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.converter.BeanOutputConverter;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.core.convert.ConversionException;
 import org.springframework.stereotype.Component;
+import tools.jackson.core.JacksonException;
 
+import java.net.SocketTimeoutException;
+import java.net.http.HttpTimeoutException;
+import java.time.Duration;
 import java.util.Locale;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 /**
  * 统一封装结构化输出调用与重试策略。
+ *
+ * <h3>重试与预算（ARCH-2b）</h3>
+ * <ul>
+ *   <li><b>重试责任只有这一层</b>：底层重试已显式关闭
+ *       （{@code spring.ai.retry.max-attempts=1}）；实时档同时禁用 schema advisor 的内部模型修复，
+ *       因此实时 attempts 就是实际模型请求数，不会出现「日志说 1 次、账单说 3 次」。
+ *       后台档仍保留 schema validation，其 attempts 只表示本封装的逻辑尝试次数。</li>
+ *   <li><b>重试共享一个截止时间</b>：预算按**整个操作**计，解析重试只能用剩余额度；
+ *       剩余低于 {@code minAttemptMs} 时不再发起新尝试，避免把用户等待拖成
+ *       「预算 + 单次调用耗时」。</li>
+ *   <li><b>失败可分类</b>：TIMEOUT / PARSE_FAILED / UPSTREAM 分别记录，降级原因不再是一句
+ *       「模型不可用」。</li>
+ * </ul>
+ *
+ * <p>预算用「提交到虚拟线程 + 超时收敛」实现：Spring AI 的阻塞式调用无法被打断，
+ * 超时后我们只是**不再等待**（被放弃的调用会随 HTTP 超时自行结束）。虚拟线程按需创建，
+ * 因此被放弃的调用不会占满线程池而拖垮其他请求——这是不用固定线程池的原因。
  */
 @Component
 public class StructuredOutputInvoker {
@@ -31,11 +61,20 @@ public class StructuredOutputInvoker {
     private static final String METRIC_LATENCY = "app.ai.structured_output.latency";
     private static final String STATUS_SUCCESS = "success";
     private static final String STATUS_FAILURE = "failure";
+    private static final String TAG_KIND_NONE = "none";
     private static final int MAX_CONTEXT_TAG_LENGTH = 48;
     private static final Pattern NON_ALNUM_PATTERN = Pattern.compile("[^a-z0-9_]+");
     private static final Pattern MULTI_UNDERSCORE = Pattern.compile("_+");
 
-    private final int maxAttempts;
+    /** 失败分类：让「超时 / 不合契约 / 上游报错」在日志与指标里区分开 */
+    private enum StructuredErrorKind {
+        TIMEOUT, PARSE_FAILED, UPSTREAM;
+
+        String tag() {
+            return name().toLowerCase(Locale.ROOT);
+        }
+    }
+
     private final boolean includeLastErrorInRetryPrompt;
     private final boolean retryUseRepairPrompt;
     private final boolean retryAppendStrictJsonInstruction;
@@ -43,12 +82,16 @@ public class StructuredOutputInvoker {
     private final boolean metricsEnabled;
     private final boolean schemaValidationEnabled;
     private final MeterRegistry meterRegistry;
+    /** 未显式传策略时的默认策略（后台档，保持既有行为） */
+    private final StructuredCallPolicy defaultPolicy;
+    /** 预算收敛用的执行器：虚拟线程按需创建，被放弃的调用不会占住池子 */
+    private final ExecutorService budgetExecutor =
+        Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name("structured-llm-", 0).factory());
 
     public StructuredOutputInvoker(
         StructuredOutputProperties properties,
         @Autowired(required = false) MeterRegistry meterRegistry
     ) {
-        this.maxAttempts = Math.max(1, properties.getStructuredMaxAttempts());
         this.includeLastErrorInRetryPrompt = properties.isStructuredIncludeLastError();
         this.retryUseRepairPrompt = properties.isStructuredRetryUseRepairPrompt();
         this.retryAppendStrictJsonInstruction = properties.isStructuredRetryAppendStrictJsonInstruction();
@@ -56,8 +99,17 @@ public class StructuredOutputInvoker {
         this.metricsEnabled = properties.isStructuredMetricsEnabled();
         this.schemaValidationEnabled = properties.isStructuredSchemaValidationEnabled();
         this.meterRegistry = meterRegistry;
+        this.defaultPolicy = StructuredCallPolicy.background(properties);
     }
 
+    @PreDestroy
+    void shutdown() {
+        budgetExecutor.shutdown();
+    }
+
+    /**
+     * 结构化调用（后台策略：尝试次数来自全局配置，默认不受预算约束）。
+     */
     public <T> T invoke(
         ChatClient chatClient,
         String systemPromptWithFormat,
@@ -68,39 +120,115 @@ public class StructuredOutputInvoker {
         String logContext,
         Logger log
     ) {
+        return invoke(chatClient, systemPromptWithFormat, userPrompt, outputConverter, errorCode,
+            errorPrefix, logContext, log, defaultPolicy);
+    }
+
+    /**
+     * 结构化调用（显式策略）。
+     *
+     * <p>实时调用请传 {@link StructuredCallPolicy#realtime}：预算覆盖整个操作（含解析重试），
+     * 让最坏等待可控、降级原因可解释。
+     */
+    public <T> T invoke(
+        ChatClient chatClient,
+        String systemPromptWithFormat,
+        String userPrompt,
+        BeanOutputConverter<T> outputConverter,
+        ErrorCode errorCode,
+        String errorPrefix,
+        String logContext,
+        Logger log,
+        StructuredCallPolicy policy
+    ) {
         long startNanos = System.nanoTime();
+        long deadlineNanos = policy.budgeted()
+            ? startNanos + Duration.ofMillis(policy.budgetMs()).toNanos()
+            : Long.MAX_VALUE;
         String contextTag = normalizeContextTag(logContext);
         String securedSystemPrompt = systemPromptWithFormat
             + PromptSecurityConstants.ANTI_INJECTION_INSTRUCTION;
         Exception lastError = null;
-        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+        StructuredErrorKind lastKind = StructuredErrorKind.UPSTREAM;
+        int attempt = 0;
+        boolean budgetExhausted = false;
+
+        while (attempt < policy.maxAttempts()) {
+            if (attempt > 0 && remainMs(deadlineNanos) < policy.minAttemptMs()) {
+                // 预算不足以完成一次有意义的调用：停在解析失败上，并标记「是没时间了」
+                budgetExhausted = true;
+                log.warn("{}剩余预算不足，放弃重试: attempts={}, remainingMs={}, {}",
+                    logContext, attempt, Math.max(0, remainMs(deadlineNanos)),
+                    policy.describe());
+                break;
+            }
+            attempt++;
             String attemptSystemPrompt = attempt == 1
                 ? securedSystemPrompt
                 : buildRetrySystemPrompt(securedSystemPrompt, lastError);
             try {
-                T result = callStructuredOutput(
-                    chatClient, attemptSystemPrompt, userPrompt, outputConverter, logContext, log);
-                recordAttempt(contextTag, STATUS_SUCCESS);
-                recordInvocation(contextTag, STATUS_SUCCESS, startNanos);
+                T result = callWithinBudget(
+                    () -> callStructuredOutput(chatClient, attemptSystemPrompt, userPrompt,
+                        outputConverter, logContext, log,
+                        // Spring AI 的 schema validation advisor 可能在一次 entity() 调用内部
+                        // 再发模型修复请求。实时档必须让 attempts 等于真实请求数，所以改走
+                        // 单次响应 + 本地解析/引号修复；后台档仍可使用 schema validation。
+                        schemaValidationEnabled && !policy.realtime()),
+                    policy, remainMs(deadlineNanos));
+                recordAttempt(contextTag, STATUS_SUCCESS, null);
+                recordInvocation(contextTag, STATUS_SUCCESS, null, startNanos);
                 return result;
             } catch (Exception e) {
                 lastError = e;
-                recordAttempt(contextTag, STATUS_FAILURE);
-                if (attempt < maxAttempts) {
-                    log.warn("{}结构化解析失败，准备重试: attempt={}/{}, error={}",
-                        logContext, attempt, maxAttempts, e.getMessage());
+                lastKind = classify(e);
+                recordAttempt(contextTag, STATUS_FAILURE, lastKind);
+                String remaining = policy.budgeted()
+                    ? Math.max(0, remainMs(deadlineNanos)) + "ms"
+                    : "unbounded";
+                if (attempt < policy.maxAttempts()) {
+                    log.warn("{}结构化调用失败，准备重试: attempt={}/{}, kind={}, remaining={}, error={}",
+                        logContext, attempt, policy.maxAttempts(), lastKind, remaining,
+                        rootCause(e).getMessage());
                 } else {
-                    log.error("{}结构化解析失败，已达最大重试次数: attempts={}, error={}",
-                        logContext, maxAttempts, e.getMessage());
+                    log.error("{}结构化调用失败，已达尝试上限: attempts={}, kind={}, remaining={}, error={}",
+                        logContext, attempt, lastKind, remaining, rootCause(e).getMessage());
                 }
             }
         }
 
-        recordInvocation(contextTag, STATUS_FAILURE, startNanos);
+        StructuredErrorKind finalKind = budgetExhausted ? StructuredErrorKind.TIMEOUT : lastKind;
+        recordInvocation(contextTag, STATUS_FAILURE, finalKind, startNanos);
         throw new BusinessException(
             errorCode,
-            errorPrefix + (lastError != null ? lastError.getMessage() : "unknown")
+            errorPrefix + (lastError != null ? rootCause(lastError).getMessage() : "unknown")
+                + (budgetExhausted ? "（实时预算已用尽）" : "")
+                + "[" + finalKind.tag() + "]"
         );
+    }
+
+    /** 预算内执行一次调用；不受预算约束时直接同步执行（后台路径行为不变） */
+    private <T> T callWithinBudget(Supplier<T> call, StructuredCallPolicy policy, long remainingMs) {
+        if (!policy.budgeted()) {
+            return call.get();
+        }
+        if (remainingMs <= 0) {
+            throw new CompletionException(new TimeoutException("实时预算已用尽"));
+        }
+        CompletableFuture<T> future = CompletableFuture.supplyAsync(call, budgetExecutor);
+        try {
+            return future.orTimeout(remainingMs, TimeUnit.MILLISECONDS).join();
+        } catch (CompletionException e) {
+            // 不再等待被放弃的调用；它会随 HTTP 超时自行结束（阻塞式调用无法打断）
+            future.cancel(true);
+            throw e;
+        }
+    }
+
+    private long remainMs(long deadlineNanos) {
+        if (deadlineNanos == Long.MAX_VALUE) {
+            return Long.MAX_VALUE;
+        }
+        return TimeUnit.NANOSECONDS.toMillis(deadlineNanos - System.nanoTime());
     }
 
     private <T> T callStructuredOutput(
@@ -109,13 +237,14 @@ public class StructuredOutputInvoker {
         String userPrompt,
         BeanOutputConverter<T> outputConverter,
         String logContext,
-        Logger log
+        Logger log,
+        boolean validateSchema
     ) {
         var call = chatClient.prompt()
             .system(systemPrompt)
             .user(userPrompt)
             .call();
-        if (schemaValidationEnabled) {
+        if (validateSchema) {
             return call.entity(outputConverter, spec -> spec.validateSchema());
         }
         String content = call.content();
@@ -143,6 +272,35 @@ public class StructuredOutputInvoker {
             }
             throw firstError;
         }
+    }
+
+    /**
+     * 失败分类：按**根因类型**判定，而不是靠错误文案。
+     *
+     * <p>超时（我们自己的预算收敛或上游读超时）与解析失败（JSON 不合契约）必须分开：
+     * 前者说明「要不到结果」，后者说明「要到了但没法用」，降级策略不同。
+     */
+    private static StructuredErrorKind classify(Exception error) {
+        Throwable cause = rootCause(error);
+        if (cause instanceof TimeoutException
+            || cause instanceof SocketTimeoutException
+            || cause instanceof HttpTimeoutException) {
+            return StructuredErrorKind.TIMEOUT;
+        }
+        if (cause instanceof ConversionException
+            || cause instanceof JacksonException
+            || cause instanceof IllegalArgumentException) {
+            return StructuredErrorKind.PARSE_FAILED;
+        }
+        return StructuredErrorKind.UPSTREAM;
+    }
+
+    private static Throwable rootCause(Throwable error) {
+        Throwable cause = error;
+        while (cause.getCause() != null && cause.getCause() != cause) {
+            cause = cause.getCause();
+        }
+        return cause;
     }
 
     private String repairUnescapedQuotesInJsonStrings(String content) {
@@ -212,7 +370,7 @@ public class StructuredOutputInvoker {
 
         if (includeLastErrorInRetryPrompt && lastError != null && lastError.getMessage() != null) {
             prompt.append("\n上次失败原因：")
-                .append(sanitizeErrorMessage(lastError.getMessage()));
+                .append(sanitizeErrorMessage(rootCause(lastError).getMessage()));
         }
         return prompt.toString();
     }
@@ -225,24 +383,29 @@ public class StructuredOutputInvoker {
         return oneLine;
     }
 
-    private void recordAttempt(String contextTag, String status) {
+    private void recordAttempt(String contextTag, String status, StructuredErrorKind kind) {
         if (!isMetricsAvailable()) {
             return;
         }
         meterRegistry.counter(
             METRIC_ATTEMPTS,
-            Tags.of("context", contextTag, "status", status)
+            Tags.of("context", contextTag, "status", status, "kind", tagOf(kind))
         ).increment();
     }
 
-    private void recordInvocation(String contextTag, String status, long startNanos) {
+    private void recordInvocation(String contextTag, String status, StructuredErrorKind kind,
+                                  long startNanos) {
         if (!isMetricsAvailable()) {
             return;
         }
-        Tags tags = Tags.of("context", contextTag, "status", status);
+        Tags tags = Tags.of("context", contextTag, "status", status, "kind", tagOf(kind));
         meterRegistry.counter(METRIC_INVOCATIONS, tags).increment();
         meterRegistry.timer(METRIC_LATENCY, tags)
-            .record(System.nanoTime() - startNanos, java.util.concurrent.TimeUnit.NANOSECONDS);
+            .record(System.nanoTime() - startNanos, TimeUnit.NANOSECONDS);
+    }
+
+    private static String tagOf(StructuredErrorKind kind) {
+        return kind == null ? TAG_KIND_NONE : kind.tag();
     }
 
     private boolean isMetricsAvailable() {

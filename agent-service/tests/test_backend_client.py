@@ -26,7 +26,7 @@ async def test_call_tool_raises_business_error():
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
-            200, json={"code": 12001, "data": None, "message": "未知 Tool: x"}
+            200, json={"code": 12001, "data": None, "message": "简历不存在"}
         )
 
     client = BackendClient(
@@ -35,7 +35,8 @@ async def test_call_tool_raises_business_error():
     )
     try:
         with pytest.raises(BusinessToolError) as exc_info:
-            await client.call_tool("x")
+            # 用契约中存在的 Tool：未知 Tool 会在发请求之前就被契约校验拦下（见 test_contracts）
+            await client.call_tool("get_resume", {"resumeId": 999})
         assert exc_info.value.code == 12001
         assert exc_info.value.retryable is False
     finally:

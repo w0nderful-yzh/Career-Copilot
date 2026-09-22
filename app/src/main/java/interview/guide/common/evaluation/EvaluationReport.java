@@ -8,7 +8,7 @@ import java.util.List;
 public record EvaluationReport(
     String sessionId,
     int totalQuestions,
-    int overallScore,
+    Integer overallScore,
     List<CategoryScore> categoryScores,
     List<QuestionEvaluation> questionDetails,
     String overallFeedback,
@@ -18,7 +18,7 @@ public record EvaluationReport(
 ) {
     public record CategoryScore(
         String category,
-        int score,
+        Integer score,
         int questionCount
     ) {}
 
@@ -27,7 +27,7 @@ public record EvaluationReport(
         String question,
         String category,
         String userAnswer,
-        int score,
+        Integer score,
         String feedback
     ) {}
 

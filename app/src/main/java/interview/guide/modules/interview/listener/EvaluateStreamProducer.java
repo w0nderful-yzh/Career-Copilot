@@ -17,7 +17,15 @@ import java.util.Map;
  */
 @Slf4j
 @Component
-public class EvaluateStreamProducer extends AbstractStreamProducer<String> {
+public class EvaluateStreamProducer extends AbstractStreamProducer<EvaluateStreamProducer.EvaluateTask> {
+
+    /**
+     * 评估任务载荷（P4-9a）。
+     *
+     * <p>带上评估代次：消息可能因为重试、重复投递或用户重试而出现多条，消费端据此
+     * 判定「这条触发是不是已经过期」，避免同一场面试产出两份报告与两批画像证据。
+     */
+    public record EvaluateTask(String sessionId, long epoch) {}
 
     private final InterviewSessionRepository sessionRepository;
     private final TransactionalExecutor transactionalExecutor;
@@ -36,9 +44,10 @@ public class EvaluateStreamProducer extends AbstractStreamProducer<String> {
      * 发送评估任务到 Redis Stream
      *
      * @param sessionId 面试会话ID
+     * @param epoch     评估代次（与数据库中的 evaluate_epoch 对应）
      */
-    public void sendEvaluateTask(String sessionId) {
-        sendTask(sessionId);
+    public void sendEvaluateTask(String sessionId, long epoch) {
+        sendTask(new EvaluateTask(sessionId, epoch));
     }
 
     @Override
@@ -52,22 +61,23 @@ public class EvaluateStreamProducer extends AbstractStreamProducer<String> {
     }
 
     @Override
-    protected Map<String, String> buildMessage(String sessionId) {
+    protected Map<String, String> buildMessage(EvaluateTask task) {
         return Map.of(
-            AsyncTaskStreamConstants.FIELD_SESSION_ID, sessionId,
+            AsyncTaskStreamConstants.FIELD_SESSION_ID, task.sessionId(),
+            AsyncTaskStreamConstants.FIELD_EVALUATE_EPOCH, String.valueOf(task.epoch()),
             AsyncTaskStreamConstants.FIELD_RETRY_COUNT, "0"
         );
     }
 
     @Override
-    protected String payloadIdentifier(String sessionId) {
-        return "sessionId=" + sessionId;
+    protected String payloadIdentifier(EvaluateTask task) {
+        return "sessionId=" + task.sessionId() + ", epoch=" + task.epoch();
     }
 
     @Override
-    protected void onSendFailed(String sessionId, String error) {
+    protected void onSendFailed(EvaluateTask task, String error) {
         transactionalExecutor.runRequiresNew(
-            () -> updateEvaluateStatus(sessionId, AsyncTaskStatus.FAILED, truncateError(error)));
+            () -> updateEvaluateStatus(task.sessionId(), AsyncTaskStatus.FAILED, truncateError(error)));
     }
 
     /**

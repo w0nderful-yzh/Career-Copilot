@@ -8,6 +8,11 @@ from typing import Any
 
 import httpx
 
+from career_copilot import contracts
+
+#: 与 Java 侧 ErrorCode.AGENT_TOOL_ARGUMENT_INVALID 对应：参数不符合契约
+ARGUMENT_INVALID_CODE = 12002
+
 
 class BusinessToolError(Exception):
     """Java 后端业务错误，转换为 Agent 可理解的结构化错误。
@@ -37,18 +42,38 @@ class BackendClient:
             base_url=base_url, timeout=timeout, transport=transport
         )
 
-    async def call_tool(self, tool: str, arguments: dict[str, Any] | None = None) -> Any:
+    async def call_tool(
+        self,
+        tool: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        # 该 timeout 不是「等多久」的等待语义，而是透传给 httpx 的单次请求超时覆盖，
+        # 因此不适用 asyncio.timeout（后者无法表达逐请求超时）。
+        timeout: float | None = None,  # noqa: ASYNC109
+    ) -> Any:
         """调用 Java Agent Tool 统一入口并解包 Result 信封。
 
         Java 侧约定：HTTP 200 + Result{code, message, data}，
         code != 200 表示业务失败，需转为 BusinessToolError。
         工具响应 data 为 ToolResponse{tool, data}，需再解包内层业务数据。
+        timeout：单次请求超时覆盖（秒）；缺省用客户端默认 30s。
+
+        调用前先按 Java 导出的契约校验参数（ARCH-1）：不合契约就不必打后端，
+        错误也能立刻指出是哪个字段——而不是等 Java 侧静默忽略或返回业务错误。
         """
-        payload: dict[str, Any] = {"arguments": arguments or {}}
+        wire_arguments: dict[str, Any] = dict(arguments or {})
         try:
-            response = await self._client.post(f"/api/agent/tools/{tool}", json=payload)
+            contracts.validate_arguments(tool, wire_arguments)
+        except contracts.ContractViolation as exc:
+            raise BusinessToolError(ARGUMENT_INVALID_CODE, str(exc)) from exc
+
+        payload: dict[str, Any] = {"arguments": wire_arguments}
+        try:
+            response = await self._client.post(
+                f"/api/agent/tools/{tool}", json=payload, timeout=timeout
+            )
         except httpx.HTTPError as exc:
-            # 网络/连接类错误属于瞬时错误，允许上层有限重试
+            # 网络/连接/超时类错误属于瞬时错误，允许上层有限重试
             raise BusinessToolError(500, f"后端服务不可达: {exc}", retryable=True) from exc
 
         try:
@@ -101,6 +126,37 @@ class BackendClient:
         data = await self.call_tool("get_interview_history")
         return data if isinstance(data, list) else []
 
+    async def get_interview_detail(self, session_id: str) -> dict[str, Any]:
+        """单场面试详情（P4-6a 复盘数据源）。
+
+        直连 Java /api/interview/sessions/{sessionId}/details：
+        strengths/improvements/overallFeedback + 逐题 answers（题目/回答/分数/反馈）。
+        非 Agent Tool（无 CONFIRM_WRITE），Java 会话不存在时抛 BusinessToolError。
+        """
+        try:
+            response = await self._client.get(f"/api/interview/sessions/{session_id}/details")
+        except httpx.HTTPError as exc:
+            raise BusinessToolError(500, f"后端服务不可达: {exc}", retryable=True) from exc
+        body = self._unwrap_result(response)
+        data = body.get("data")
+        return data if isinstance(data, dict) else {}
+
+    async def get_profile_impact(self, session_id: str) -> dict[str, Any]:
+        """单场面试带来的画像变化（P6-3 建议的数据源）。
+
+        直连 Java /api/interview/sessions/{sessionId}/profile-impact（前端结果卡用的是同一个端点）：
+        每技能的本场前/后分与逐条证据。会话不存在或无证据时返回空结构，不阻断建议。
+        """
+        try:
+            response = await self._client.get(
+                f"/api/interview/sessions/{session_id}/profile-impact"
+            )
+        except httpx.HTTPError as exc:
+            raise BusinessToolError(500, f"后端服务不可达: {exc}", retryable=True) from exc
+        body = self._unwrap_result(response)
+        data = body.get("data")
+        return data if isinstance(data, dict) else {}
+
     async def get_skill_profile(self) -> dict[str, Any]:
         """用户技能画像：各技能聚合分 + 可追溯证据（来自哪些面试、每题得分）。
 
@@ -130,9 +186,14 @@ class BackendClient:
         optimization_type: str,
         summary: str,
         patches: list[dict[str, Any]],
+        jd_gap_analysis: dict[str, Any] | None = None,
+        target_job_id: int | None = None,
+        target_direction: str | None = None,
     ) -> int:
         """创建优化提案（HITL：提案先落 Java 审计，返回提案 id）。
 
+        优化坐标系（模式 + 目标 JD / 目标方向）随提案落库：否则「按这份 JD 优化」
+        在审计上退化成通用优化，应用生成的新版本也无法追溯来源。
         用户在前端确认后经 apply_resume_patches Tool 应用。
         """
         data = await self._post_plain(
@@ -141,7 +202,10 @@ class BackendClient:
                 "resumeId": resume_id,
                 "sourceVersionId": source_version_id,
                 "optimizationType": optimization_type,
+                "targetJobId": target_job_id,
+                "targetDirection": target_direction,
                 "summary": summary,
+                "jdGapAnalysis": jd_gap_analysis,
                 "patches": patches,
             },
         )
@@ -170,29 +234,46 @@ class BackendClient:
         self,
         skill_id: str,
         difficulty: str,
-        question_count: int | None = None,
+        planned_duration_minutes: int | None = None,
+        required_topics: list[str] | None = None,
         resume_id: int | None = None,
         resume_text: str | None = None,
         force_create: bool = False,
+        request_id: str | None = None,
+        focus_categories: list[str] | None = None,
     ) -> dict[str, Any]:
         """创建模拟面试会话（CONFIRM_WRITE，用户确认后才由 Agent 调用）。
 
         复用 Java Interview Engine 现有创建链路（含 requestId 幂等与未完成会话复用），
         返回 InterviewSessionDTO，sessionId 供前端跳转面试页。
+
+        request_id 是幂等键：**同一次用户确认的网络重试必须复用同一个值**，
+        否则重复点击/重发会创建多个会话（参数存在但没人传，等于没有幂等保护）。
+
+        focus_categories 为重点考察的分类（key 或展示名）：Java 侧据此裁剪该方向的
+        出题范围；未命中任何分类时按原方向全量出题（focus 是"重点"而非"只考这些"）。
         """
         arguments: dict[str, Any] = {
             "skillId": skill_id,
             "difficulty": difficulty,
         }
-        if question_count is not None:
-            arguments["questionCount"] = question_count
+        if planned_duration_minutes is not None:
+            arguments["plannedDurationMinutes"] = planned_duration_minutes
+        if required_topics:
+            arguments["requiredTopics"] = list(required_topics)
         if resume_id is not None:
             arguments["resumeId"] = resume_id
         if resume_text is not None:
             arguments["resumeText"] = resume_text
         if force_create:
             arguments["forceCreate"] = True
-        data = await self.call_tool("create_interview", arguments)
+        if request_id:
+            arguments["requestId"] = request_id
+        if focus_categories:
+            arguments["focusCategories"] = list(focus_categories)
+        # LLM 同步出题可达 1-3 分钟：用长超时覆盖客户端默认 30s，
+        # 否则 agent 先超时抛「后端服务不可达」，而 Java 仍在后台创建成功（孤儿会话）。
+        data = await self.call_tool("create_interview", arguments, timeout=300.0)
         return data if isinstance(data, dict) else {}
 
     async def list_knowledge_bases(self) -> list[dict[str, Any]]:
@@ -254,9 +335,10 @@ class BackendClient:
         conversation_id: int,
         messages: list[dict[str, Any]],
     ) -> None:
-        """保存一轮消息（USER + ASSISTANT，含 blocks JSON）。
+        """保存一轮消息（USER + ASSISTANT，含 blocks JSON 与终态 status）。
 
         由 Agent 在流式结束后调用；保存失败不影响流式响应（上层仅告警）。
+        status 取 COMPLETED / STOPPED / FAILED，None 表示由 Java 侧按 COMPLETED 处理。
         """
         payload = {
             "messages": [
@@ -264,6 +346,7 @@ class BackendClient:
                     "role": message.get("role"),
                     "content": message.get("content") or "",
                     "blocks": message.get("blocks"),  # JSON 字符串或 None
+                    "status": message.get("status"),
                 }
                 for message in messages
             ]

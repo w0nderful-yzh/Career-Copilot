@@ -1,9 +1,11 @@
 package interview.guide.modules.resume;
 
+import interview.guide.common.annotation.RateLimit;
 import interview.guide.common.exception.BusinessException;
 import interview.guide.common.exception.ErrorCode;
 import interview.guide.common.result.Result;
 import interview.guide.modules.resume.model.ResumeOptimizationProposalEntity;
+import interview.guide.modules.resume.model.ResumeJdGapAnalysis;
 import interview.guide.modules.resume.model.ResumePatchItem;
 import interview.guide.modules.resume.service.ResumeOptimizationProposalService;
 import java.time.LocalDateTime;
@@ -38,7 +40,10 @@ public class ResumeOptimizationProposalController {
       Long resumeId,
       Long sourceVersionId,
       String optimizationType,
+      Long targetJobId,
+      String targetDirection,
       String summary,
+      ResumeJdGapAnalysis jdGapAnalysis,
       List<ResumePatchItem> patches
   ) {}
 
@@ -48,8 +53,11 @@ public class ResumeOptimizationProposalController {
       Long resumeId,
       Long sourceVersionId,
       String optimizationType,
+      Long targetJobId,
+      String targetDirection,
       String status,
       String summary,
+      ResumeJdGapAnalysis jdGapAnalysis,
       List<ResumePatchItem> patches,
       LocalDateTime createdAt,
       LocalDateTime decidedAt
@@ -62,7 +70,10 @@ public class ResumeOptimizationProposalController {
         request.sourceVersionId(),
         ResumeOptimizationProposalEntity.OptimizationType.valueOf(
             request.optimizationType() != null ? request.optimizationType() : "GENERAL"),
+        request.targetJobId(),
+        request.targetDirection(),
         request.summary(),
+        request.jdGapAnalysis(),
         request.patches());
     return Result.success(saved.getId());
   }
@@ -77,14 +88,45 @@ public class ResumeOptimizationProposalController {
     return Result.success(toDTO(proposalService.getLatestPending(resumeId)));
   }
 
+  /**
+   * 提案状态回显（前端块加载/刷新回放历史消息时用）。
+   *
+   * <p>历史消息里的 ResumeOptimizationBlock 只存了 patches，不带决策状态；
+   * 不回显的话，已应用/已忽略的提案在刷新后仍显示成可再次操作。
+   */
+  @GetMapping("/api/resume-optimization/proposals/{proposalId}")
+  public Result<ProposalDTO> getProposalForUser(@PathVariable Long proposalId) {
+    return Result.success(toDTO(proposalService.getProposal(proposalId)));
+  }
+
+  /**
+   * 放弃本轮全部建议：PENDING → REJECTED（与 apply 对称的用户决策出口）。
+   *
+   * <p>拒绝不改动任何简历内容，只落审计状态（decidedAt + REJECTED）；
+   * 重复拒绝由状态机拒绝（提案已处理）。
+   */
+  @PostMapping("/api/resume-optimization/proposals/{proposalId}/reject")
+  @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 20)
+  @RateLimit(dimension = RateLimit.Dimension.IP, count = 20)
+  public Result<ProposalDTO> rejectProposal(@PathVariable Long proposalId) {
+    ResumeOptimizationProposalEntity rejected = proposalService.transitionFromPending(
+        proposalId, ResumeOptimizationProposalEntity.ProposalStatus.REJECTED);
+    log.info("简历优化提案被用户拒绝: proposalId={}, resumeId={}",
+        proposalId, rejected.getResumeId());
+    return Result.success(toDTO(rejected));
+  }
+
   private ProposalDTO toDTO(ResumeOptimizationProposalEntity entity) {
     return new ProposalDTO(
         entity.getId(),
         entity.getResumeId(),
         entity.getSourceVersionId(),
         entity.getOptimizationType() != null ? entity.getOptimizationType().name() : null,
+        entity.getTargetJobId(),
+        entity.getTargetDirection(),
         entity.getStatus() != null ? entity.getStatus().name() : null,
         entity.getSummary(),
+        proposalService.parseJdGapAnalysis(entity),
         parsePatches(entity),
         entity.getCreatedAt(),
         entity.getDecidedAt());

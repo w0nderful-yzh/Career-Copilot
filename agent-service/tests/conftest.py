@@ -3,11 +3,15 @@
 普通测试一律不调用真实 LLM / 真实 Java 后端（见 agent-service 规则 #50）。
 """
 
+import json
 from collections.abc import Callable
+from typing import Any
 
 import httpx
 import pytest
+from pydantic import BaseModel
 
+from career_copilot.agent.llm import LlmExecutor
 from career_copilot.agent.router import Intent, IntentClassification
 from career_copilot.clients.backend import BackendClient
 
@@ -31,11 +35,18 @@ class FakeChatModel:
 
     def __init__(self, text: str = "fake answer") -> None:
         self._text = text
+        #: 最近一次收到的消息（断言「喂进去了什么」用）
+        self.messages: list = []
 
     def with_structured_output(self, schema, **kwargs) -> FakeStructuredModel:
         return FakeStructuredModel(self._classification)
 
+    def bind(self, **kwargs):
+        """支持 response_format 之类的绑定：直接返回自身（fake 不关心）。"""
+        return self
+
     async def ainvoke(self, messages: list):
+        self.messages = list(messages)
         return FakeChatResult(self._text)
 
     async def astream(self, messages: list):
@@ -46,6 +57,30 @@ class FakeChatModel:
 class FakeChatResult:
     def __init__(self, content: str) -> None:
         self.content = content
+
+
+def make_fake_executor(response: Any = "fake answer", *, parse_retries: int = 0) -> LlmExecutor:
+    """构造走 fake 模型的 LLM 执行器（ARCH-2 后的测试入口）。
+
+    response 可以是：
+    - 字符串：当作模型返回的文本（`executor.text` 用）；
+    - dict / pydantic 模型：序列化为 JSON 文本（`executor.json` 会自行解析并校验）。
+
+    parse_retries 默认 0：多数用例只关心「喂进去了什么」，不需要真实重试；
+    专门验证有限修复的用例显式传 1。
+    """
+    if isinstance(response, BaseModel):
+        text = json.dumps(response.model_dump(), ensure_ascii=False, default=str)
+    elif isinstance(response, dict):
+        text = json.dumps(response, ensure_ascii=False, default=str)
+    else:
+        text = str(response)
+    return LlmExecutor(FakeChatModel(text), default_timeout=5.0, parse_retries=parse_retries)
+
+
+def executor_for(model: Any, *, parse_retries: int = 0) -> LlmExecutor:
+    """用给定替身模型构造执行器（替身本身已有自定义行为时用）。"""
+    return LlmExecutor(model, default_timeout=5.0, parse_retries=parse_retries)
 
 
 def make_fake_model(classification: IntentClassification, text: str = "fake answer"):
@@ -82,6 +117,38 @@ def mock_backend_transport() -> Callable[[httpx.Request], httpx.Response]:
                     "evaluateStatus": "COMPLETED",
                 },
             ],
+            "get_interview_progress": {
+                "sessionId": "s1",
+                "status": "IN_PROGRESS",
+                "endReason": None,
+                "plannedDurationMinutes": 20,
+                "consumedSeconds": 300,
+                "remainingSeconds": 900,
+                "requiredTopics": ["JVM", "数据库"],
+                "coverageSummary": "- 必要覆盖：JVM=已覆盖；数据库=本轮正在考察",
+                "budgetSummary": "- 时间预算：剩余约 15 分钟",
+                "legalCandidates": ["[q4] 主问题｜算法｜中级：算法 的主问题"],
+                "askedTurnCount": 1,
+                "satisfiedRequiredTopicCount": 1,
+                "currentQuestion": {
+                    "questionId": "q3",
+                    "question": "数据库 的主问题",
+                    "topic": "数据库",
+                    "category": "数据库",
+                    "isFollowUp": False,
+                },
+                "turns": [
+                    {
+                        "ordinal": 1,
+                        "questionId": "q1",
+                        "question": "JVM 的主问题",
+                        "topic": "JVM",
+                        "category": "JVM",
+                        "answerState": "ANSWERED",
+                        "userAnswer": "堆分新生代与老年代",
+                    }
+                ],
+            },
             "list_knowledge_bases": [{"id": 1, "name": "Java 知识库"}],
             "search_knowledge": {
                 "answer": "JVM 是 Java 虚拟机。",

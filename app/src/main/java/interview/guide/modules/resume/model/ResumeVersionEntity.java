@@ -52,9 +52,13 @@ public class ResumeVersionEntity {
   @Column(name = "optimization_type", length = 32)
   private String optimizationType;
 
-  /** 目标 JD id（JD_TARGETED 时记录；JD 附件功能 P2-5 落地后启用） */
+  /** 目标 JD id（JD_TARGETED 时记录；由提案应用时透传，原版本永不改动） */
   @Column(name = "target_job_id")
   private Long targetJobId;
+
+  /** 目标方向描述（TARGET_DIRECTION 时记录，如「Java 后端实习」） */
+  @Column(name = "target_direction", length = 128)
+  private String targetDirection;
 
   /** 结构化 Resume JSON（basicInfo/education/experience/projects/skills/customSections） */
   @Column(name = "content_json", nullable = false, columnDefinition = "TEXT")

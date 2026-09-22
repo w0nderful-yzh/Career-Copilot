@@ -7,6 +7,7 @@ import type {
   StreamEvent,
 } from '../types/copilot';
 import type { UploadResponse } from '../types/resume';
+import { serializeAttachments } from '../utils/agentChatProtocol';
 
 /**
  * 发送消息并消费 SSE 流式响应。
@@ -22,6 +23,11 @@ export async function streamChat(
   conversationId?: number,
   attachments?: AttachmentRef[],
   action?: ActionSelected,
+  /**
+   * 进行中的面试会话 ID（P4-10）：Interview Mode 里带上，
+   * 让 Copilot 能读当前进展（现在考到哪、还剩什么），而不必等面试结束。
+   */
+  activeInterviewSessionId?: string,
 ): Promise<void> {
   const response = await fetch('/api/chat/stream', {
     method: 'POST',
@@ -30,13 +36,9 @@ export async function streamChat(
       message,
       conversation_id: conversationId ?? null,
       // 前端类型用 camelCase，Python 协议用 snake_case，在边界转换
-      attachments: (attachments ?? []).map((att) => ({
-        kind: att.kind,
-        resume_id: att.resumeId,
-        filename: att.filename ?? null,
-        duplicate: att.duplicate ?? false,
-      })),
+      attachments: serializeAttachments(attachments ?? []),
       action: action ?? null,
+      active_interview_session_id: activeInterviewSessionId ?? null,
     }),
     signal,
   });
@@ -78,8 +80,12 @@ export async function streamChat(
 
 const conversationBase = '/api/agent/conversations';
 
+/** 会话状态：ACTIVE 活跃（默认列表）/ ARCHIVED 已归档（软隐藏，可恢复） */
+export type ConversationStatusFilter = 'ACTIVE' | 'ARCHIVED';
+
 export const conversationApi = {
-  list: () => request.get<ConversationItem[]>(conversationBase),
+  list: (status: ConversationStatusFilter = 'ACTIVE') =>
+    request.get<ConversationItem[]>(`${conversationBase}?status=${status}`),
 
   create: () => request.post<ConversationItem>(conversationBase, {}),
 
@@ -92,27 +98,47 @@ export const conversationApi = {
   togglePin: (conversationId: number) =>
     request.put<void>(`${conversationBase}/${conversationId}/pin`),
 
+  /** 归档：从活跃列表收起但保留记录，可恢复（区别于 remove 的硬删除） */
+  archive: (conversationId: number) =>
+    request.put<void>(`${conversationBase}/${conversationId}/archive`),
+
+  restore: (conversationId: number) =>
+    request.put<void>(`${conversationBase}/${conversationId}/restore`),
+
   remove: (conversationId: number) =>
     request.delete<void>(`${conversationBase}/${conversationId}`),
 };
 
 // ===== 技能画像（Java Profile 模块，P3-2） =====
 
+export type ProfileEvidenceSource = 'RESUME' | 'INTERVIEW_SESSION' | 'INTERVIEW_TURN';
+
+export interface ProfileEvidence {
+  sourceType: ProfileEvidenceSource;
+  sourceId: string;
+  /** null = 声明型证据（简历列出的技能，尚无评分，不参与聚合） */
+  score: number | null;
+  occurredAt?: string | null;
+}
+
 export interface SkillProfileSkill {
   skill: string;
   score: number;
   evidenceCount: number;
   updatedAt?: string | null;
-  evidences?: Array<{
-    sourceType: 'RESUME' | 'INTERVIEW_SESSION' | 'INTERVIEW_TURN';
-    sourceId: string;
-    score: number;
-    occurredAt?: string | null;
-  }>;
+  evidences?: ProfileEvidence[];
+}
+
+/** 简历已列、尚无评分证据的技能（P3 待收口："待验证"） */
+export interface DeclaredSkill {
+  skill: string;
+  resumeId: string;
+  declaredAt?: string | null;
 }
 
 export interface SkillProfileResponse {
   skills: SkillProfileSkill[];
+  declaredSkills?: DeclaredSkill[];
 }
 
 export const skillProfileApi = {

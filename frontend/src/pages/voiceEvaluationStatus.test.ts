@@ -20,6 +20,7 @@ test('新进入 PENDING 时展示明确的排队状态且不立即允许重复�
     description: '通常会在 10–30 秒内开始分析，你可以先离开此页面。',
     retryable: false,
     shouldPoll: true,
+    failure: null,
   });
 });
 
@@ -34,8 +35,22 @@ test('PENDING 超过恢复阈值后提示延迟并允许重新生成', () => {
     title: '评估等待时间较长',
     description: '任务可能没有成功进入队列，你可以重新生成，已保存的面试记录不会丢失。',
     retryable: true,
-    shouldPoll: true,
+    shouldPoll: false,
+    // 统一判据：这是「等待超时」（可能没入队），不是「任务失败」
+    failure: { kind: 'timeout', message: '评估任务等待超时', retryable: true },
   });
+});
+
+test('PROCESSING 长时间无变化同样退出自动轮询并给重试', () => {
+  const presentation = getVoiceEvaluationPresentation({
+    status: 'PROCESSING',
+    statusUpdatedAt: new Date(now - VOICE_EVALUATION_RETRY_AFTER_MS).toISOString(),
+    now,
+  });
+
+  assert.equal(presentation.shouldPoll, false);
+  assert.equal(presentation.retryable, true);
+  assert.equal(presentation.failure?.kind, 'timeout');
 });
 
 test('PROCESSING 和 FAILED 使用不同的操作提示', () => {
@@ -56,6 +71,7 @@ test('PROCESSING 和 FAILED 使用不同的操作提示', () => {
     description: '本次面试记录已保存，你可以重新生成评估报告。',
     retryable: true,
     shouldPoll: false,
+    failure: { kind: 'task_failed', message: '评估报告生成失败', retryable: true },
   });
 });
 

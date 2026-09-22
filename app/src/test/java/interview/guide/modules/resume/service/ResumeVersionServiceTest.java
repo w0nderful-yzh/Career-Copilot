@@ -3,6 +3,7 @@ package interview.guide.modules.resume.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -36,6 +37,9 @@ class ResumeVersionServiceTest {
 
   @Spy
   private final ObjectMapper objectMapper = new ObjectMapper();
+
+  @Mock
+  private interview.guide.modules.profile.service.ResumeProfileSyncService profileSyncService;
 
   @InjectMocks
   private ResumeVersionService versionService;
@@ -139,6 +143,41 @@ class ResumeVersionServiceTest {
       verify(versionRepository).save(captor.capture());
       assertThat(captor.getValue().getConfirmationStatus())
           .isEqualTo(ResumeVersionEntity.ConfirmationStatus.ACTIVE);
+    }
+
+    @Test
+    @DisplayName("确认后同步简历技能声明到画像（P3 待收口）")
+    void confirmSyncsResumeDeclarations() {
+      ResumeVersionEntity version = new ResumeVersionEntity();
+      version.setId(6L);
+      version.setResumeId(1L);
+      version.setConfirmationStatus(ResumeVersionEntity.ConfirmationStatus.PENDING_CONFIRMATION);
+      version.setContentJson("{\"basicInfo\":{\"name\":\"张三\"},\"skills\":[]}");
+      when(versionRepository.findById(6L)).thenReturn(Optional.of(version));
+      when(versionRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+      versionService.confirmVersion(6L, null);
+
+      // 无修正内容时也同步：用的是保存后的版本内容，而不是入参
+      verify(profileSyncService).syncDeclarations(eq(1L), any());
+    }
+
+    @Test
+    @DisplayName("结构化内容损坏时跳过声明同步，不阻断确认流程")
+    void skipsSyncWhenContentCorrupted() {
+      ResumeVersionEntity version = new ResumeVersionEntity();
+      version.setId(7L);
+      version.setResumeId(1L);
+      version.setConfirmationStatus(ResumeVersionEntity.ConfirmationStatus.PENDING_CONFIRMATION);
+      version.setContentJson("不是 JSON");
+      when(versionRepository.findById(7L)).thenReturn(Optional.of(version));
+      when(versionRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+      ResumeVersionEntity confirmed = versionService.confirmVersion(7L, null);
+
+      assertThat(confirmed.getConfirmationStatus())
+          .isEqualTo(ResumeVersionEntity.ConfirmationStatus.ACTIVE);
+      verify(profileSyncService, never()).syncDeclarations(any(), any());
     }
 
     @Test

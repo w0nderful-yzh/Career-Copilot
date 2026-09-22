@@ -7,13 +7,16 @@ import {
   FileDown,
   GitBranch,
   Loader2,
+  Pencil,
   Sparkles,
   Upload,
 } from 'lucide-react';
 import {
   historyApi,
+  type ResumeContentJson,
   type ResumeVersionItem,
 } from '../api/history';
+import ResumeContentEditor from './ResumeContentEditor';
 
 // 简历版本面板（P2-3）：结构化版本列表 + 解析结果确认。
 // 解析结果需用户确认后才可作为简历优化（Copilot「优化简历」）的取数基础。
@@ -28,6 +31,17 @@ const STATUS_META: Record<ResumeVersionItem['confirmationStatus'], { label: stri
   PENDING_CONFIRMATION: { label: '待确认', className: 'bg-amber-50 text-amber-600 dark:bg-amber-900/40 dark:text-amber-300' },
   ACTIVE: { label: '已确认', className: 'bg-emerald-50 text-emerald-600 dark:bg-emerald-900/40 dark:text-emerald-300' },
   NEED_USER_INFO: { label: '需补录', className: 'bg-red-50 text-red-600 dark:bg-red-900/40 dark:text-red-300' },
+};
+
+// 优化坐标系徽标（P2 待修正）：让「通用 / 定向方向 / JD 定向」在版本列表上可分辨，
+// 否则 JD 定向优化生成的版本与通用优化长得一模一样。
+const OPTIMIZATION_META: Record<
+  NonNullable<ResumeVersionItem['optimizationType']>,
+  { label: string; className: string }
+> = {
+  GENERAL: { label: '通用优化', className: 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-300' },
+  TARGET_DIRECTION: { label: '定向方向', className: 'bg-blue-50 text-blue-600 dark:bg-blue-900/40 dark:text-blue-300' },
+  JD_TARGETED: { label: 'JD 定向', className: 'bg-indigo-50 text-indigo-600 dark:bg-indigo-900/40 dark:text-indigo-300' },
 };
 
 function StatusBadge({ status }: { status: ResumeVersionItem['confirmationStatus'] }) {
@@ -57,17 +71,18 @@ function ConfirmCard({
   onConfirmed: () => void;
 }) {
   const [confirming, setConfirming] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const needMore = version.confirmationStatus === 'NEED_USER_INFO';
-  // 一期不做结构化补录表单（缺失字段少时建议用户重新上传或稍后版本完善），
-  // 确认动作对 NEED_USER_INFO 同样生效——用户看过缺失提示后自行判断内容可用性
+  // 解析错一处则后续 Patch / Preview / 导出全错，故支持「修改后确认」：
+  // 表单直接编辑确认请求携带的 correctedContent（后端以修正版覆盖并清空缺失清单）。
   const content = version.content;
 
-  const handleConfirm = async () => {
+  const handleConfirm = async (corrected?: ResumeContentJson) => {
     setConfirming(true);
     setError(null);
     try {
-      await historyApi.confirmResumeVersion(version.id);
+      await historyApi.confirmResumeVersion(version.id, corrected);
       onConfirmed();
     } catch (err) {
       setError(err instanceof Error ? err.message : '确认失败，请稍后重试');
@@ -109,20 +124,40 @@ function ConfirmCard({
           {error && (
             <p className="mt-2 text-xs text-red-500">{error}</p>
           )}
-          <div className="mt-3 flex items-center gap-2">
-            <motion.button
-              onClick={handleConfirm}
-              disabled={confirming}
-              className="inline-flex items-center gap-1.5 px-4 py-2 bg-primary-500 text-white rounded-lg text-sm font-medium shadow-sm hover:bg-primary-600 transition-all disabled:opacity-50"
-              whileTap={{ scale: 0.98 }}
-            >
-              {confirming
-                ? <Loader2 className="w-4 h-4 animate-spin" />
-                : <CheckCircle2 className="w-4 h-4" />}
-              {confirming ? '确认中…' : '确认解析结果'}
-            </motion.button>
-            <span className="text-xs text-slate-400">确认后仍可继续优化迭代</span>
-          </div>
+          {editing ? (
+            <ResumeContentEditor
+              initialContent={content}
+              missingFields={version.missingFields}
+              saving={confirming}
+              onCancel={() => setEditing(false)}
+              onConfirm={(corrected) => void handleConfirm(corrected)}
+            />
+          ) : (
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <motion.button
+                onClick={() => void handleConfirm()}
+                disabled={confirming}
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-primary-500 text-white rounded-lg text-sm font-medium shadow-sm hover:bg-primary-600 transition-all disabled:opacity-50"
+                whileTap={{ scale: 0.98 }}
+              >
+                {confirming
+                  ? <Loader2 className="w-4 h-4 animate-spin" />
+                  : <CheckCircle2 className="w-4 h-4" />}
+                {confirming ? '确认中…' : '确认解析结果'}
+              </motion.button>
+              {/* 解析纠错/补录入口（P2 待修正）：解析错一处则后续 Patch/Preview/导出全错 */}
+              <button
+                type="button"
+                onClick={() => setEditing(true)}
+                disabled={confirming}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 bg-white text-sm font-medium text-slate-600 transition hover:border-slate-300 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+              >
+                <Pencil className="w-4 h-4" />
+                修改后再确认
+              </button>
+              <span className="text-xs text-slate-400">确认后仍可继续优化迭代</span>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -185,6 +220,18 @@ function VersionCard({
                 {sourceMeta.label}
               </span>
               <StatusBadge status={version.confirmationStatus} />
+              {version.optimizationType && (
+                <span
+                  className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                    (OPTIMIZATION_META[version.optimizationType] ?? OPTIMIZATION_META.GENERAL).className
+                  }`}
+                  title={version.targetDirection ?? (version.targetJobId ? `目标 JD #${version.targetJobId}` : undefined)}
+                >
+                  {(OPTIMIZATION_META[version.optimizationType] ?? OPTIMIZATION_META.GENERAL).label}
+                  {version.targetDirection ? ` · ${version.targetDirection}` : ''}
+                  {!version.targetDirection && version.targetJobId ? ` · JD#${version.targetJobId}` : ''}
+                </span>
+              )}
               {isLatest && (
                 <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-primary-100 text-primary-600 dark:bg-primary-900/50 dark:text-primary-300">
                   最新

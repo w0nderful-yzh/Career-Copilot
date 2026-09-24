@@ -835,6 +835,77 @@ async def test_graph_loads_history_and_passes_to_answerer():
     assert "早期对话摘要" in seen["history"]
 
 
+async def test_graph_regenerate_drops_duplicated_history_turn():
+    """重新生成轮：历史末尾就是要重发的那条用户消息，不能注入两遍。
+
+    前端「重新生成」会先删掉旧的助手回复，Java 历史因此以该用户消息结尾；
+    不清掉它，模型会在同一轮里既从历史、又从当前输入看到两遍相同的问题。
+    """
+    seen: list[str] = []
+
+    class HistoryAnswerer:
+        async def answer_stream(self, message, context=None, history=None):
+            seen.append(history or "")
+            yield "answer"
+
+        async def summarize_history(self, history_text: str) -> str:
+            return ""
+
+    def history_handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/context"):
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "data": {
+                        "messages": [
+                            {"role": "USER", "content": "第一问"},
+                            {"role": "ASSISTANT", "content": "第一答"},
+                            {"role": "USER", "content": "第二问"},
+                        ],
+                        "summary": None,
+                        "totalCount": 3,
+                    },
+                    "message": "success",
+                },
+            )
+        tool = path.rsplit("/", 1)[-1]
+        return httpx.Response(
+            200,
+            json={"code": 200, "data": {"get_resume_list": []}.get(tool, []), "message": "success"},
+        )
+
+    def build(regenerate: bool):
+        deps = GraphDeps(
+            intent_router=FakeIntentRouter(IntentClassification(intent=Intent.GENERAL_CHAT)),
+            answerer=HistoryAnswerer(),
+            backend=BackendClient(
+                base_url="http://test", transport=httpx.MockTransport(history_handler)
+            ),
+            llm=make_fake_executor(),
+        )
+        return build_graph(deps), build_initial_state(
+            conversation_id=5, message="第二问", attachments=[], action=None, regenerate=regenerate
+        )
+
+    # 普通轮：历史原样注入（当前提问只出现在 message 里）
+    graph, state = build(regenerate=False)
+    result = await graph.ainvoke(state)
+    async for _ in result["plan"].text:
+        pass
+    assert "用户: 第二问" in seen[-1]
+
+    # 重新生成轮：末尾重复的同内容用户消息被丢弃，前两轮历史保留
+    graph, state = build(regenerate=True)
+    result = await graph.ainvoke(state)
+    async for _ in result["plan"].text:
+        pass
+    assert "用户: 第二问" not in seen[-1]
+    assert "用户: 第一问" in seen[-1]
+    assert "助手: 第一答" in seen[-1]
+
+
 async def test_graph_triggers_rolling_summary_and_writes_back():
     """历史超出窗口且无摘要时，应生成滚动摘要并写回 Java。"""
     calls: list[tuple[str, str]] = []

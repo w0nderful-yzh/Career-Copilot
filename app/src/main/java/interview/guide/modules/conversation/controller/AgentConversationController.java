@@ -165,4 +165,18 @@ public class AgentConversationController {
     conversationService.saveMessages(conversationId, request);
     return Result.success();
   }
+
+  /**
+   * 截断消息：删除该消息及其之后的全部消息，返回删除条数。
+   *
+   * <p>供前端「编辑已发送消息」（从该用户消息起重发）与「重新生成回答」
+   * （从该助手消息起重跑）使用。删除不可恢复，前端在存在后续消息时须先确认。
+   */
+  @DeleteMapping("/{conversationId}/messages/{messageId}")
+  @RateLimit(dimension = RateLimit.Dimension.GLOBAL, count = 30)
+  public Result<Integer> truncateMessages(
+      @PathVariable Long conversationId,
+      @PathVariable Long messageId) {
+    return Result.success(conversationService.truncateMessagesFrom(conversationId, messageId));
+  }
 }

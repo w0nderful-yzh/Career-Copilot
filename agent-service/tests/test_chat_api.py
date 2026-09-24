@@ -637,6 +637,49 @@ def test_persist_turn_completed_with_empty_content_skips_assistant(monkeypatch):
     assert len(saved[0]["messages"]) == 1
 
 
+def test_persist_regenerate_turn_writes_assistant_only(monkeypatch):
+    """重新生成轮只写助手消息：用户消息已在历史里，再写一遍会重复提问。"""
+    saved: list[dict] = []
+    handler = _tracking_handler(saved)
+    _patch_persist_client(monkeypatch, handler)
+
+    asyncio.run(
+        chat_module._persist_conversation_turn(  # noqa: SLF001
+            BackendClient(base_url="http://test", transport=httpx.MockTransport(handler)),
+            91,
+            "帮我复盘这次面试",
+            "重新生成的回答",
+            [],
+            "COMPLETED",
+            regenerate=True,
+        )
+    )
+
+    assert len(saved) == 1
+    messages = saved[0]["messages"]
+    assert [message["role"] for message in messages] == ["ASSISTANT"]
+    assert messages[0]["content"] == "重新生成的回答"
+
+
+def test_chat_stream_regenerate_flag_reaches_persist(monkeypatch):
+    """流式入口带 regenerate=true 时，落库同样只写助手消息。"""
+    saved: list[dict] = []
+    handler = _tracking_handler(saved)
+    _patch_persist_client(monkeypatch, handler)
+
+    client = setup_overrides(IntentClassification(intent=Intent.GENERAL_CHAT), handler)
+    with client.stream(
+        "POST",
+        "/api/chat/stream",
+        json={"message": "你好", "conversation_id": "5", "regenerate": True},
+    ) as response:
+        events = _parse_sse("".join(response.iter_text()))
+
+    assert events[-1]["type"] == "done"
+    assert _wait_until(lambda: len(saved) == 1), "应保存一次消息"
+    assert [message["role"] for message in saved[0]["messages"]] == ["ASSISTANT"]
+
+
 def test_chat_stream_skips_persist_without_conversation_id(backend_transport):
     """无 conversation_id 时不应触发保存。"""
     client = setup_overrides(

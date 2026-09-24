@@ -9,36 +9,46 @@ import type {
 import type { UploadResponse } from '../types/resume';
 import { serializeAttachments } from '../utils/agentChatProtocol';
 
+export interface StreamChatOptions {
+  conversationId?: number;
+  /** 已上传资源的结构化引用（如简历 id），文件二进制不经 Agent */
+  attachments?: AttachmentRef[];
+  action?: ActionSelected;
+  /**
+   * 进行中的面试会话 ID（P4-10）：Interview Mode 里带上，
+   * 让 Copilot 能读当前进展（现在考到哪、还剩什么），而不必等面试结束。
+   */
+  activeInterviewSessionId?: string;
+  /**
+   * 重新生成本轮回答：用户消息已存在于会话历史，后端不得重复落库，
+   * 只重新生成并保存助手回复（前端已在调用前删掉旧的助手消息）。
+   */
+  regenerate?: boolean;
+}
+
 /**
  * 发送消息并消费 SSE 流式响应。
  *
  * 通过 AbortSignal 支持取消：取消后抛出 DOMException(AbortError)，
- * 由调用方决定如何标记消息状态。携带 conversation_id 时后端会在流式结束后持久化本轮消息。
- * attachments 为已上传资源的结构化引用（如简历 id）。
+ * 由调用方决定如何标记消息状态。携带 conversationId 时后端会在流式结束后持久化本轮消息。
  */
 export async function streamChat(
   message: string,
   onEvent: (event: StreamEvent) => void,
   signal: AbortSignal,
-  conversationId?: number,
-  attachments?: AttachmentRef[],
-  action?: ActionSelected,
-  /**
-   * 进行中的面试会话 ID（P4-10）：Interview Mode 里带上，
-   * 让 Copilot 能读当前进展（现在考到哪、还剩什么），而不必等面试结束。
-   */
-  activeInterviewSessionId?: string,
+  options: StreamChatOptions = {},
 ): Promise<void> {
   const response = await fetch('/api/chat/stream', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       message,
-      conversation_id: conversationId ?? null,
+      conversation_id: options.conversationId ?? null,
       // 前端类型用 camelCase，Python 协议用 snake_case，在边界转换
-      attachments: serializeAttachments(attachments ?? []),
-      action: action ?? null,
-      active_interview_session_id: activeInterviewSessionId ?? null,
+      attachments: serializeAttachments(options.attachments ?? []),
+      action: options.action ?? null,
+      active_interview_session_id: options.activeInterviewSessionId ?? null,
+      regenerate: options.regenerate ?? false,
     }),
     signal,
   });
@@ -107,6 +117,15 @@ export const conversationApi = {
 
   remove: (conversationId: number) =>
     request.delete<void>(`${conversationBase}/${conversationId}`),
+
+  /**
+   * 截断消息：删除该消息及其之后的全部消息，返回删除条数。
+   *
+   * 供「编辑已发送消息」与「重新生成回答」使用——两者都要求历史里不留残影，
+   * 且都必须先按 messageId 对账（见 utils/copilotMessageReconcile），不可按数量猜。
+   */
+  truncateFrom: (conversationId: number, messageId: number) =>
+    request.delete<number>(`${conversationBase}/${conversationId}/messages/${messageId}`),
 };
 
 // ===== 技能画像（Java Profile 模块，P3-2） =====

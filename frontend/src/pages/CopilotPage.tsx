@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, useOutletContext } from 'react-router-dom';
-import { AlertCircle, RefreshCw } from 'lucide-react';
+import { AlertCircle, RefreshCw, X } from 'lucide-react';
 import { conversationApi, jobUploadApi, resumeUploadApi, streamChat } from '../api/agentChat';
+import ConfirmDialog from '../components/ConfirmDialog';
 import Composer, { type AttachmentKind } from '../components/copilot/Composer';
 import ContextPanel from '../components/copilot/ContextPanel';
 import InterviewWorkspace from '../components/copilot/InterviewWorkspace';
@@ -9,6 +10,10 @@ import MessageList from '../components/copilot/MessageList';
 import type { CopilotOutletContext } from '../components/Layout';
 import { ROUTES } from '../constants/routes';
 import { FAILED_TURN_HINT, toMessageStatus } from '../utils/copilotTurnStatus';
+import {
+  countFollowingMessages,
+  resolveJavaMessageId,
+} from '../utils/copilotMessageReconcile';
 import type {
   ActionSelected,
   AgentBlock,
@@ -90,6 +95,20 @@ export default function CopilotPage() {
   const [historyError, setHistoryError] = useState<string | null>(null);
   // 失败重试用：递增以重新触发加载 effect
   const [historyReloadKey, setHistoryReloadKey] = useState(0);
+  /**
+   * 消息级操作（编辑 / 重新生成）的就地提示。
+   *
+   * 这些操作可能在半途失败（对账拿不到 Java 消息 id、截断被拒），
+   * 既不能静默丢弃，也不该把整个消息区换成错误页——用一条可关闭的顶部提示如实说明。
+   */
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
+  // 待确认的编辑：编辑中间消息会删除其后的对话，必须先让用户确认
+  const [pendingEdit, setPendingEdit] = useState<{
+    messageId: string;
+    text: string;
+    index: number;
+    following: number;
+  } | null>(null);
   // 会话绑定的活动 JD（Conversation Memory，P2-5；侧栏活跃资源展示用）
   const [boundJobId, setBoundJobId] = useState<number | null>(null);
   const [streaming, setStreaming] = useState(false);
@@ -270,6 +289,7 @@ export default function CopilotPage() {
       attachments = [],
       action,
       existingAssistantId,
+      regenerate = false,
     }: {
       message: string;
       userContent: string;
@@ -277,6 +297,11 @@ export default function CopilotPage() {
       action?: ActionSelected;
       /** 附件上传等前置阶段已插入气泡时，复用该助手消息而非再追加 */
       existingAssistantId?: string;
+      /**
+       * 重新生成语义：用户消息已在会话历史里，前端也已删掉旧的助手回复，
+       * 因此本轮不追加用户气泡，后端也不得重复落库用户消息。
+       */
+      regenerate?: boolean;
     }) => {
       // 无会话时先创建（Java System of Record），并同步到 Layout 会话列表。
       let conversationId = activeConversationId;
@@ -306,17 +331,26 @@ export default function CopilotPage() {
       // 记下本轮原始请求：失败/停止后可原样重发（含附件与 Action 提交）
       const retryPayload: TurnRetryPayload = { message, userContent, attachments, action };
       if (!existingAssistantId) {
+        const userBubble: CopilotMessage = {
+          id: nextId(),
+          role: 'user',
+          content: userContent,
+          blocks: [],
+          status: 'done',
+        };
+        const assistantBubble: CopilotMessage = {
+          id: assistantId,
+          role: 'assistant',
+          content: '',
+          blocks: [],
+          status: 'streaming',
+          retry: retryPayload,
+        };
         setMessages((prev) => [
           ...prev,
-          { id: nextId(), role: 'user', content: userContent, blocks: [], status: 'done' },
-          {
-            id: assistantId,
-            role: 'assistant',
-            content: '',
-            blocks: [],
-            status: 'streaming',
-            retry: retryPayload,
-          },
+          // 重新生成时不追加用户气泡：这一轮的提问已经在会话历史里
+          ...(regenerate ? [] : [userBubble]),
+          assistantBubble,
         ]);
       } else {
         // 复用已有气泡（附件上传成功后继续本轮）：同步刷新重发载荷
@@ -327,17 +361,15 @@ export default function CopilotPage() {
       const controller = new AbortController();
       abortRef.current = controller;
       try {
-        await streamChat(
-          message,
-          (event) => handleEvent(assistantId, event),
-          controller.signal,
+        await streamChat(message, (event) => handleEvent(assistantId, event), controller.signal, {
           conversationId,
           attachments,
           action,
           // P4-10：Interview Mode 里把进行中的会话告诉后端，
           // Copilot 才能回答「现在考到哪、还剩什么」而不是只能等结束后的报告
-          interviewModeRef.current?.sessionId,
-        );
+          activeInterviewSessionId: interviewModeRef.current?.sessionId,
+          regenerate,
+        });
       } catch (err) {
         if (controller.signal.aborted) {
           // 用户主动「停止生成」：标为 stopped 而非 done，
@@ -482,30 +514,171 @@ export default function CopilotPage() {
     [runTurn],
   );
 
-  /**
-   * 失败/停止后重发本轮：复用消息上保存的原始请求重跑，用户无需重新输入。
-   *
-   * 语义是「新的一轮」——后端会一并落一条用户消息，界面与历史里会再出现一次该提问，
-   * 与持久化结果保持一致（不做无痕重放）。若要「原地续写/重新生成」，需要后端提供
-   * regenerate 语义（跳过 USER 落库），属后续独立改动。
-   */
-  const retryTurn = useCallback(
-    (messageId: string) => {
-      const payload = messages.find((message) => message.id === messageId)?.retry;
-      if (!payload) return;
-      if (payload.attachment) {
-        // 附件上传失败轮：资源 id 尚不存在，按原始文件重走一遍上传
-        void send(payload.message, payload.attachment.file, payload.attachment.kind);
+  /** 编辑确认后的实际执行：对齐 Java 消息 id → 截断 → 重发 */
+  const applyEdit = useCallback(
+    async (index: number, text: string) => {
+      const conversationId = activeConversationId;
+      if (conversationId === null) return;
+      const original = messages[index];
+      if (!original) return;
+
+      const outcome = await resolveJavaMessageId({
+        localMessages: messages,
+        index,
+        loadRemote: async () => (await conversationApi.getDetail(conversationId)).messages,
+      }).catch((err: unknown) => {
+        console.error('编辑前对账失败:', err);
+        return { status: 'mismatch' as const, remoteCount: 0 };
+      });
+
+      if (outcome.status === 'ok') {
+        try {
+          await conversationApi.truncateFrom(conversationId, outcome.javaId);
+        } catch (err) {
+          console.error('截断历史消息失败:', err);
+          setActionNotice('无法编辑这条消息：历史删除失败，请稍后重试');
+          return;
+        }
+      } else if (outcome.status === 'mismatch') {
+        setActionNotice('无法编辑这条消息：本地对话与已保存记录对不上，刷新页面后重试');
+        return;
+      } else if (outcome.remoteCount > index) {
+        // 该条之前的部分已落库、这一条还没写完：等落库完成再编辑，避免删错
+        setActionNotice('这条消息还没有保存完成，请稍后重试');
         return;
       }
-      void runTurn({
+      // remoteCount <= index：这一轮根本没落库（如请求未到达后端），无需截断
+
+      // 本地同步截断，保证界面与 Java 一致；编辑后的内容作为新一轮发出
+      setMessages((prev) => prev.slice(0, index));
+      const payload = original.retry;
+      if (payload?.attachment) {
+        // 附件上传失败轮：资源 id 还不存在，按原始文件重走上传
+        await send(text, payload.attachment.file, payload.attachment.kind);
+        return;
+      }
+      // 编辑后按普通消息重发：不再沿用原来的 Action 载荷，
+      // 否则界面上的文本与后端确定性动作会不一致
+      await runTurn({
+        message: text,
+        userContent: text,
+        attachments: payload?.attachments ?? [],
+      });
+    },
+    [activeConversationId, messages, runTurn, send],
+  );
+
+  /**
+   * 编辑已发送的用户消息：确认 → 截断 → 以新内容重发。
+   *
+   * 编辑中间消息会连带删除其后的对话（不可恢复），因此只要后面还有内容就先让用户确认；
+   * 编辑最后一条不打扰。截断必须按 Java messageId 精确执行，见 utils/copilotMessageReconcile。
+   */
+  const submitEdit = useCallback(
+    (messageId: string, text: string) => {
+      if (streaming || activeConversationId === null) return;
+      const index = messages.findIndex((message) => message.id === messageId);
+      const target = messages[index];
+      if (!target || target.role !== 'user') return;
+      const following = countFollowingMessages(messages, index);
+      if (following > 0) {
+        setPendingEdit({ messageId, text, index, following });
+        return;
+      }
+      void applyEdit(index, text);
+    },
+    [applyEdit, messages, streaming, activeConversationId],
+  );
+
+  /**
+   * 重新生成某一轮回答（也用于失败 / 停止后的重试）。
+   *
+   * 与旧的「重新发送」不同：先把旧的助手回复从 Java 删掉，再以 regenerate 语义重跑，
+   * 历史里不会再多出一条重复的提问。历史回放的轮次没有 retry 载荷，用前一条用户消息重建。
+   */
+  const regenerateTurn = useCallback(
+    async (messageId: string) => {
+      if (streaming || activeConversationId === null) return;
+      const index = messages.findIndex((message) => message.id === messageId);
+      const assistant = messages[index];
+      if (!assistant || assistant.role !== 'assistant') return;
+      const preceding = messages[index - 1];
+      const payload: TurnRetryPayload | null = assistant.retry
+        ?? (preceding?.role === 'user'
+          ? { message: preceding.content, userContent: preceding.content, attachments: [] }
+          : null);
+      if (!payload) {
+        setActionNotice('这一轮没有可复用的提问内容，无法重新生成');
+        return;
+      }
+
+      const outcome = await resolveJavaMessageId({
+        localMessages: messages,
+        index,
+        loadRemote: async () => (await conversationApi.getDetail(activeConversationId)).messages,
+      }).catch((err: unknown) => {
+        console.error('重新生成前对账失败:', err);
+        return { status: 'mismatch' as const, remoteCount: 0 };
+      });
+
+      if (outcome.status === 'mismatch') {
+        setActionNotice('无法重新生成：本地对话与已保存记录对不上，刷新页面后重试');
+        return;
+      }
+      if (outcome.status === 'pending' && outcome.remoteCount >= index) {
+        // 提问已落库、回答还没写完：等落库完成，避免把半截回复删成孤儿
+        setActionNotice('这一轮还没有保存完成，请稍后重试');
+        return;
+      }
+
+      if (outcome.status === 'ok') {
+        try {
+          await conversationApi.truncateFrom(activeConversationId, outcome.javaId);
+        } catch (err) {
+          console.error('截断历史回答失败:', err);
+          setActionNotice('无法重新生成：历史删除失败，请稍后重试');
+          return;
+        }
+      }
+
+      if (outcome.status === 'pending') {
+        // 整轮都没有落库（如请求未到达后端）：没有历史可删，按新一轮重发
+        setMessages((prev) => prev.slice(0, Math.max(0, index - 1)));
+        await runTurn({
+          message: payload.message,
+          userContent: payload.userContent,
+          attachments: payload.attachments,
+          action: payload.action,
+        });
+        return;
+      }
+
+      if (payload.attachment) {
+        // 附件上传失败轮：Java 里没有这条助手消息，本地去掉占位后按原始文件重走上传
+        setMessages((prev) => prev.filter((message) => message.id !== messageId));
+        await send(payload.message, payload.attachment.file, payload.attachment.kind);
+        return;
+      }
+
+      // 就地重置该助手气泡（不删了再加）：避免列表跳动与滚动位置丢失
+      updateMessage(messageId, () => ({
+        id: messageId,
+        role: 'assistant',
+        content: '',
+        blocks: [],
+        status: 'streaming',
+        retry: payload,
+      }));
+      await runTurn({
         message: payload.message,
         userContent: payload.userContent,
         attachments: payload.attachments,
         action: payload.action,
+        existingAssistantId: messageId,
+        regenerate: true,
       });
     },
-    [messages, runTurn, send],
+    [activeConversationId, messages, runTurn, send, streaming, updateMessage],
   );
 
   const cancel = useCallback(() => {
@@ -688,15 +861,37 @@ export default function CopilotPage() {
               ) : (
                 <MessageList
                   messages={messages}
+                  conversationId={activeConversationId}
                   actionDisabled={streaming}
                   onActionSelect={submitAction}
                   onQuickPrompt={(prompt) => void send(prompt)}
-                  onRetry={retryTurn}
+                  onRegenerate={(messageId) => void regenerateTurn(messageId)}
+                  onSubmitEdit={submitEdit}
                 />
               )}
             </main>
 
             <div className="shrink-0 border-t border-slate-200/60 bg-white/85 pt-3 backdrop-blur-xl dark:border-slate-700 dark:bg-slate-900/85">
+              {/* 编辑 / 重新生成的就地失败提示：不静默，也不把消息区换成错误页 */}
+              {actionNotice && (
+                <div className="mx-auto mb-2 w-full max-w-4xl px-5 lg:px-8">
+                  <div
+                    role="alert"
+                    className="flex items-start gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+                  >
+                    <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    <span className="min-w-0 flex-1 break-words">{actionNotice}</span>
+                    <button
+                      type="button"
+                      onClick={() => setActionNotice(null)}
+                      title="关闭提示"
+                      className="shrink-0 rounded p-0.5 transition hover:bg-amber-100 dark:hover:bg-amber-900/50"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+              )}
               <Composer streaming={streaming} onSend={send} onCancel={cancel} />
             </div>
           </>
@@ -707,6 +902,22 @@ export default function CopilotPage() {
         activeJobId={boundJobId}
         profileRefreshToken={profileRefreshToken}
         onStartFocusInterview={startFocusInterview}
+      />
+
+      {/* 编辑中间消息会删除其后的全部对话，删除不可恢复，必须先确认 */}
+      <ConfirmDialog
+        open={pendingEdit !== null}
+        title="编辑这条消息？"
+        message={`这条消息之后还有 ${pendingEdit?.following ?? 0} 条对话，重新发送后会一并删除，且不可恢复。`}
+        confirmText="删除并重新发送"
+        cancelText="取消"
+        confirmVariant="danger"
+        onCancel={() => setPendingEdit(null)}
+        onConfirm={() => {
+          const pending = pendingEdit;
+          setPendingEdit(null);
+          if (pending) void applyEdit(pending.index, pending.text);
+        }}
       />
     </div>
   );

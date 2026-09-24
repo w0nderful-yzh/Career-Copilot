@@ -198,6 +198,7 @@ def _initial_state(payload: ChatRequest) -> dict[str, Any]:
         attachments=[att.model_dump() for att in payload.attachments],
         action=payload.action.model_dump() if payload.action else None,
         active_interview_session_id=payload.active_interview_session_id,
+        regenerate=payload.regenerate,
     )
 
 
@@ -349,6 +350,7 @@ async def chat_stream(
                 assistant_content="".join(collected_content),
                 assistant_blocks=collected_blocks,
                 assistant_status=turn_status,
+                regenerate=payload.regenerate,
             )
 
     return StreamingResponse(
@@ -380,6 +382,7 @@ def _schedule_persist_turn(
     assistant_content: str,
     assistant_blocks: list[dict[str, Any]],
     assistant_status: str,
+    regenerate: bool = False,
 ) -> None:
     """调度一次「脱手落库」，与请求生命周期解耦。
 
@@ -398,6 +401,7 @@ def _schedule_persist_turn(
                 assistant_content=assistant_content,
                 assistant_blocks=assistant_blocks,
                 assistant_status=assistant_status,
+                regenerate=regenerate,
             )
         )
     except RuntimeError:
@@ -425,6 +429,7 @@ async def _persist_turn_detached(
     assistant_content: str,
     assistant_blocks: list[dict[str, Any]],
     assistant_status: str,
+    regenerate: bool = False,
 ) -> None:
     """独立任务形式的落库入口：自建 BackendClient 并在结束时关闭。"""
     client = _new_persist_client()
@@ -436,6 +441,7 @@ async def _persist_turn_detached(
             assistant_content,
             assistant_blocks,
             assistant_status,
+            regenerate=regenerate,
         )
     finally:
         await client.aclose()
@@ -448,6 +454,7 @@ async def _persist_conversation_turn(
     assistant_content: str,
     assistant_blocks: list[dict[str, Any]],
     assistant_status: str = TurnStatus.COMPLETED.value,
+    regenerate: bool = False,
 ) -> None:
     """把一轮对话（用户消息 + 助手回复）保存到 Java conversation 模块。
 
@@ -455,6 +462,11 @@ async def _persist_conversation_turn(
     助手消息在「有内容」或「本轮未完成（STOPPED / FAILED）」时保存——
     后者即使内容为空也要留痕，否则刷新后只剩一条孤零零的用户提问，
     看不出这一轮是被停止还是根本没人回答（Java 侧允许该状态下内容为空）。
+
+    ``regenerate=True`` 例外：这是「重新生成」轮，用户消息已经在会话历史里
+    （前端先删掉了旧的助手回复再重发），再写一遍会让同一句话在会话中出现两次，
+    因此本轮只写助手消息。
+
     blocks 以 JSON 字符串持久化，与 Java AgentMessageEntity.blocks 列对齐；
     status 与 Java AgentMessageEntity.MessageStatus 对齐。
     保存失败仅告警（对话可用性优先）。
@@ -467,7 +479,11 @@ async def _persist_conversation_turn(
         logger.warning("conversation_id 非法，跳过持久化: %s", conversation_id)
         return
 
-    messages = [{"role": "USER", "content": user_message, "blocks": None, "status": None}]
+    messages: list[dict[str, Any]] = []
+    if not regenerate:
+        messages.append(
+            {"role": "USER", "content": user_message, "blocks": None, "status": None}
+        )
     incomplete = assistant_status != TurnStatus.COMPLETED.value
     if assistant_content or incomplete:
         blocks_json = (
@@ -481,13 +497,16 @@ async def _persist_conversation_turn(
                 "status": assistant_status,
             }
         )
+    if not messages:
+        return
     try:
         await backend.save_conversation_messages(conversation_id_int, messages)
         logger.info(
-            "conversation turn persisted: id=%s messages=%d status=%s",
+            "conversation turn persisted: id=%s messages=%d status=%s regenerate=%s",
             conversation_id,
             len(messages),
             assistant_status,
+            regenerate,
         )
     except BusinessToolError as exc:
         logger.warning(

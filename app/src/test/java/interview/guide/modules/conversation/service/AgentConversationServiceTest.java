@@ -481,4 +481,102 @@ class AgentConversationServiceTest {
       verify(conversationRepository).save(conversation);
     }
   }
+
+  @Nested
+  @DisplayName("消息截断（编辑已发送消息 / 重新生成回答）")
+  class TruncateMessages {
+
+    /** 构造一个带 4 条消息（两轮）的会话：order 0..3 */
+    private AgentConversationEntity conversationWithTwoTurns() {
+      AgentConversationEntity conversation = new AgentConversationEntity();
+      conversation.setId(30L);
+      conversation.setTitle("复盘最近面试");
+      conversation.setSummary("早期对话摘要");
+      addMessage(conversation, 1L, AgentMessageEntity.MessageRole.USER, "第一问", 0);
+      addMessage(conversation, 2L, AgentMessageEntity.MessageRole.ASSISTANT, "第一答", 1);
+      addMessage(conversation, 3L, AgentMessageEntity.MessageRole.USER, "第二问", 2);
+      addMessage(conversation, 4L, AgentMessageEntity.MessageRole.ASSISTANT, "第二答", 3);
+      return conversation;
+    }
+
+    private void addMessage(AgentConversationEntity conversation, Long id,
+        AgentMessageEntity.MessageRole role, String content, int order) {
+      AgentMessageEntity message = new AgentMessageEntity();
+      message.setId(id);
+      message.setRole(role);
+      message.setContent(content);
+      message.setMessageOrder(order);
+      conversation.addMessage(message);
+    }
+
+    @Test
+    @DisplayName("从用户消息截断：该条与其后的助手回复、后续轮次一并删除")
+    void truncatesFromUserMessage() {
+      AgentConversationEntity conversation = conversationWithTwoTurns();
+      when(conversationRepository.findByIdAndUserId(30L, "default"))
+          .thenReturn(Optional.of(conversation));
+
+      int removed = conversationService.truncateMessagesFrom(30L, 3L);
+
+      assertThat(removed).isEqualTo(2);
+      assertThat(conversation.getMessages())
+          .extracting(AgentMessageEntity::getContent)
+          .containsExactly("第一问", "第一答");
+      // messageCount 是冗余字段：直接删除后必须同步，否则列表页显示条数不对
+      assertThat(conversation.getMessageCount()).isEqualTo(2);
+      verify(conversationRepository).save(conversation);
+    }
+
+    @Test
+    @DisplayName("从助手消息截断：仅删该条及其后（重新生成语义）")
+    void truncatesFromAssistantMessage() {
+      AgentConversationEntity conversation = conversationWithTwoTurns();
+      when(conversationRepository.findByIdAndUserId(30L, "default"))
+          .thenReturn(Optional.of(conversation));
+
+      int removed = conversationService.truncateMessagesFrom(30L, 4L);
+
+      assertThat(removed).isEqualTo(1);
+      assertThat(conversation.getMessages()).hasSize(3);
+    }
+
+    @Test
+    @DisplayName("摘要必须失效：不能继续用引用了已删轮次的旧摘要")
+    void clearsSummary() {
+      AgentConversationEntity conversation = conversationWithTwoTurns();
+      when(conversationRepository.findByIdAndUserId(30L, "default"))
+          .thenReturn(Optional.of(conversation));
+
+      conversationService.truncateMessagesFrom(30L, 3L);
+
+      assertThat(conversation.getSummary()).isNull();
+    }
+
+    @Test
+    @DisplayName("删掉首条时标题回到默认值，等待下一条用户消息重新生成")
+    void resetsTitleWhenFirstMessageRemoved() {
+      AgentConversationEntity conversation = conversationWithTwoTurns();
+      when(conversationRepository.findByIdAndUserId(30L, "default"))
+          .thenReturn(Optional.of(conversation));
+
+      conversationService.truncateMessagesFrom(30L, 1L);
+
+      assertThat(conversation.getTitle()).isEqualTo("新对话");
+      assertThat(conversation.getMessages()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("消息不属于该会话时拒绝，不做任何删除")
+    void rejectsMessageFromAnotherConversation() {
+      AgentConversationEntity conversation = conversationWithTwoTurns();
+      when(conversationRepository.findByIdAndUserId(30L, "default"))
+          .thenReturn(Optional.of(conversation));
+
+      assertThatThrownBy(() -> conversationService.truncateMessagesFrom(30L, 999L))
+          .isInstanceOf(BusinessException.class)
+          .hasFieldOrPropertyWithValue("code", ErrorCode.CONVERSATION_MESSAGE_INVALID.getCode());
+      assertThat(conversation.getMessages()).hasSize(4);
+      verify(conversationRepository, never()).save(any());
+    }
+  }
 }

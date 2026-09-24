@@ -69,6 +69,11 @@ class ChatRequest(BaseModel):
         description="正在进行中的面试会话 ID（P4-10）：Interview Mode 里前端随消息带上，"
         "让 Agent 能读取实时进展而不必等面试结束",
     )
+    regenerate: bool = Field(
+        default=False,
+        description="重新生成本轮回答：用户消息已在会话历史中（前端已删掉旧的助手回复），"
+        "本轮不再重复落库用户消息，历史注入时也丢弃末尾重复的同内容用户消息",
+    )
 
 
 class TextBlock(BaseModel):

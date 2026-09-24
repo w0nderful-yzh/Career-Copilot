@@ -111,6 +111,7 @@ def build_initial_state(
     action: dict[str, Any] | None,
     user_id: str = "default",
     active_interview_session_id: str | None = None,
+    regenerate: bool = False,
 ) -> dict[str, Any]:
     """构造 Graph 初始状态（与 ChatRequest 对齐），由 API 层调用。"""
     return {
@@ -120,6 +121,7 @@ def build_initial_state(
         "attachments": attachments,
         "action": action,
         "active_interview_session_id": active_interview_session_id,
+        "regenerate": regenerate,
         "tool_results": [],
         "status": "RUNNING",
     }

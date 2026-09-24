@@ -244,6 +244,50 @@ return new ConversationContextDTO(
     log.info("Conversation messages saved: id={}, count={}", conversationId, payloads.size());
   }
 
+  /**
+   * 截断会话消息：删除指定消息及其之后的全部消息（含该条自身）。
+   *
+   * <p>支撑前端的「编辑已发送消息 / 重新生成回答」：编辑从被改的那条用户消息起重发，
+   * 重新生成从该轮助手消息起重跑，历史里不会留下两条互相矛盾的提问，
+   * 也不会出现「同一句话既在历史里、又被重新追加一遍」的重复轮次。
+   *
+   * <p>删除不可恢复，调用方需在存在后续消息时先向用户确认。
+   *
+   * @return 实际删除的消息条数
+   */
+  @Transactional
+  public int truncateMessagesFrom(Long conversationId, Long messageId) {
+    AgentConversationEntity conversation = getConversationOrThrow(conversationId);
+    List<AgentMessageEntity> messages = conversation.getMessages();
+    int fromOrder = messages.stream()
+        .filter(message -> messageId.equals(message.getId()))
+        .findFirst()
+        // 消息不属于本会话时明确拒绝：否则会按错误的序号删掉无关轮次
+        .orElseThrow(() -> new BusinessException(
+            ErrorCode.CONVERSATION_MESSAGE_INVALID,
+            "消息不属于该对话: conversationId=" + conversationId + ", messageId=" + messageId))
+        .getMessageOrder();
+
+    int before = messages.size();
+    // orphanRemoval = true：从集合移除即真删，无需再走仓储
+    messages.removeIf(message -> message.getMessageOrder() >= fromOrder);
+    int removed = before - messages.size();
+
+    // messageCount 是冗余字段，只在 addMessage 里维护；直接删除必须手动同步
+    conversation.setMessageCount(messages.size());
+    // 滚动摘要可能引用了被删轮次：不失效会让 Agent 继续拿旧摘要回答已删掉的内容
+    conversation.setSummary(null);
+    if (fromOrder == 0) {
+      // 首条消息被删（通常是编辑了第一句）：标题回到默认值，
+      // 由下一次 saveMessages 用新的首条用户消息重新生成
+      conversation.setTitle(DEFAULT_TITLE);
+    }
+    conversationRepository.save(conversation);
+    log.info("Conversation messages truncated: id={}, fromOrder={}, removed={}",
+        conversationId, fromOrder, removed);
+    return removed;
+  }
+
   private AgentConversationEntity getConversationOrThrow(Long conversationId) {
     return conversationRepository.findByIdAndUserId(conversationId, DEFAULT_USER_ID)
         .orElseThrow(() -> new BusinessException(

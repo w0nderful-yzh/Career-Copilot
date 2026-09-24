@@ -8,9 +8,20 @@ import {
   Square,
   X,
 } from 'lucide-react';
+import { useAutoGrowTextarea } from '../../hooks/useAutoGrowTextarea';
+import {
+  IDLE_COMPOSITION,
+  isComposingEvent,
+  shouldSendOnEnter,
+  toComposerKeyEvent,
+  type CompositionState,
+} from '../../utils/composerKeyboard';
 
 // Copilot 输入栏：发送消息 / 停止（取消）当前流式响应
 // 支持拖入或选择 PDF 附件（简历或 JD，发送前可切换类型），发送时由外层上传到对应库
+//
+// 键盘约定对齐主流网页 AI 对话：Enter 发送、Shift+Enter 换行、Esc 停止生成。
+// 输入法合成态由 composerKeyboard 统一判定——中文选词时的 Enter 绝不能当发送。
 
 export type AttachmentKind = 'resume' | 'job_description';
 
@@ -22,6 +33,9 @@ interface ComposerProps {
 }
 
 const ACCEPTED_TYPES = ['application/pdf'];
+
+/** 输入框最大高度（px，与 max-h-32 对齐）：超过后内部滚动，不再继续长高 */
+const MAX_COMPOSER_HEIGHT = 128;
 
 function isPdf(file: File): boolean {
   return ACCEPTED_TYPES.includes(file.type) || file.name.toLowerCase().endsWith('.pdf');
@@ -50,6 +64,9 @@ export default function Composer({ streaming, onSend, onCancel, disabled }: Comp
   // 附件校验失败就地提示（原为 window.alert：阻塞式弹窗、无法携带文件名、不可关闭）
   const [fileError, setFileError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useAutoGrowTextarea(value, MAX_COMPOSER_HEIGHT);
+  // 输入法合成态：composing 由 composition 事件维护，endedAt 供 Safari 同帧 keydown 兜底
+  const compositionRef = useRef<CompositionState>(IDLE_COMPOSITION);
 
   const meta = KIND_META[attachmentKind];
 
@@ -61,6 +78,22 @@ export default function Composer({ streaming, onSend, onCancel, disabled }: Comp
     setAttachment(null);
     setAttachmentKind('resume');
     setFileError(null);
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    const keyEvent = toComposerKeyEvent(event);
+    const composing = isComposingEvent(keyEvent, compositionRef.current);
+
+    // Esc 停止生成；合成态下不抢——输入法用 Esc 取消候选词
+    if (event.key === 'Escape' && streaming && !composing) {
+      event.preventDefault();
+      onCancel();
+      return;
+    }
+    if (shouldSendOnEnter(keyEvent, compositionRef.current)) {
+      event.preventDefault();
+      submit();
+    }
   };
 
   const handleFile = (file: File | undefined) => {
@@ -171,27 +204,33 @@ export default function Composer({ streaming, onSend, onCancel, disabled }: Comp
             <Paperclip className="h-4 w-4" />
           </button>
           <textarea
+            ref={textareaRef}
             value={value}
             onChange={(event) => setValue(event.target.value)}
-            onKeyDown={(event) => {
-              // Enter 发送，Shift+Enter 换行
-              if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault();
-                submit();
-              }
+            onKeyDown={handleKeyDown}
+            onCompositionStart={() => {
+              compositionRef.current = { composing: true, endedAt: 0 };
+            }}
+            onCompositionEnd={(event) => {
+              // Safari 会在 compositionend 之后才派发那次 keydown，记下时间让守卫兜住
+              compositionRef.current = {
+                composing: false,
+                endedAt: event.nativeEvent ? event.nativeEvent.timeStamp : 0,
+              };
             }}
             rows={1}
-            placeholder={streaming ? 'Copilot 正在思考…' : '输入你的目标或问题…'}
+            placeholder={streaming ? '正在生成，可先输入下一句…' : '输入你的目标或问题…'}
             disabled={disabled}
             className="max-h-32 min-h-[2.5rem] flex-1 resize-none bg-transparent px-2 py-1.5 text-sm leading-6 text-slate-800 outline-none placeholder:text-slate-400 dark:text-white dark:placeholder:text-slate-500"
           />
           {streaming ? (
             <button
               onClick={onCancel}
-              title="停止生成"
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-red-500 text-white transition hover:bg-red-600"
+              title="停止生成（Esc）"
+              className="flex h-10 shrink-0 items-center gap-1.5 rounded-xl bg-red-500 px-3 text-sm font-semibold text-white transition hover:bg-red-600"
             >
-              <Square className="h-4 w-4" />
+              <Square className="h-3.5 w-3.5" />
+              停止
             </button>
           ) : (
             <button
@@ -205,8 +244,12 @@ export default function Composer({ streaming, onSend, onCancel, disabled }: Comp
           )}
         </div>
       </div>
-      <p className="mt-2 text-center text-xs text-slate-400 dark:text-slate-500">
-        {attachment ? meta.hint : '支持拖入 PDF 简历或岗位 JD，Agent 会引导下一步'}
+      {/* 键盘提示与附件提示同行，避免两行说明互相挤占 */}
+      <p className="mt-2 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-center text-xs text-slate-400 dark:text-slate-500">
+        <span>{attachment ? meta.hint : '支持拖入 PDF 简历或岗位 JD，Agent 会引导下一步'}</span>
+        <span className="hidden sm:inline">
+          {streaming ? 'Esc 停止生成' : 'Enter 发送 · Shift+Enter 换行'}
+        </span>
       </p>
     </div>
   );

@@ -59,6 +59,11 @@ class CareerAgentState(TypedDict, total=False):
     bound_resume_id: int | None  # 会话绑定的活动简历（Conversation Memory）
     bound_job_id: int | None  # 会话绑定的活动 JD（P2-5，Conversation Memory）
 
+    # 重新生成本轮回答（前端「重新生成」/失败重试）：
+    # 用户消息已存在于会话历史，load_history 需丢弃末尾重复的同内容用户消息，
+    # 落库时也不再写用户消息，否则同一句话会在会话里出现两次
+    regenerate: bool
+
     # 用户快照（P3-4）：新会话首轮注入的 top 技能 + 最近面试概要（跨会话背景感知）
     user_snapshot: str | None
 

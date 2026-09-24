@@ -15,6 +15,8 @@
     "test:copilot-action": "tsx --test src/constants/copilotAction.test.ts",
     "test:agent-chat-protocol": "tsx --test src/api/agentChat.test.ts",
     "test:copilot-turn-status": "tsx --test src/utils/copilotTurnStatus.test.ts",
+    "test:composer-keyboard": "tsx --test src/utils/composerKeyboard.test.ts",
+    "test:copilot-reconcile": "tsx --test src/utils/copilotMessageReconcile.test.ts",
     "test:code-language": "tsx --test src/utils/codeLanguage.test.ts",
     "test:interview-turns": "tsx --test src/utils/interviewTurns.test.ts",
     "test:profile-impact": "tsx --test src/utils/profileImpact.test.ts",

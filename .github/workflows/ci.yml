@@ -27,9 +27,13 @@ jobs:
 
     # 挂真实 Postgres：每次 CI 都会在全新空库上真跑一遍完整 Flyway 迁移链
     # （此前 CI 里所有迁移都是零验证），并让依赖真实 DB 的集成用例真正执行而非跳过。
-    # 刻意不挂 Redis：实测 Redis 不可用时 Spring 上下文仍能启动（消费者只报连接告警），
-    # 相关用例不依赖它；多加一个 service 只会拖慢 CI。
     # 迁移自带 CREATE EXTENSION（hstore / uuid-ossp / vector），故无需挂载 init.sql。
+    #
+    # 同样挂真实 Redis（此前刻意不挂，实测结论是错的）：P3-1 / P4-1 / P4-9a / P5-2 这几个
+    # 真实 DB 集成用例走**默认 profile**，上下文启动时 Redisson 客户端由 starter 急切创建，
+    # Redis 不可达会直接让 Spring 上下文创建失败（BeanCreationException ← RedisConnectionException），
+    # 表现为 7 例 FAILED 而不是跳过；另外 RedisSessionCacheIntegrationTest 这类带
+    # LocalRedisGate 门控的用例也会退化成跳过，等于白丢覆盖。
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -45,6 +49,16 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -56,7 +70,8 @@ jobs:
           java-version: "25"
           cache: gradle
 
-      # 依赖本地二进制（Typst golden）与语音面试 test profile 的用例仍按条件跳过，
+      # 既然挂了真实 Postgres + Redis，依赖它们的集成用例就应当真跑：
+      # 只有依赖本地二进制（Typst golden）与语音面试 test profile 的用例按条件跳过，
       # 跳过是显式声明的预期行为；任何 failures/errors 都必须为 0。
       - name: Run backend tests
         env:
@@ -66,6 +81,11 @@ jobs:
           POSTGRES_DB: interview_guide
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
+          # Redisson 与 LocalRedisGate（真实 Redis 用例的门控）都以 localhost:6379 为默认地址，
+          # 这里显式写出以对齐上面的 redis service：门控按这两个变量探测端口，
+          # 探到才跑 RedisSessionCacheIntegrationTest 这类真实读写用例，探不到会整类跳过。
+          REDIS_HOST: localhost
+          REDIS_PORT: "6379"
           # 真实 DB 集成用例（P3-1 / P4-1 / P4-9a / P5-2）刻意走**默认 profile**——它们要的就是
           # 真 Flyway 迁移链与 PG 方言，因此不能套用 application-test.yml。这类用例的上下文启动
           # 还需要 .env 中那几项非 DB 配置：缺加密密钥时 ApiKeyEncryptionService 直接抛错，
@@ -142,7 +162,10 @@ jobs:
           pnpm run test:interview-capacity
           pnpm run test:interview-entry
           pnpm run test:copilot-action
+          pnpm run test:agent-chat-protocol
           pnpm run test:copilot-turn-status
+          pnpm run test:composer-keyboard
+          pnpm run test:copilot-reconcile
           pnpm run test:code-language
           pnpm run test:interview-turns
           pnpm run test:profile-impact

@@ -66,6 +66,16 @@ jobs:
           POSTGRES_DB: interview_guide
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
+          # 真实 DB 集成用例（P3-1 / P4-1 / P4-9a / P5-2）刻意走**默认 profile**——它们要的就是
+          # 真 Flyway 迁移链与 PG 方言，因此不能套用 application-test.yml。这类用例的上下文启动
+          # 还需要 .env 中那几项非 DB 配置：缺加密密钥时 ApiKeyEncryptionService 直接抛错，
+          # 缺存储凭据时 S3Config 创建客户端即 NPE。本地由 .env 提供，CI 必须显式给出同一组值。
+          APP_AI_CONFIG_ENCRYPTION_KEY: test-provider-api-key-encryption-key
+          APP_STORAGE_ACCESS_KEY: ci-placeholder-access-key
+          APP_STORAGE_SECRET_KEY: ci-placeholder-secret-key
+          # CI 不挂 RustFS，且这些用例只验证 DB 行为、不碰对象存储：
+          # 关闭启动时的存储桶检查，否则 FileStorageService 会去连不存在的 localhost:9000 而失败。
+          APP_STORAGE_AUTO_CREATE_BUCKET: "false"
         run: ./gradlew :app:test --no-daemon
 
   agent:

@@ -95,7 +95,7 @@ class InterviewSessionResumeContextWiringTest {
         skillProfileQueryService);
 
     when(questionService.generateQuestionsBySkill(
-        any(), anyString(), anyString(), any(), anyInt(), any(), any(), any(), any()))
+        any(), anyString(), anyString(), any(), anyInt(), any(), any(), any(), any(), any()))
         .thenReturn(List.of(InterviewQuestionDTO.createMain(
             0, "Q1: 你在订单系统里做了什么？", "JAVA", "Java", null, 3, List.of())));
     doAnswer(invocation -> {
@@ -128,7 +128,7 @@ class InterviewSessionResumeContextWiringTest {
 
     ArgumentCaptor<String> resumeText = ArgumentCaptor.forClass(String.class);
     verify(questionService).generateQuestionsBySkill(
-        any(), anyString(), anyString(), resumeText.capture(), anyInt(), any(), any(), any(), any());
+        any(), anyString(), anyString(), resumeText.capture(), anyInt(), any(), any(), any(), any(), any());
     assertThat(resumeText.getValue())
         .as("Agent 侧从来只传 resumeId；出题必须自己取到简历内容")
         .contains("Kafka 重平衡排查")
@@ -177,7 +177,7 @@ class InterviewSessionResumeContextWiringTest {
 
     ArgumentCaptor<String> resumeText = ArgumentCaptor.forClass(String.class);
     verify(questionService).generateQuestionsBySkill(
-        any(), anyString(), anyString(), resumeText.capture(), anyInt(), any(), any(), any(), any());
+        any(), anyString(), anyString(), resumeText.capture(), anyInt(), any(), any(), any(), any(), any());
     assertThat(resumeText.getValue()).isNull();
 
     ArgumentCaptor<String> source = ArgumentCaptor.forClass(String.class);

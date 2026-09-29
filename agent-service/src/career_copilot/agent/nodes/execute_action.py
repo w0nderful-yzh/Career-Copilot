@@ -131,6 +131,9 @@ async def _create_interview_action(
 
     # focus 必须真正传给 Java：否则用户看到「重点考察 JVM」却仍被问 MySQL（P3 待收口）
     focus_categories = [f for f in (payload.get("focus") or []) if isinstance(f, str)]
+    emphasis = payload.get("emphasis")
+    if emphasis not in {"RESUME", "FUNDAMENTALS", "WEAKNESSES"}:
+        emphasis = "RESUME"
     required_topics = [
         topic for topic in (payload.get("requiredTopics") or [])
         if isinstance(topic, str)
@@ -153,6 +156,7 @@ async def _create_interview_action(
             force_create=True,
             request_id=request_id,
             focus_categories=focus_categories,
+            emphasis=emphasis,
         )
     except BusinessToolError as exc:
         emit_tool_completed("create_interview")

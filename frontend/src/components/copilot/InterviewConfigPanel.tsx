@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Check, Loader2 } from 'lucide-react';
-import { skillApi, type CategoryDTO, type SkillDTO } from '../../api/skill';
+import { useEffect, useState } from 'react';
+import { Loader2 } from 'lucide-react';
+import { skillApi, type SkillDTO } from '../../api/skill';
 import type { InterviewConfig } from '../../types/copilot';
 
 // 内联面试配置面板（Interview Mode 重构）：
 // 点「调整配置」在当前提案卡内展开，不触发 Agent、不发聊天消息。
-// 手动修改方向/难度/时长/重点/必要覆盖 → [应用并开始面试] → 本地合成 CREATE_INTERVIEW action。
+// 手动修改方向/难度/时长/考察倾向 → [应用并开始面试] → 本地合成 CREATE_INTERVIEW action。
 
 const DIFFICULTY_OPTIONS = [
   { value: 'junior', label: '校招', desc: '0-1 年' },
@@ -18,6 +18,8 @@ const DURATION_OPTIONS = [15, 20, 30, 45];
 export interface InterviewConfigPanelProps {
   /** 当前推荐配置（作为面板初值） */
   initial: InterviewConfig;
+  weaknessFocus: string[];
+  hasResume: boolean;
   onApply: (config: InterviewConfig) => void;
   onCancel: () => void;
   disabled?: boolean;
@@ -25,6 +27,8 @@ export interface InterviewConfigPanelProps {
 
 export default function InterviewConfigPanel({
   initial,
+  weaknessFocus,
+  hasResume,
   onApply,
   onCancel,
   disabled,
@@ -36,8 +40,7 @@ export default function InterviewConfigPanel({
   const [plannedDurationMinutes, setPlannedDurationMinutes] = useState(
     initial.planned_duration_minutes,
   );
-  const [focus, setFocus] = useState<string[]>(initial.focus);
-  const [requiredTopics, setRequiredTopics] = useState<string[]>(initial.required_topics);
+  const [emphasis, setEmphasis] = useState(initial.emphasis);
 
   useEffect(() => {
     let cancelled = false;
@@ -58,29 +61,10 @@ export default function InterviewConfigPanel({
     };
   }, []);
 
-  const selectedSkill = useMemo(
-    () => skills.find((s) => s.id === direction),
-    [skills, direction],
-  );
-  // focus 候选 = 当前方向 categories；方向尚未加载完成时用 initial.focus 兜底
-  const categoryOptions: CategoryDTO[] = selectedSkill?.categories ?? [];
-  const isCustom = direction === 'custom' || categoryOptions.length === 0;
-
-  // 切换方向时，若原 focus 不属于新方向则清空（避免把 JVM 带到前端方向）
   const handleDirectionChange = (next: string) => {
     setDirection(next);
-    const nextSkill = skills.find((s) => s.id === next);
-    const validKeys = new Set((nextSkill?.categories ?? []).map((c) => c.key));
-    if (focus.some((f) => !validKeys.has(f))) {
-      setFocus([]);
-    }
-    if (requiredTopics.some((topic) => !validKeys.has(topic))) {
-      setRequiredTopics([]);
-    }
-  };
-
-  const toggleFocus = (key: string) => {
-    setFocus((prev) => (prev.includes(key) ? prev.filter((f) => f !== key) : [...prev, key]));
+    // 画像薄弱项只对提案原方向有效，换方向后回到简历主导。
+    if (next !== initial.direction) setEmphasis('RESUME');
   };
 
   const apply = () => {
@@ -88,8 +72,12 @@ export default function InterviewConfigPanel({
       direction,
       difficulty,
       planned_duration_minutes: plannedDurationMinutes,
-      required_topics: requiredTopics,
-      focus,
+      required_topics: emphasis === initial.emphasis && direction === initial.direction
+        ? initial.required_topics : [],
+      focus: direction !== initial.direction ? []
+        : emphasis === initial.emphasis ? initial.focus
+        : emphasis === 'WEAKNESSES' ? weaknessFocus : [],
+      emphasis,
     });
   };
 
@@ -159,65 +147,34 @@ export default function InterviewConfigPanel({
         ))}
       </div>
 
-      {/* 重点 focus（categories 多选；自定义方向无 categories 时隐藏） */}
-      {!isCustom && categoryOptions.length > 0 && (
-        <>
-          <label className="mb-1 block text-xs text-slate-400">
-            重点考察 <span className="text-slate-300">（可多选，留空 = 综合）</span>
-          </label>
-          <div className="flex flex-wrap gap-1.5">
-            {categoryOptions.map((cat) => {
-              const active = focus.includes(cat.key);
-              return (
-                <button
-                  key={cat.key}
-                  type="button"
-                  disabled={disabled}
-                  onClick={() => toggleFocus(cat.key)}
-                  className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium transition ${
-                    active
-                      ? 'bg-indigo-600 text-white'
-                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600'
-                  }`}
-                >
-                  {active && <Check className="h-3 w-3" />}
-                  {cat.label}
-                </button>
-              );
-            })}
-          </div>
-
-          <label className="mb-1 mt-3 block text-xs text-slate-400">
-            必要覆盖 <span className="text-slate-300">（至少触及，可留空）</span>
-          </label>
-          <div className="flex flex-wrap gap-1.5">
-            {categoryOptions.map((cat) => {
-              const active = requiredTopics.includes(cat.key);
-              return (
-                <button
-                  key={cat.key}
-                  type="button"
-                  disabled={disabled}
-                  onClick={() =>
-                    setRequiredTopics((prev) =>
-                      prev.includes(cat.key)
-                        ? prev.filter((topic) => topic !== cat.key)
-                        : [...prev, cat.key],
-                    )
-                  }
-                  className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium transition ${
-                    active
-                      ? 'bg-emerald-600 text-white'
-                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600'
-                  }`}
-                >
-                  {active && <Check className="h-3 w-3" />}
-                  {cat.label}
-                </button>
-              );
-            })}
-          </div>
-        </>
+      <label className="mb-1 block text-xs text-slate-400">考察倾向</label>
+      <div className="mb-2 flex flex-wrap gap-1.5">
+        {([
+          ['RESUME', hasResume ? '围绕简历' : '综合面试', hasResume ? '从项目、实习与职责展开追问' : '未绑定简历，按岗位方向综合提问'],
+          ['FUNDAMENTALS', '重点八股', '增加基础原理与常见知识题'],
+          ['WEAKNESSES', '重点薄弱项', '参考有面试证据的低分技能'],
+        ] as const).map(([value, label, description]) => (
+          <button
+            key={value}
+            type="button"
+            title={description}
+            disabled={disabled || (value === 'WEAKNESSES' && (direction !== initial.direction || weaknessFocus.length === 0))}
+            onClick={() => setEmphasis(value)}
+            className={`rounded-lg px-2.5 py-1 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-40 ${
+              emphasis === value
+                ? 'bg-primary-600 text-white'
+                : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {emphasis === 'WEAKNESSES' && weaknessFocus.length > 0 && (
+        <p className="text-xs text-slate-500 dark:text-slate-400">参考薄弱项：{weaknessFocus.join('、')}</p>
+      )}
+      {weaknessFocus.length === 0 && (
+        <p className="text-xs text-slate-400">暂无可验证的低分项，可先围绕简历或八股面试。</p>
       )}
 
       <div className="mt-4 flex justify-end gap-2">

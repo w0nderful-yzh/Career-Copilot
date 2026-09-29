@@ -116,10 +116,8 @@ function InterviewProposalBlockView({
   /** 用户点「按推荐开始」或「应用自定义配置」时回传 CREATE_INTERVIEW action */
   onConfirm: (option: ChoiceOption) => void;
 }) {
-  const focusNames = block.focus.length > 0 ? block.focus.join(' / ') : '综合考察';
-  const requiredNames = (block.required_topics ?? []).length > 0
-    ? block.required_topics.join(' / ')
-    : '未指定';
+  const emphasis = block.emphasis ?? 'RESUME';
+  const emphasisNames = { RESUME: '简历经历', FUNDAMENTALS: '八股基础', WEAKNESSES: '薄弱项' };
   // 手动调整后的配置（null = 使用 Agent 推荐）；与 Agent 推荐收敛到同一 InterviewConfig → CREATE_INTERVIEW
   const [customConfig, setCustomConfig] = useState<InterviewConfig | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
@@ -130,8 +128,9 @@ function InterviewProposalBlockView({
     direction: block.direction,
     difficulty: block.difficulty,
     planned_duration_minutes: block.planned_duration_minutes ?? 20,
-    required_topics: block.required_topics ?? [],
-    focus: block.focus,
+    required_topics: block.emphasis ? (block.required_topics ?? []) : [],
+    focus: block.emphasis ? block.focus : [],
+    emphasis,
   };
 
   const confirmOption: ChoiceOption = {
@@ -141,6 +140,7 @@ function InterviewProposalBlockView({
       direction: activeConfig.direction,
       difficulty: activeConfig.difficulty,
       focus: activeConfig.focus,
+      emphasis: activeConfig.emphasis,
       plannedDurationMinutes: activeConfig.planned_duration_minutes,
       requiredTopics: activeConfig.required_topics,
       resumeId: block.resume_id ?? null,
@@ -162,6 +162,7 @@ function InterviewProposalBlockView({
         direction: config.direction,
         difficulty: config.difficulty,
         focus: config.focus,
+        emphasis: config.emphasis,
         plannedDurationMinutes: config.planned_duration_minutes,
         requiredTopics: config.required_topics,
         resumeId: block.resume_id ?? null,
@@ -181,17 +182,14 @@ function InterviewProposalBlockView({
       </p>
       <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-600 dark:text-slate-300">
         <span className="inline-flex items-center gap-1.5">
-          <span className="font-semibold">重点：</span>
-          {focusNames}
+          <span className="font-semibold">主线：</span>
+          {block.resume_id ? '简历经历' : '通用方向'}
         </span>
         <span className="inline-flex items-center gap-1.5">
           <span className="font-semibold">时长：</span>
           约 {block.planned_duration_minutes ?? 20} 分钟
         </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className="font-semibold">必要覆盖：</span>
-          {requiredNames}
-        </span>
+        {emphasis !== 'RESUME' && <span>考察倾向：{emphasisNames[emphasis]}</span>}
       </div>
       {block.summary && (
         <p className="mt-3 rounded-xl bg-white/70 px-3 py-2 text-sm leading-6 text-slate-700 dark:bg-slate-800/70 dark:text-slate-200">
@@ -242,9 +240,12 @@ function InterviewProposalBlockView({
             direction: block.direction,
             difficulty: block.difficulty,
             planned_duration_minutes: block.planned_duration_minutes ?? 20,
-            required_topics: block.required_topics ?? [],
-            focus: block.focus,
+            required_topics: block.emphasis ? (block.required_topics ?? []) : [],
+            focus: block.emphasis ? block.focus : [],
+            emphasis,
           }}
+          weaknessFocus={block.weakness_focus ?? []}
+          hasResume={block.resume_id != null}
           disabled={actionDisabled}
           onApply={applyConfig}
           onCancel={() => setPanelOpen(false)}

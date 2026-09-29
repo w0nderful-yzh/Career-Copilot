@@ -260,6 +260,12 @@ class InterviewProposalBlock(BaseModel):
     difficulty_name: str = Field(description="难度展示名（如 校招）")
     mode: Literal["TEXT", "VOICE"] = Field(default="TEXT", description="面试模式（一期仅文字）")
     focus: list[str] = Field(default_factory=list, description="重点考察方向（分类 key）")
+    emphasis: Literal["RESUME", "FUNDAMENTALS", "WEAKNESSES"] = Field(
+        default="RESUME", description="出题倾向"
+    )
+    weakness_focus: list[str] = Field(
+        default_factory=list, description="画像支持的薄弱项分类，供用户手动切换倾向"
+    )
     planned_duration_minutes: int = Field(default=20, description="预计时长（分钟）")
     required_topics: list[str] = Field(default_factory=list, description="必要覆盖话题（分类 key）")
     resume_id: int | None = Field(default=None, description="基于的简历（可选）")

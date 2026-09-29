@@ -225,6 +225,10 @@
             "type" : "string"
           },
           "description" : "重点考察的分类 key；未命中任何分类时按原方向全量出题"
+        },
+        "emphasis" : {
+          "type" : "string",
+          "description" : "出题倾向：RESUME（简历主导）/ FUNDAMENTALS（重点八股）/ WEAKNESSES（重点薄弱项）；缺省 RESUME"
         }
       }
     },

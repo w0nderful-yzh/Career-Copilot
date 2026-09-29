@@ -65,8 +65,23 @@ public record CreateInterviewRequest(
      * 空/未命中任何分类时按原方向全量出题（focus 是「重点」而非「只考这些」）。
      * 仅对预设方向生效；JD 自定义方向本身就是 focus，不叠加。
      */
-    List<String> focusCategories
+    List<String> focusCategories,
+
+    /** 出题倾向：RESUME（默认）/ FUNDAMENTALS / WEAKNESSES。只影响候选题来源比例。 */
+    String emphasis
 ) {
+
+    /** 兼容既有 Java 调用方；未选择倾向时按简历主导。 */
+    public CreateInterviewRequest(String resumeText, Integer plannedDurationMinutes,
+                                  List<String> requiredTopics, Integer questionCount, Long resumeId,
+                                  Boolean forceCreate, String llmProvider, String skillId,
+                                  String difficulty, List<CategoryDTO> customCategories,
+                                  String jdText, String requestId, Boolean adaptive,
+                                  List<String> focusCategories) {
+        this(resumeText, plannedDurationMinutes, requiredTopics, questionCount, resumeId,
+            forceCreate, llmProvider, skillId, difficulty, customCategories, jdText,
+            requestId, adaptive, focusCategories, null);
+    }
 
     /**
      * 旧契约兼容构造器：题数会被折算成时长（每主问题 4 分钟），
@@ -78,6 +93,6 @@ public record CreateInterviewRequest(
                                   String jdText, String requestId, Boolean adaptive,
                                   List<String> focusCategories) {
         this(resumeText, null, null, questionCount, resumeId, forceCreate, llmProvider, skillId,
-            difficulty, customCategories, jdText, requestId, adaptive, focusCategories);
+            difficulty, customCategories, jdText, requestId, adaptive, focusCategories, null);
     }
 }

@@ -39,7 +39,7 @@ import java.util.stream.Collectors;
 /**
  * 面试问题生成服务
  * 无简历：单次 Skill 驱动出题
- * 有简历：并行调用（简历题 60% + 方向题 40%）
+ * 有简历：以经历题为主，按用户选择的考察倾向调整方向题比例。
  */
 @Service
 public class InterviewQuestionService {
@@ -49,7 +49,7 @@ public class InterviewQuestionService {
     private static final String DEFAULT_QUESTION_TYPE = "GENERAL";
     /** 组内候选池容量上限（P4-4b）：素材池可以比追问预算更大，但不无限堆 */
     private static final int MAX_FOLLOW_UP_CANDIDATES = 5;
-    private static final double RESUME_QUESTION_RATIO = 0.6;
+    private static final double RESUME_QUESTION_RATIO = 0.8;
 
     private static final String GENERIC_MODE_SYSTEM_APPEND = """
         \n\n# 通用面试模式
@@ -221,7 +221,8 @@ public class InterviewQuestionService {
             List<HistoricalQuestion> historicalQuestions,
             List<CategoryDTO> customCategories,
             String jdText,
-            List<String> focusCategories) {
+            List<String> focusCategories,
+            String emphasis) {
 
         SkillDTO skill = resolveSkill(skillId, customCategories, jdText, focusCategories);
         String difficultyDesc = resolveDifficulty(difficulty);
@@ -237,7 +238,7 @@ public class InterviewQuestionService {
                 questionCount, historicalSection);
         }
 
-        int resumeCount = Math.max(1, (int) Math.round(questionCount * RESUME_QUESTION_RATIO));
+        int resumeCount = Math.max(1, (int) Math.round(questionCount * resumeQuestionRatio(emphasis)));
         int directionCount = questionCount - resumeCount;
 
         log.info("并行出题: skill={}, total={}, resumeCount={}, directionCount={}",
@@ -283,6 +284,17 @@ public class InterviewQuestionService {
         log.info("并行出题成功: 简历题={}, 方向题={}, 合计={}",
             resumeQuestions.size(), directionQuestions.size(), merged.size());
         return merged;
+    }
+
+    /** 八股/薄弱项只调整题源倾向；有简历时仍保留经历追问。 */
+    static double resumeQuestionRatio(String emphasis) {
+        if ("FUNDAMENTALS".equals(emphasis)) {
+            return 0.5;
+        }
+        if ("WEAKNESSES".equals(emphasis)) {
+            return 0.6;
+        }
+        return RESUME_QUESTION_RATIO;
     }
 
     private List<InterviewQuestionDTO> generateResumeQuestions(

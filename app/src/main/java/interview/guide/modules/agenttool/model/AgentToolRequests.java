@@ -104,7 +104,9 @@ public final class AgentToolRequests {
       @ToolParam("创建请求幂等键：同一次用户确认的网络重试应复用同一值，避免重复建会话")
           String requestId,
       @ToolParam("重点考察的分类 key；未命中任何分类时按原方向全量出题")
-          List<String> focusCategories) {}
+          List<String> focusCategories,
+      @ToolParam("出题倾向：RESUME（简历主导）/ FUNDAMENTALS（重点八股）/ WEAKNESSES（重点薄弱项）；缺省 RESUME")
+          String emphasis) {}
 
   /** apply_resume_patches：CONFIRM_WRITE，用户在提案块勾选后执行 */
   public record ApplyResumePatches(

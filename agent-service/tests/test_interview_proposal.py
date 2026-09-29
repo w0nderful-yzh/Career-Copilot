@@ -1,9 +1,9 @@
-"""面试提案的 focus 白名单与画像候选（P3 待收口）。
+"""面试提案的 focus 白名单与简历主导默认值。
 
 关键约束：
 1. focus 必须真的影响出题——只有**存在于该方向 categories** 的分类才能下发；
-   LLM 臆造的分类被拦截后，用画像的确定性候选兜底。
-2. 画像候选的优先级是「简历已列但从未考过 > 已考但低分」：没考过的技能信息量最大。
+   LLM 臆造的分类被拦截；只有薄弱项模式才用画像低分候选兜底。
+2. 未考过的简历声明没有分数，不属于薄弱项。
 """
 
 import json
@@ -63,7 +63,7 @@ def test_direction_categories_reads_selected_direction_only():
     assert _direction_categories(SKILLS, "不存在的方向") == []
 
 
-def test_profile_focus_hints_prefers_never_tested_then_low_scores():
+def test_profile_focus_hints_only_uses_scored_weaknesses():
     profile = {
         "skills": [
             {"skill": "Redis", "score": 55},
@@ -74,8 +74,7 @@ def test_profile_focus_hints_prefers_never_tested_then_low_scores():
 
     hints = _profile_focus_hints(profile, CATEGORIES)
 
-    # 声明技能在前（SQL → MYSQL），其后才是低分的 Redis
-    assert hints == ["MYSQL", "REDIS"]
+    assert hints == ["REDIS"]
 
 
 def test_profile_focus_hints_ignores_unmappable_skill_names():
@@ -127,6 +126,7 @@ async def test_derive_proposal_whitelists_invented_categories_with_profile_fallb
     payload = {
         "direction": "java-backend",
         "difficulty": "mid",
+        "emphasis": "WEAKNESSES",
         "focus": ["JVM", "Elasticsearch"],  # JVM 不是 java-backend 的分类
         "planned_duration_minutes": 30,
         "required_topics": ["PROJECT", "不存在的分类"],
@@ -136,7 +136,7 @@ async def test_derive_proposal_whitelists_invented_categories_with_profile_fallb
 
     proposal = await _derive_proposal(
         _deps(payload),
-        message="来一场面试",
+        message="重点问薄弱项，来一场面试",
         skills=SKILLS,
         skills_summary="（方向略）",
         resume_context=None,
@@ -148,7 +148,30 @@ async def test_derive_proposal_whitelists_invented_categories_with_profile_fallb
     assert proposal["focus"] == ["MYSQL"]
     assert proposal["direction"] == "java-backend"
     assert proposal["planned_duration_minutes"] == 30
-    assert proposal["required_topics"] == ["PROJECT"]
+    assert proposal["required_topics"] == []
+
+
+async def test_ordinary_interview_does_not_inherit_model_weakness_focus():
+    proposal = await _derive_proposal(
+        _deps({
+            "direction": "java-backend",
+            "difficulty": "mid",
+            "emphasis": "WEAKNESSES",
+            "focus": ["MYSQL"],
+            "required_topics": ["MYSQL"],
+            "summary": "重点问 MySQL",
+        }),
+        message="来一场模拟面试",
+        skills=SKILLS,
+        skills_summary="",
+        resume_context="订单系统项目经历",
+        profile={"skills": [{"skill": "MySQL", "score": 40}]},
+        profile_summary="",
+    )
+
+    assert proposal["emphasis"] == "RESUME"
+    assert proposal["focus"] == []
+    assert proposal["required_topics"] == []
 
 
 async def test_derive_proposal_falls_back_to_default_on_model_error():
@@ -175,8 +198,8 @@ async def test_derive_proposal_falls_back_to_default_on_model_error():
 
     assert proposal["direction"] == "java-backend"
     assert proposal["difficulty"] == "mid"
-    # 默认方向的画像候选仍然生效：简历已列未考的 Redis 优先
-    assert proposal["focus"] == ["REDIS"]
+    assert proposal["focus"] == []
+    assert proposal["emphasis"] == "RESUME"
 
 
 # ---------------------------------------------------------------------------

@@ -422,13 +422,14 @@ class AgentToolServiceTest {
               "skillId", "java-backend",
               "difficulty", "mid",
               "plannedDurationMinutes", 30,
+              "emphasis", "FUNDAMENTALS",
               "requiredTopics", List.of("JVM")));
 
       assertThat(response.data()).isSameAs(expected);
       verify(interviewSessionService).createSession(
           new CreateInterviewRequest(
               null, 30, List.of("JVM"), null, null, false, null, "java-backend", "mid",
-              null, null, null, true, List.of()));
+              null, null, null, true, List.of(), "FUNDAMENTALS"));
     }
 
     @Test

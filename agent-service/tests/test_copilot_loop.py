@@ -149,10 +149,7 @@ async def test_profile_read_ends_in_executable_next_step():
 
 
 async def test_next_turn_turns_advice_into_proposal():
-    """第二轮：用户接着用自然语言点名补强 → 提案把该技能放进重点与必要覆盖。
-
-    模型这次**没有**给 focus：兜底必须由画像候选决定，否则「建议补强 Java」到了下一轮就丢了。
-    """
+    """第二轮：用户明确点名 Java，模型漏掉 focus 时仍保留该倾向。"""
     deps = _draft_deps(
         _transport(),
         {"direction": "java-backend", "difficulty": "mid", "focus": [], "summary": "推荐"},
@@ -165,12 +162,9 @@ async def test_next_turn_turns_advice_into_proposal():
         await deps.backend.aclose()
 
     block = result["plan"].blocks[0]
-    # 画像候选的顺序是「简历已列未考」优先，低分技能紧随其后——两者都要进重点
-    assert "JAVA" in block.focus and "REDIS" in block.focus
-    assert "JAVA" in block.required_topics
-    # 依据解释**首要重点**（这里是没有证据的 Redis）：从「建议补强」到「为什么是它」不断链
-    assert any("Redis" in reason for reason in block.reasons)
-    assert not any("分" in reason for reason in block.reasons), "未验证技能不得出现分数表述"
+    assert block.focus == ["JAVA"]
+    assert block.required_topics == []
+    assert any("当前 58 分" in reason for reason in block.reasons)
 
 
 async def test_created_session_id_can_be_carried_to_review():

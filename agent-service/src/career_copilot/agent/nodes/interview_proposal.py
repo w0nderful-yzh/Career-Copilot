@@ -52,6 +52,7 @@ class _ProposalDraft(BaseModel):
     direction: str | None = None
     difficulty: str | None = None
     focus: list[Any] = Field(default_factory=list)
+    emphasis: str | None = None
     planned_duration_minutes: int | None = None
     required_topics: list[Any] = Field(default_factory=list)
     summary: str | None = None
@@ -93,8 +94,7 @@ async def interview_proposal(
         skills = []
     emit_tool_completed("list_skills")
 
-    # 2. 技能画像（P3 待收口）：低分技能 + 简历已列未考 → 决定重点考察方向。
-    #    失败不阻断推荐：没有画像时退化为「按简历与意图推荐」。
+    # 2. 技能画像只为用户选择「薄弱项」提供证据；默认仍以简历经历为主线。
     emit_tool_started("get_skill_profile")
     try:
         profile = await deps.backend.get_skill_profile()
@@ -124,7 +124,7 @@ async def interview_proposal(
 
     emit_tool_completed("interview_proposal")
 
-    # 4. LLM 推导推荐配置（结构化输出；失败回落确定性默认值 + 画像候选）
+    # 4. LLM 推导推荐配置（结构化输出；失败回落简历主导的默认值）
     proposal = await _derive_proposal(
         deps,
         message=state.get("message") or "",
@@ -143,7 +143,7 @@ async def interview_proposal(
     # 依据要解释**实际推荐的重点**：用户点了按钮就用他指定的那个，
     # 否则用推导后的首个重点——不然「建议补强 Java」到了提案卡上就只剩一句泛泛的推荐理由
     explained_skill = focus_skill or (proposal["focus"][0] if proposal["focus"] else None)
-    reasons = profile_reasons_for(profile, explained_skill)
+    reasons = profile_reasons_for(profile, explained_skill) if explained_skill else []
     if focus_skill and not proposal["requested_focus_applied"]:
         # 用户的指定没落到本方向分类上：如实说明，不假装考得到（P6-3：无依据不宣称）
         reasons.append(f"{focus_skill} 不在推荐方向的考察分类里，本场先按方向推荐")
@@ -153,6 +153,10 @@ async def interview_proposal(
         difficulty=proposal["difficulty"],
         difficulty_name=DIFFICULTY_NAMES_ZH.get(proposal["difficulty"], proposal["difficulty"]),
         focus=proposal["focus"],
+        emphasis=proposal["emphasis"],
+        weakness_focus=_profile_focus_hints(
+            profile, _direction_categories(skills, proposal["direction"])
+        ),
         planned_duration_minutes=proposal["planned_duration_minutes"],
         required_topics=proposal["required_topics"],
         resume_id=resume_id,
@@ -166,7 +170,7 @@ async def interview_proposal(
                 f"根据你的情况，我推荐一场约 {block.planned_duration_minutes} 分钟的 "
                 f"{block.direction_name} · {block.difficulty_name} 模拟面试。{block.summary} "
                 "你可以按推荐直接开始，或点「调整配置」手动修改，"
-                "也可以直接告诉我想要的调整（如「难度高一点，多问 JVM」）。"
+                "也可以直接告诉我想要的调整（如「多问八股」或「重点问薄弱项」）。"
             ),
         )
     }
@@ -214,29 +218,65 @@ async def _derive_proposal(
         difficulty = draft.difficulty or DEFAULT_DIFFICULTY
         if difficulty not in DIFFICULTY_NAMES_ZH:
             difficulty = DEFAULT_DIFFICULTY
+        emphasis = (
+            draft.emphasis
+            if draft.emphasis in {"RESUME", "FUNDAMENTALS", "WEAKNESSES"}
+            else "RESUME"
+        )
+        # 模型不能仅凭画像把普通面试改成专项；专项倾向须来自用户当轮意图。
+        if emphasis == "FUNDAMENTALS" and not any(
+            word in message for word in ("八股", "基础", "原理")
+        ):
+            emphasis = "RESUME"
+        if emphasis == "WEAKNESSES" and not any(
+            word in message for word in ("薄弱", "弱项", "短板", "补强")
+        ):
+            emphasis = "RESUME"
         focus_raw = draft.focus
         categories = _direction_categories(skills, direction)
         focus = _sanitize_focus(
             [str(item) for item in focus_raw if isinstance(item, str)], categories
         )
-        if not focus:
-            # 模型没给出可用分类（或全被白名单拦掉）时，用画像的确定性候选兜底
+        explicit_focus = (
+            [
+                category["key"] for category in categories
+                if (
+                    category["key"].lower() in message.lower()
+                    or category["label"].lower() in message.lower()
+                )
+            ]
+            if any(word in message for word in ("针对", "重点问", "多问", "重点考察"))
+            else []
+        )
+        if emphasis == "WEAKNESSES":
+            # 薄弱项必须有画像分数证据，不能把未考过的简历技能当成低分项。
             focus = _profile_focus_hints(profile, categories)
+            if not focus:
+                emphasis = "RESUME"
+        if emphasis == "RESUME":
+            # 默认不把模型猜的知识分类下发；用户明确提到的分类才保留。
+            focus = explicit_focus
+        elif emphasis == "FUNDAMENTALS" and explicit_focus:
+            focus = list(dict.fromkeys([*explicit_focus, *focus]))[:MAX_FOCUS]
         required_topics = _sanitize_focus(
             [str(item) for item in draft.required_topics if isinstance(item, str)],
             categories,
         )
-        if not required_topics:
-            # 提案说是重点，就至少触及其中前两个；Java 创建后还会剔除候选池不存在的话题。
-            required_topics = focus[:2]
+        if not any(word in message for word in ("必须", "一定要", "至少")):
+            required_topics = []
         focus, required_topics, applied = _apply_requested_focus(
             focus, required_topics, focus_skill, categories
         )
-        summary = (draft.summary or "")[:80]
+        summary = (
+            (draft.summary or "")[:80]
+            if resume_context
+            else "当前未绑定简历，按所选方向进行通用面试；绑定简历后可围绕经历追问"
+        )
         return {
             "direction": direction,
             "difficulty": difficulty,
             "focus": focus,
+            "emphasis": emphasis,
             "planned_duration_minutes": _normalize_duration(
                 draft.planned_duration_minutes
             ),
@@ -245,19 +285,20 @@ async def _derive_proposal(
             "requested_focus_applied": applied,
         }
     except Exception:
-        # 模型异常不应阻断面试发起：回落确定性默认推荐（focus 仍尽量取画像候选）
+        # 模型异常不应阻断面试发起：回落简历主导的默认推荐。
         logger.exception("面试推荐配置推导失败，回落默认值")
-        fallback_focus = _profile_focus_hints(
-            profile, _direction_categories(skills, DEFAULT_DIRECTION)
-        )
         applied = focus_skill is None
         return {
             "direction": DEFAULT_DIRECTION,
             "difficulty": DEFAULT_DIFFICULTY,
-            "focus": fallback_focus,
+            "focus": [],
+            "emphasis": "RESUME",
             "planned_duration_minutes": settings.interview_default_duration_minutes,
-            "required_topics": fallback_focus[:2],
-            "summary": "按 Java 后端 · 中级难度推荐",
+            "required_topics": [],
+            "summary": (
+                "围绕简历经历展开面试" if resume_context
+                else "当前未绑定简历，按 Java 后端方向进行通用面试"
+            ),
             "requested_focus_applied": applied,
         }
 
@@ -367,20 +408,10 @@ def _sanitize_focus(
 def _profile_focus_hints(
     profile: dict[str, Any], categories: list[dict[str, str]]
 ) -> list[str]:
-    """画像 → 该方向的 focus 候选（确定性，不依赖 LLM）。
-
-    优先级：**简历已列但从未考过**（信息量最大）> 已考但低分。
-    两类都只保留能匹配到本方向分类的技能；匹配不上的技能名无法安全映射
-    （例如 JVM 之于 java-backend 的分类体系），交给 LLM 的语义判断去处理。
-    """
+    """画像中有分数且低于阈值的技能，映射为可选薄弱项分类。"""
     if not categories or not profile:
         return []
 
-    ordered: list[str] = [
-        str(item.get("skill") or "")
-        for item in (profile.get("declaredSkills") or [])
-        if isinstance(item, dict)
-    ]
     low_scores = sorted(
         (
             skill
@@ -389,11 +420,11 @@ def _profile_focus_hints(
         ),
         key=lambda skill: skill["score"],
     )
-    ordered.extend(
+    ordered = [
         str(skill.get("skill") or "")
         for skill in low_scores
         if skill["score"] < LOW_SCORE_THRESHOLD
-    )
+    ]
     return _sanitize_focus(ordered, categories)
 
 

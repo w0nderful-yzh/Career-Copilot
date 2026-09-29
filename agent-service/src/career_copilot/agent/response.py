@@ -3,7 +3,7 @@
 MVP 首批 Block：text / action / resume_summary / interview_summary / knowledge_citations。
 """
 
-from typing import Any
+from typing import Any, Literal
 
 from career_copilot.schemas.message import (
     ActionBlock,
@@ -186,6 +186,8 @@ def interview_proposal_block(
     difficulty: str,
     difficulty_name: str,
     focus: list[str],
+    emphasis: Literal["RESUME", "FUNDAMENTALS", "WEAKNESSES"] = "RESUME",
+    weakness_focus: list[str] | None = None,
     planned_duration_minutes: int = 20,
     required_topics: list[str] | None = None,
     resume_id: int | None = None,
@@ -204,6 +206,8 @@ def interview_proposal_block(
         difficulty_name=difficulty_name,
         mode="TEXT",
         focus=focus,
+        emphasis=emphasis,
+        weakness_focus=weakness_focus or [],
         planned_duration_minutes=planned_duration_minutes,
         required_topics=required_topics or [],
         resume_id=resume_id,

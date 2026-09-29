@@ -274,7 +274,8 @@ public class AgentToolService {
         null,
         request.requestId(),
         true,  // P4-3：Agent 发起的面试默认开启逐题评估+自适应选题
-        normalizeFocus(request.focusCategories())
+        normalizeFocus(request.focusCategories()),
+        request.emphasis()
     );
     InterviewSessionDTO session = interviewSessionService.createSession(createRequest);
     return new ToolResponse(AgentToolName.CREATE_INTERVIEW.getName(), session);

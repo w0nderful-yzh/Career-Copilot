@@ -44,6 +44,8 @@ export interface InterviewProposalBlock {
   difficulty_name: string;
   mode: 'TEXT' | 'VOICE';
   focus: string[];
+  emphasis?: 'RESUME' | 'FUNDAMENTALS' | 'WEAKNESSES';
+  weakness_focus?: string[];
   planned_duration_minutes: number;
   required_topics: string[];
   resume_id?: number | null;
@@ -69,6 +71,7 @@ export interface InterviewConfig {
   planned_duration_minutes: number;
   required_topics: string[];
   focus: string[];
+  emphasis: 'RESUME' | 'FUNDAMENTALS' | 'WEAKNESSES';
 }
 
 /**

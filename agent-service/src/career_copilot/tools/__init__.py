@@ -122,8 +122,8 @@ def summarize_skill_profile(profile: dict[str, Any], limit: int = 8) -> str:
 
     证据只保留最近 3 条（场次:题号 + 分数 + 时间），避免完整明细塞入上下文。
 
-    简历声明（declaredSkills）单独成行：它们没有分数，但代表「简历列过、还没考过」，
-    是下一场面试最该重点考察的部分，不能被当成空数据处理掉。
+    简历声明（declaredSkills）单独成行：它们没有分数，只作为待验证线索，
+    不应自动变成下一场面试的必考知识点。
     """
     skills = profile.get("skills") or []
     declared = profile.get("declaredSkills") or []
@@ -148,7 +148,7 @@ def summarize_skill_profile(profile: dict[str, Any], limit: int = 8) -> str:
         names = [str(item.get("skill")) for item in declared[:limit] if item.get("skill")]
         if names:
             lines.append(
-                "简历已列、尚无评分证据（从未考过，建议优先考察）：" + "、".join(names)
+                "简历已列、尚无评分证据（可随经历自然追问）：" + "、".join(names)
             )
     return "\n".join(lines)
 

@@ -241,6 +241,7 @@ class BackendClient:
         force_create: bool = False,
         request_id: str | None = None,
         focus_categories: list[str] | None = None,
+        emphasis: str = "RESUME",
     ) -> dict[str, Any]:
         """创建模拟面试会话（CONFIRM_WRITE，用户确认后才由 Agent 调用）。
 
@@ -271,6 +272,7 @@ class BackendClient:
             arguments["requestId"] = request_id
         if focus_categories:
             arguments["focusCategories"] = list(focus_categories)
+        arguments["emphasis"] = emphasis
         # LLM 同步出题可达 1-3 分钟：用长超时覆盖客户端默认 30s，
         # 否则 agent 先超时抛「后端服务不可达」，而 Java 仍在后台创建成功（孤儿会话）。
         data = await self.call_tool("create_interview", arguments, timeout=300.0)

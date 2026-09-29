@@ -190,7 +190,8 @@ public class InterviewSessionService {
             historicalQuestions,
             request.customCategories(),
             request.jdText(),
-            request.focusCategories()
+            request.focusCategories(),
+            request.emphasis()
         );
         // 必要覆盖只能引用本场真实存在的主问题。简历没有实习经历时，即使上游提案仍带了
         // 「实习经历」，也不能留下一个永远无法完成的覆盖目标。

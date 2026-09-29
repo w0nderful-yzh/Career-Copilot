@@ -1128,9 +1128,10 @@ async def test_graph_interview_create_produces_proposal():
     assert proposal.direction_name == "Java 后端"
     assert proposal.difficulty == "mid"
     assert proposal.difficulty_name == "中级"
-    assert set(proposal.focus) == {"JVM", "PROJECT"}
+    assert proposal.emphasis == "RESUME"
+    assert proposal.focus == []
     assert proposal.planned_duration_minutes == 20
-    assert proposal.required_topics == ["JVM", "PROJECT"]
+    assert proposal.required_topics == []
 
     # Interview Mode 重构：不再下发「重新推荐」Choice（手动调整由前端内联面板完成）
     assert next((b for b in plan.blocks if b.type == "choice"), None) is None

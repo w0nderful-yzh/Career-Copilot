@@ -24,6 +24,15 @@ import static org.mockito.Mockito.mock;
 @DisplayName("面试问题生成转换（P4-1 题库结构化）")
 class InterviewQuestionServiceTest {
 
+  @Test
+  @DisplayName("默认以简历题为主，选择八股时提高基础题比例")
+  void emphasisAdjustsQuestionSource() {
+    assertThat(InterviewQuestionService.resumeQuestionRatio(null)).isEqualTo(0.8);
+    assertThat(InterviewQuestionService.resumeQuestionRatio("RESUME")).isEqualTo(0.8);
+    assertThat(InterviewQuestionService.resumeQuestionRatio("FUNDAMENTALS")).isEqualTo(0.5);
+    assertThat(InterviewQuestionService.resumeQuestionRatio("WEAKNESSES")).isEqualTo(0.6);
+  }
+
   /**
    * 轻量构造：模板从真实 classpath 资源加载，其余依赖 mock，不触发任何 LLM 调用。
    * 这样纯转换逻辑（convertToQuestions / mergeQuestionBatches）可以直接测。
